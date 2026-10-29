@@ -6,13 +6,15 @@ import type { GenEnum, GenFile, GenMessage, GenService } from "@bufbuild/protobu
 import { enumDesc, fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2";
 import type { Timestamp } from "@bufbuild/protobuf/wkt";
 import { file_google_protobuf_timestamp } from "@bufbuild/protobuf/wkt";
+import type { LogEntry } from "./types_pb";
+import { file_vaultsync_v1_types } from "./types_pb";
 import type { Message } from "@bufbuild/protobuf";
 
 /**
  * Describes the file vaultsync/v1/vault_key.proto.
  */
 export const file_vaultsync_v1_vault_key: GenFile = /*@__PURE__*/
-  fileDesc("Chx2YXVsdHN5bmMvdjEvdmF1bHRfa2V5LnByb3RvEgx2YXVsdHN5bmMudjEixQEKB0tleVNsb3QSDQoFZXBvY2gYASABKA0SNgoOcmVjaXBpZW50X2tpbmQYAiABKA4yHi52YXVsdHN5bmMudjEuS2V5UmVjaXBpZW50S2luZBIUCgxyZWNpcGllbnRfaWQYAyABKAkSEwoLd3JhcHBlZF9rZXkYBCABKAwSFwoPY3JlYXRvcl91c2VyX2lkGAUgASgJEi8KC2NyZWF0ZV90aW1lGAYgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCJ3CghLZXlFcG9jaBINCgVlcG9jaBgBIAEoDRISCgpjb21taXRtZW50GAIgASgMEhcKD2NyZWF0b3JfdXNlcl9pZBgDIAEoCRIvCgtjcmVhdGVfdGltZRgEIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXAiXQoJTmV4dEVwb2NoEhYKDmV4cGVjdGVkX2Vwb2NoGAEgASgNEhIKCmNvbW1pdG1lbnQYAiABKAwSJAoFc2xvdHMYAyADKAsyFS52YXVsdHN5bmMudjEuS2V5U2xvdCJBCgtNaXNzaW5nU2xvdBINCgVlcG9jaBgBIAEoDRIPCgd1c2VyX2lkGAIgASgJEhIKCnB1YmxpY19rZXkYAyABKAwihgEKE0xpc3RLZXlTbG90c1JlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkSEQoJcGFnZV9zaXplGAIgASgNEhIKCnBhZ2VfdG9rZW4YAyABKAkSNgoOcmVjaXBpZW50X2tpbmQYBCABKA4yHi52YXVsdHN5bmMudjEuS2V5UmVjaXBpZW50S2luZCJVChRMaXN0S2V5U2xvdHNSZXNwb25zZRIkCgVzbG90cxgBIAMoCzIVLnZhdWx0c3luYy52MS5LZXlTbG90EhcKD25leHRfcGFnZV90b2tlbhgCIAEoCSJMChFMaXN0RXBvY2hzUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRIRCglwYWdlX3NpemUYAiABKA0SEgoKcGFnZV90b2tlbhgDIAEoCSKGAQoSTGlzdEVwb2Noc1Jlc3BvbnNlEiYKBmVwb2NocxgBIAMoCzIWLnZhdWx0c3luYy52MS5LZXlFcG9jaBIXCg9uZXh0X3BhZ2VfdG9rZW4YAiABKAkSFQoNY3VycmVudF9lcG9jaBgDIAEoDRIYChByb3RhdGlvbl9wZW5kaW5nGAQgASgIIlIKF0xpc3RNaXNzaW5nU2xvdHNSZXF1ZXN0EhAKCHZhdWx0X2lkGAEgASgJEhEKCXBhZ2Vfc2l6ZRgCIAEoDRISCgpwYWdlX3Rva2VuGAMgASgJImUKGExpc3RNaXNzaW5nU2xvdHNSZXNwb25zZRIwCg1taXNzaW5nX3Nsb3RzGAEgAygLMhkudmF1bHRzeW5jLnYxLk1pc3NpbmdTbG90EhcKD25leHRfcGFnZV90b2tlbhgCIAEoCSJTChJSb3RhdGVFcG9jaFJlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkSKwoKbmV4dF9lcG9jaBgCIAEoCzIXLnZhdWx0c3luYy52MS5OZXh0RXBvY2giPAoTUm90YXRlRXBvY2hSZXNwb25zZRIlCgVlcG9jaBgBIAEoCzIWLnZhdWx0c3luYy52MS5LZXlFcG9jaCJMChJBZGRLZXlTbG90c1JlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkSJAoFc2xvdHMYAiADKAsyFS52YXVsdHN5bmMudjEuS2V5U2xvdCIkChNBZGRLZXlTbG90c1Jlc3BvbnNlEg0KBWFkZGVkGAEgASgNKnIKEEtleVJlY2lwaWVudEtpbmQSIgoeS0VZX1JFQ0lQSUVOVF9LSU5EX1VOU1BFQ0lGSUVEEAASGwoXS0VZX1JFQ0lQSUVOVF9LSU5EX1VTRVIQARIdChlLRVlfUkVDSVBJRU5UX0tJTkRfRVNDUk9XEAIyzgMKD1ZhdWx0S2V5U2VydmljZRJXCgxMaXN0S2V5U2xvdHMSIS52YXVsdHN5bmMudjEuTGlzdEtleVNsb3RzUmVxdWVzdBoiLnZhdWx0c3luYy52MS5MaXN0S2V5U2xvdHNSZXNwb25zZSIAElEKCkxpc3RFcG9jaHMSHy52YXVsdHN5bmMudjEuTGlzdEVwb2Noc1JlcXVlc3QaIC52YXVsdHN5bmMudjEuTGlzdEVwb2Noc1Jlc3BvbnNlIgASYwoQTGlzdE1pc3NpbmdTbG90cxIlLnZhdWx0c3luYy52MS5MaXN0TWlzc2luZ1Nsb3RzUmVxdWVzdBomLnZhdWx0c3luYy52MS5MaXN0TWlzc2luZ1Nsb3RzUmVzcG9uc2UiABJUCgtSb3RhdGVFcG9jaBIgLnZhdWx0c3luYy52MS5Sb3RhdGVFcG9jaFJlcXVlc3QaIS52YXVsdHN5bmMudjEuUm90YXRlRXBvY2hSZXNwb25zZSIAElQKC0FkZEtleVNsb3RzEiAudmF1bHRzeW5jLnYxLkFkZEtleVNsb3RzUmVxdWVzdBohLnZhdWx0c3luYy52MS5BZGRLZXlTbG90c1Jlc3BvbnNlIgBCQFo+Z2l0aHViLmNvbS9zb2xpZERvV2FudC92YXVsdC1zeW5jL2dlbi92YXVsdHN5bmMvdjE7dmF1bHRzeW5jdjFiBnByb3RvMw", [file_google_protobuf_timestamp]);
+  fileDesc("Chx2YXVsdHN5bmMvdjEvdmF1bHRfa2V5LnByb3RvEgx2YXVsdHN5bmMudjEixQEKB0tleVNsb3QSDQoFZXBvY2gYASABKA0SNgoOcmVjaXBpZW50X2tpbmQYAiABKA4yHi52YXVsdHN5bmMudjEuS2V5UmVjaXBpZW50S2luZBIUCgxyZWNpcGllbnRfaWQYAyABKAkSEwoLd3JhcHBlZF9rZXkYBCABKAwSFwoPY3JlYXRvcl91c2VyX2lkGAUgASgJEi8KC2NyZWF0ZV90aW1lGAYgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCJ3CghLZXlFcG9jaBINCgVlcG9jaBgBIAEoDRISCgpjb21taXRtZW50GAIgASgMEhcKD2NyZWF0b3JfdXNlcl9pZBgDIAEoCRIvCgtjcmVhdGVfdGltZRgEIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXAiXQoJTmV4dEVwb2NoEhYKDmV4cGVjdGVkX2Vwb2NoGAEgASgNEhIKCmNvbW1pdG1lbnQYAiABKAwSJAoFc2xvdHMYAyADKAsyFS52YXVsdHN5bmMudjEuS2V5U2xvdCJBCgtNaXNzaW5nU2xvdBINCgVlcG9jaBgBIAEoDRIPCgd1c2VyX2lkGAIgASgJEhIKCnB1YmxpY19rZXkYAyABKAwihgEKE0xpc3RLZXlTbG90c1JlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkSEQoJcGFnZV9zaXplGAIgASgNEhIKCnBhZ2VfdG9rZW4YAyABKAkSNgoOcmVjaXBpZW50X2tpbmQYBCABKA4yHi52YXVsdHN5bmMudjEuS2V5UmVjaXBpZW50S2luZCJVChRMaXN0S2V5U2xvdHNSZXNwb25zZRIkCgVzbG90cxgBIAMoCzIVLnZhdWx0c3luYy52MS5LZXlTbG90EhcKD25leHRfcGFnZV90b2tlbhgCIAEoCSJMChFMaXN0RXBvY2hzUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRIRCglwYWdlX3NpemUYAiABKA0SEgoKcGFnZV90b2tlbhgDIAEoCSKGAQoSTGlzdEVwb2Noc1Jlc3BvbnNlEiYKBmVwb2NocxgBIAMoCzIWLnZhdWx0c3luYy52MS5LZXlFcG9jaBIXCg9uZXh0X3BhZ2VfdG9rZW4YAiABKAkSFQoNY3VycmVudF9lcG9jaBgDIAEoDRIYChByb3RhdGlvbl9wZW5kaW5nGAQgASgIIlIKF0xpc3RNaXNzaW5nU2xvdHNSZXF1ZXN0EhAKCHZhdWx0X2lkGAEgASgJEhEKCXBhZ2Vfc2l6ZRgCIAEoDRISCgpwYWdlX3Rva2VuGAMgASgJImUKGExpc3RNaXNzaW5nU2xvdHNSZXNwb25zZRIwCg1taXNzaW5nX3Nsb3RzGAEgAygLMhkudmF1bHRzeW5jLnYxLk1pc3NpbmdTbG90EhcKD25leHRfcGFnZV90b2tlbhgCIAEoCSJTChJSb3RhdGVFcG9jaFJlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkSKwoKbmV4dF9lcG9jaBgCIAEoCzIXLnZhdWx0c3luYy52MS5OZXh0RXBvY2giPAoTUm90YXRlRXBvY2hSZXNwb25zZRIlCgVlcG9jaBgBIAEoCzIWLnZhdWx0c3luYy52MS5LZXlFcG9jaCJMChJBZGRLZXlTbG90c1JlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkSJAoFc2xvdHMYAiADKAsyFS52YXVsdHN5bmMudjEuS2V5U2xvdCIkChNBZGRLZXlTbG90c1Jlc3BvbnNlEg0KBWFkZGVkGAEgASgNIlAKFUxpc3RMb2dFbnRyaWVzUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRIRCglwYWdlX3NpemUYAiABKA0SEgoKcGFnZV90b2tlbhgDIAEoCSJaChZMaXN0TG9nRW50cmllc1Jlc3BvbnNlEicKB2VudHJpZXMYASADKAsyFi52YXVsdHN5bmMudjEuTG9nRW50cnkSFwoPbmV4dF9wYWdlX3Rva2VuGAIgASgJKnIKEEtleVJlY2lwaWVudEtpbmQSIgoeS0VZX1JFQ0lQSUVOVF9LSU5EX1VOU1BFQ0lGSUVEEAASGwoXS0VZX1JFQ0lQSUVOVF9LSU5EX1VTRVIQARIdChlLRVlfUkVDSVBJRU5UX0tJTkRfRVNDUk9XEAIyrQQKD1ZhdWx0S2V5U2VydmljZRJXCgxMaXN0S2V5U2xvdHMSIS52YXVsdHN5bmMudjEuTGlzdEtleVNsb3RzUmVxdWVzdBoiLnZhdWx0c3luYy52MS5MaXN0S2V5U2xvdHNSZXNwb25zZSIAElEKCkxpc3RFcG9jaHMSHy52YXVsdHN5bmMudjEuTGlzdEVwb2Noc1JlcXVlc3QaIC52YXVsdHN5bmMudjEuTGlzdEVwb2Noc1Jlc3BvbnNlIgASYwoQTGlzdE1pc3NpbmdTbG90cxIlLnZhdWx0c3luYy52MS5MaXN0TWlzc2luZ1Nsb3RzUmVxdWVzdBomLnZhdWx0c3luYy52MS5MaXN0TWlzc2luZ1Nsb3RzUmVzcG9uc2UiABJUCgtSb3RhdGVFcG9jaBIgLnZhdWx0c3luYy52MS5Sb3RhdGVFcG9jaFJlcXVlc3QaIS52YXVsdHN5bmMudjEuUm90YXRlRXBvY2hSZXNwb25zZSIAElQKC0FkZEtleVNsb3RzEiAudmF1bHRzeW5jLnYxLkFkZEtleVNsb3RzUmVxdWVzdBohLnZhdWx0c3luYy52MS5BZGRLZXlTbG90c1Jlc3BvbnNlIgASXQoOTGlzdExvZ0VudHJpZXMSIy52YXVsdHN5bmMudjEuTGlzdExvZ0VudHJpZXNSZXF1ZXN0GiQudmF1bHRzeW5jLnYxLkxpc3RMb2dFbnRyaWVzUmVzcG9uc2UiAEJAWj5naXRodWIuY29tL3NvbGlkRG9XYW50L3ZhdWx0LXN5bmMvZ2VuL3ZhdWx0c3luYy92MTt2YXVsdHN5bmN2MWIGcHJvdG8z", [file_google_protobuf_timestamp, file_vaultsync_v1_types]);
 
 /**
  * KeySlot is an epoch key wrapped to one recipient.
@@ -506,6 +508,70 @@ export const AddKeySlotsResponseSchema: GenMessage<AddKeySlotsResponse> = /*@__P
   messageDesc(file_vaultsync_v1_vault_key, 13);
 
 /**
+ * ListLogEntriesRequest pages through the vault's membership log.
+ *
+ * @generated from message vaultsync.v1.ListLogEntriesRequest
+ */
+export type ListLogEntriesRequest = Message<"vaultsync.v1.ListLogEntriesRequest"> & {
+  /**
+   * The vault. The caller must be a member.
+   *
+   * @generated from field: string vault_id = 1;
+   */
+  vaultId: string;
+
+  /**
+   * Maximum number of entries to return. Zero selects the server default
+   * (100); larger values are capped at 1000.
+   *
+   * @generated from field: uint32 page_size = 2;
+   */
+  pageSize: number;
+
+  /**
+   * Opaque token from a previous response. Empty for the first page.
+   *
+   * @generated from field: string page_token = 3;
+   */
+  pageToken: string;
+};
+
+/**
+ * Describes the message vaultsync.v1.ListLogEntriesRequest.
+ * Use `create(ListLogEntriesRequestSchema)` to create a new message.
+ */
+export const ListLogEntriesRequestSchema: GenMessage<ListLogEntriesRequest> = /*@__PURE__*/
+  messageDesc(file_vaultsync_v1_vault_key, 14);
+
+/**
+ * ListLogEntriesResponse is one page of the vault's membership log.
+ *
+ * @generated from message vaultsync.v1.ListLogEntriesResponse
+ */
+export type ListLogEntriesResponse = Message<"vaultsync.v1.ListLogEntriesResponse"> & {
+  /**
+   * Entries in ascending seq order.
+   *
+   * @generated from field: repeated vaultsync.v1.LogEntry entries = 1;
+   */
+  entries: LogEntry[];
+
+  /**
+   * Token for the next page; empty when there are no more.
+   *
+   * @generated from field: string next_page_token = 2;
+   */
+  nextPageToken: string;
+};
+
+/**
+ * Describes the message vaultsync.v1.ListLogEntriesResponse.
+ * Use `create(ListLogEntriesResponseSchema)` to create a new message.
+ */
+export const ListLogEntriesResponseSchema: GenMessage<ListLogEntriesResponse> = /*@__PURE__*/
+  messageDesc(file_vaultsync_v1_vault_key, 15);
+
+/**
  * KeyRecipientKind is whom a key slot wraps an epoch key to.
  *
  * @generated from enum vaultsync.v1.KeyRecipientKind
@@ -557,7 +623,7 @@ export const KeyRecipientKindSchema: GenEnum<KeyRecipientKind> = /*@__PURE__*/
  * member without a user key cannot be wrapped to; once they create one they
  * appear in ListMissingSlots for every epoch of the vault.
  *
- * ListKeySlots and ListEpochs are open to every member; ListMissingSlots,
+ * ListKeySlots, ListEpochs and ListLogEntries are open to every member; ListMissingSlots,
  * RotateEpoch and AddKeySlots are owner-only (PERMISSION_DENIED for editors
  * and viewers). A caller who is not a member gets NOT_FOUND, as for a vault
  * that does not exist. On a plaintext vault the lists are empty, and
@@ -647,6 +713,20 @@ export const VaultKeyService: GenService<{
     methodKind: "unary";
     input: typeof AddKeySlotsRequestSchema;
     output: typeof AddKeySlotsResponseSchema;
+  },
+  /**
+   * ListLogEntries lists the vault's membership log (docs/design/crypto.md)
+   * in ascending seq order, from the genesis entry. A plaintext vault has
+   * no log, so its list is empty.
+   *
+   * Errors: INVALID_ARGUMENT for a malformed page_token.
+   *
+   * @generated from rpc vaultsync.v1.VaultKeyService.ListLogEntries
+   */
+  listLogEntries: {
+    methodKind: "unary";
+    input: typeof ListLogEntriesRequestSchema;
+    output: typeof ListLogEntriesResponseSchema;
   },
 }> = /*@__PURE__*/
   serviceDesc(file_vaultsync_v1_vault_key, 0);

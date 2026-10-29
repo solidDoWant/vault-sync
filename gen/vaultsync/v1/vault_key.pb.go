@@ -968,11 +968,131 @@ func (x *AddKeySlotsResponse) GetAdded() uint32 {
 	return 0
 }
 
+// ListLogEntriesRequest pages through the vault's membership log.
+type ListLogEntriesRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The vault. The caller must be a member.
+	VaultId string `protobuf:"bytes,1,opt,name=vault_id,json=vaultId,proto3" json:"vault_id,omitempty"`
+	// Maximum number of entries to return. Zero selects the server default
+	// (100); larger values are capped at 1000.
+	PageSize uint32 `protobuf:"varint,2,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`
+	// Opaque token from a previous response. Empty for the first page.
+	PageToken     string `protobuf:"bytes,3,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListLogEntriesRequest) Reset() {
+	*x = ListLogEntriesRequest{}
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListLogEntriesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListLogEntriesRequest) ProtoMessage() {}
+
+func (x *ListLogEntriesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListLogEntriesRequest.ProtoReflect.Descriptor instead.
+func (*ListLogEntriesRequest) Descriptor() ([]byte, []int) {
+	return file_vaultsync_v1_vault_key_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *ListLogEntriesRequest) GetVaultId() string {
+	if x != nil {
+		return x.VaultId
+	}
+	return ""
+}
+
+func (x *ListLogEntriesRequest) GetPageSize() uint32 {
+	if x != nil {
+		return x.PageSize
+	}
+	return 0
+}
+
+func (x *ListLogEntriesRequest) GetPageToken() string {
+	if x != nil {
+		return x.PageToken
+	}
+	return ""
+}
+
+// ListLogEntriesResponse is one page of the vault's membership log.
+type ListLogEntriesResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Entries in ascending seq order.
+	Entries []*LogEntry `protobuf:"bytes,1,rep,name=entries,proto3" json:"entries,omitempty"`
+	// Token for the next page; empty when there are no more.
+	NextPageToken string `protobuf:"bytes,2,opt,name=next_page_token,json=nextPageToken,proto3" json:"next_page_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListLogEntriesResponse) Reset() {
+	*x = ListLogEntriesResponse{}
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListLogEntriesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListLogEntriesResponse) ProtoMessage() {}
+
+func (x *ListLogEntriesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListLogEntriesResponse.ProtoReflect.Descriptor instead.
+func (*ListLogEntriesResponse) Descriptor() ([]byte, []int) {
+	return file_vaultsync_v1_vault_key_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *ListLogEntriesResponse) GetEntries() []*LogEntry {
+	if x != nil {
+		return x.Entries
+	}
+	return nil
+}
+
+func (x *ListLogEntriesResponse) GetNextPageToken() string {
+	if x != nil {
+		return x.NextPageToken
+	}
+	return ""
+}
+
 var File_vaultsync_v1_vault_key_proto protoreflect.FileDescriptor
 
 const file_vaultsync_v1_vault_key_proto_rawDesc = "" +
 	"\n" +
-	"\x1cvaultsync/v1/vault_key.proto\x12\fvaultsync.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x8f\x02\n" +
+	"\x1cvaultsync/v1/vault_key.proto\x12\fvaultsync.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x18vaultsync/v1/types.proto\"\x8f\x02\n" +
 	"\aKeySlot\x12\x14\n" +
 	"\x05epoch\x18\x01 \x01(\rR\x05epoch\x12E\n" +
 	"\x0erecipient_kind\x18\x02 \x01(\x0e2\x1e.vaultsync.v1.KeyRecipientKindR\rrecipientKind\x12!\n" +
@@ -1038,18 +1158,27 @@ const file_vaultsync_v1_vault_key_proto_rawDesc = "" +
 	"\bvault_id\x18\x01 \x01(\tR\avaultId\x12+\n" +
 	"\x05slots\x18\x02 \x03(\v2\x15.vaultsync.v1.KeySlotR\x05slots\"+\n" +
 	"\x13AddKeySlotsResponse\x12\x14\n" +
-	"\x05added\x18\x01 \x01(\rR\x05added*r\n" +
+	"\x05added\x18\x01 \x01(\rR\x05added\"n\n" +
+	"\x15ListLogEntriesRequest\x12\x19\n" +
+	"\bvault_id\x18\x01 \x01(\tR\avaultId\x12\x1b\n" +
+	"\tpage_size\x18\x02 \x01(\rR\bpageSize\x12\x1d\n" +
+	"\n" +
+	"page_token\x18\x03 \x01(\tR\tpageToken\"r\n" +
+	"\x16ListLogEntriesResponse\x120\n" +
+	"\aentries\x18\x01 \x03(\v2\x16.vaultsync.v1.LogEntryR\aentries\x12&\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken*r\n" +
 	"\x10KeyRecipientKind\x12\"\n" +
 	"\x1eKEY_RECIPIENT_KIND_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17KEY_RECIPIENT_KIND_USER\x10\x01\x12\x1d\n" +
-	"\x19KEY_RECIPIENT_KIND_ESCROW\x10\x022\xce\x03\n" +
+	"\x19KEY_RECIPIENT_KIND_ESCROW\x10\x022\xad\x04\n" +
 	"\x0fVaultKeyService\x12W\n" +
 	"\fListKeySlots\x12!.vaultsync.v1.ListKeySlotsRequest\x1a\".vaultsync.v1.ListKeySlotsResponse\"\x00\x12Q\n" +
 	"\n" +
 	"ListEpochs\x12\x1f.vaultsync.v1.ListEpochsRequest\x1a .vaultsync.v1.ListEpochsResponse\"\x00\x12c\n" +
 	"\x10ListMissingSlots\x12%.vaultsync.v1.ListMissingSlotsRequest\x1a&.vaultsync.v1.ListMissingSlotsResponse\"\x00\x12T\n" +
 	"\vRotateEpoch\x12 .vaultsync.v1.RotateEpochRequest\x1a!.vaultsync.v1.RotateEpochResponse\"\x00\x12T\n" +
-	"\vAddKeySlots\x12 .vaultsync.v1.AddKeySlotsRequest\x1a!.vaultsync.v1.AddKeySlotsResponse\"\x00B@Z>github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyncv1b\x06proto3"
+	"\vAddKeySlots\x12 .vaultsync.v1.AddKeySlotsRequest\x1a!.vaultsync.v1.AddKeySlotsResponse\"\x00\x12]\n" +
+	"\x0eListLogEntries\x12#.vaultsync.v1.ListLogEntriesRequest\x1a$.vaultsync.v1.ListLogEntriesResponse\"\x00B@Z>github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyncv1b\x06proto3"
 
 var (
 	file_vaultsync_v1_vault_key_proto_rawDescOnce sync.Once
@@ -1064,7 +1193,7 @@ func file_vaultsync_v1_vault_key_proto_rawDescGZIP() []byte {
 }
 
 var file_vaultsync_v1_vault_key_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_vaultsync_v1_vault_key_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
+var file_vaultsync_v1_vault_key_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_vaultsync_v1_vault_key_proto_goTypes = []any{
 	(KeyRecipientKind)(0),            // 0: vaultsync.v1.KeyRecipientKind
 	(*KeySlot)(nil),                  // 1: vaultsync.v1.KeySlot
@@ -1081,12 +1210,15 @@ var file_vaultsync_v1_vault_key_proto_goTypes = []any{
 	(*RotateEpochResponse)(nil),      // 12: vaultsync.v1.RotateEpochResponse
 	(*AddKeySlotsRequest)(nil),       // 13: vaultsync.v1.AddKeySlotsRequest
 	(*AddKeySlotsResponse)(nil),      // 14: vaultsync.v1.AddKeySlotsResponse
-	(*timestamppb.Timestamp)(nil),    // 15: google.protobuf.Timestamp
+	(*ListLogEntriesRequest)(nil),    // 15: vaultsync.v1.ListLogEntriesRequest
+	(*ListLogEntriesResponse)(nil),   // 16: vaultsync.v1.ListLogEntriesResponse
+	(*timestamppb.Timestamp)(nil),    // 17: google.protobuf.Timestamp
+	(*LogEntry)(nil),                 // 18: vaultsync.v1.LogEntry
 }
 var file_vaultsync_v1_vault_key_proto_depIdxs = []int32{
 	0,  // 0: vaultsync.v1.KeySlot.recipient_kind:type_name -> vaultsync.v1.KeyRecipientKind
-	15, // 1: vaultsync.v1.KeySlot.create_time:type_name -> google.protobuf.Timestamp
-	15, // 2: vaultsync.v1.KeyEpoch.create_time:type_name -> google.protobuf.Timestamp
+	17, // 1: vaultsync.v1.KeySlot.create_time:type_name -> google.protobuf.Timestamp
+	17, // 2: vaultsync.v1.KeyEpoch.create_time:type_name -> google.protobuf.Timestamp
 	1,  // 3: vaultsync.v1.NextEpoch.slots:type_name -> vaultsync.v1.KeySlot
 	0,  // 4: vaultsync.v1.ListKeySlotsRequest.recipient_kind:type_name -> vaultsync.v1.KeyRecipientKind
 	1,  // 5: vaultsync.v1.ListKeySlotsResponse.slots:type_name -> vaultsync.v1.KeySlot
@@ -1095,21 +1227,24 @@ var file_vaultsync_v1_vault_key_proto_depIdxs = []int32{
 	3,  // 8: vaultsync.v1.RotateEpochRequest.next_epoch:type_name -> vaultsync.v1.NextEpoch
 	2,  // 9: vaultsync.v1.RotateEpochResponse.epoch:type_name -> vaultsync.v1.KeyEpoch
 	1,  // 10: vaultsync.v1.AddKeySlotsRequest.slots:type_name -> vaultsync.v1.KeySlot
-	5,  // 11: vaultsync.v1.VaultKeyService.ListKeySlots:input_type -> vaultsync.v1.ListKeySlotsRequest
-	7,  // 12: vaultsync.v1.VaultKeyService.ListEpochs:input_type -> vaultsync.v1.ListEpochsRequest
-	9,  // 13: vaultsync.v1.VaultKeyService.ListMissingSlots:input_type -> vaultsync.v1.ListMissingSlotsRequest
-	11, // 14: vaultsync.v1.VaultKeyService.RotateEpoch:input_type -> vaultsync.v1.RotateEpochRequest
-	13, // 15: vaultsync.v1.VaultKeyService.AddKeySlots:input_type -> vaultsync.v1.AddKeySlotsRequest
-	6,  // 16: vaultsync.v1.VaultKeyService.ListKeySlots:output_type -> vaultsync.v1.ListKeySlotsResponse
-	8,  // 17: vaultsync.v1.VaultKeyService.ListEpochs:output_type -> vaultsync.v1.ListEpochsResponse
-	10, // 18: vaultsync.v1.VaultKeyService.ListMissingSlots:output_type -> vaultsync.v1.ListMissingSlotsResponse
-	12, // 19: vaultsync.v1.VaultKeyService.RotateEpoch:output_type -> vaultsync.v1.RotateEpochResponse
-	14, // 20: vaultsync.v1.VaultKeyService.AddKeySlots:output_type -> vaultsync.v1.AddKeySlotsResponse
-	16, // [16:21] is the sub-list for method output_type
-	11, // [11:16] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	18, // 11: vaultsync.v1.ListLogEntriesResponse.entries:type_name -> vaultsync.v1.LogEntry
+	5,  // 12: vaultsync.v1.VaultKeyService.ListKeySlots:input_type -> vaultsync.v1.ListKeySlotsRequest
+	7,  // 13: vaultsync.v1.VaultKeyService.ListEpochs:input_type -> vaultsync.v1.ListEpochsRequest
+	9,  // 14: vaultsync.v1.VaultKeyService.ListMissingSlots:input_type -> vaultsync.v1.ListMissingSlotsRequest
+	11, // 15: vaultsync.v1.VaultKeyService.RotateEpoch:input_type -> vaultsync.v1.RotateEpochRequest
+	13, // 16: vaultsync.v1.VaultKeyService.AddKeySlots:input_type -> vaultsync.v1.AddKeySlotsRequest
+	15, // 17: vaultsync.v1.VaultKeyService.ListLogEntries:input_type -> vaultsync.v1.ListLogEntriesRequest
+	6,  // 18: vaultsync.v1.VaultKeyService.ListKeySlots:output_type -> vaultsync.v1.ListKeySlotsResponse
+	8,  // 19: vaultsync.v1.VaultKeyService.ListEpochs:output_type -> vaultsync.v1.ListEpochsResponse
+	10, // 20: vaultsync.v1.VaultKeyService.ListMissingSlots:output_type -> vaultsync.v1.ListMissingSlotsResponse
+	12, // 21: vaultsync.v1.VaultKeyService.RotateEpoch:output_type -> vaultsync.v1.RotateEpochResponse
+	14, // 22: vaultsync.v1.VaultKeyService.AddKeySlots:output_type -> vaultsync.v1.AddKeySlotsResponse
+	16, // 23: vaultsync.v1.VaultKeyService.ListLogEntries:output_type -> vaultsync.v1.ListLogEntriesResponse
+	18, // [18:24] is the sub-list for method output_type
+	12, // [12:18] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_vaultsync_v1_vault_key_proto_init() }
@@ -1117,13 +1252,14 @@ func file_vaultsync_v1_vault_key_proto_init() {
 	if File_vaultsync_v1_vault_key_proto != nil {
 		return
 	}
+	file_vaultsync_v1_types_proto_init()
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_vaultsync_v1_vault_key_proto_rawDesc), len(file_vaultsync_v1_vault_key_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   14,
+			NumMessages:   16,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

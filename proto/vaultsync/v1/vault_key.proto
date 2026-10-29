@@ -3,6 +3,7 @@ syntax = "proto3";
 package vaultsync.v1;
 
 import "google/protobuf/timestamp.proto";
+import "vaultsync/v1/types.proto";
 
 option go_package = "github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyncv1";
 
@@ -23,7 +24,7 @@ option go_package = "github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyn
 // member without a user key cannot be wrapped to; once they create one they
 // appear in ListMissingSlots for every epoch of the vault.
 //
-// ListKeySlots and ListEpochs are open to every member; ListMissingSlots,
+// ListKeySlots, ListEpochs and ListLogEntries are open to every member; ListMissingSlots,
 // RotateEpoch and AddKeySlots are owner-only (PERMISSION_DENIED for editors
 // and viewers). A caller who is not a member gets NOT_FOUND, as for a vault
 // that does not exist. On a plaintext vault the lists are empty, and
@@ -75,6 +76,13 @@ service VaultKeyService {
   // slots, or an escrow slot in a vault without escrow; FAILED_PRECONDITION
   // for a plaintext vault.
   rpc AddKeySlots(AddKeySlotsRequest) returns (AddKeySlotsResponse) {}
+
+  // ListLogEntries lists the vault's membership log (docs/design/crypto.md)
+  // in ascending seq order, from the genesis entry. A plaintext vault has
+  // no log, so its list is empty.
+  //
+  // Errors: INVALID_ARGUMENT for a malformed page_token.
+  rpc ListLogEntries(ListLogEntriesRequest) returns (ListLogEntriesResponse) {}
 }
 
 // KeyRecipientKind is whom a key slot wraps an epoch key to.
@@ -236,4 +244,23 @@ message AddKeySlotsRequest {
 message AddKeySlotsResponse {
   // How many of the slots were stored; the others already existed.
   uint32 added = 1;
+}
+
+// ListLogEntriesRequest pages through the vault's membership log.
+message ListLogEntriesRequest {
+  // The vault. The caller must be a member.
+  string vault_id = 1;
+  // Maximum number of entries to return. Zero selects the server default
+  // (100); larger values are capped at 1000.
+  uint32 page_size = 2;
+  // Opaque token from a previous response. Empty for the first page.
+  string page_token = 3;
+}
+
+// ListLogEntriesResponse is one page of the vault's membership log.
+message ListLogEntriesResponse {
+  // Entries in ascending seq order.
+  repeated LogEntry entries = 1;
+  // Token for the next page; empty when there are no more.
+  string next_page_token = 2;
 }

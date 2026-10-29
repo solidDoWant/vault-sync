@@ -33,7 +33,15 @@ type CreateVaultRequest struct {
 	Encryption VaultEncryption `protobuf:"varint,2,opt,name=encryption,proto3,enum=vaultsync.v1.VaultEncryption" json:"encryption,omitempty"`
 	// Whether to enable escrow for plaintext backups (SPEC.md §9.4). Only valid
 	// with VAULT_ENCRYPTION_E2EE. Cannot be changed later.
-	Escrow        bool `protobuf:"varint,3,opt,name=escrow,proto3" json:"escrow,omitempty"`
+	Escrow bool `protobuf:"varint,3,opt,name=escrow,proto3" json:"escrow,omitempty"`
+	// The new vault's id, a UUID chosen by the creator's device, which signs
+	// it into the genesis entry. Required for VAULT_ENCRYPTION_E2EE; must be
+	// empty for VAULT_ENCRYPTION_NONE, whose id the server chooses.
+	NewVaultId string `protobuf:"bytes,4,opt,name=new_vault_id,json=newVaultId,proto3" json:"new_vault_id,omitempty"`
+	// The genesis entry of the vault's membership log (seq 1), signed by the
+	// caller. Required for VAULT_ENCRYPTION_E2EE; must be unset for
+	// VAULT_ENCRYPTION_NONE.
+	Genesis       *LogEntry `protobuf:"bytes,5,opt,name=genesis,proto3" json:"genesis,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -87,6 +95,20 @@ func (x *CreateVaultRequest) GetEscrow() bool {
 		return x.Escrow
 	}
 	return false
+}
+
+func (x *CreateVaultRequest) GetNewVaultId() string {
+	if x != nil {
+		return x.NewVaultId
+	}
+	return ""
+}
+
+func (x *CreateVaultRequest) GetGenesis() *LogEntry {
+	if x != nil {
+		return x.Genesis
+	}
+	return nil
 }
 
 // CreateVaultResponse returns the created vault.
@@ -333,13 +355,16 @@ var File_vaultsync_v1_vault_proto protoreflect.FileDescriptor
 
 const file_vaultsync_v1_vault_proto_rawDesc = "" +
 	"\n" +
-	"\x18vaultsync/v1/vault.proto\x12\fvaultsync.v1\x1a\x18vaultsync/v1/types.proto\"\x7f\n" +
+	"\x18vaultsync/v1/vault.proto\x12\fvaultsync.v1\x1a\x18vaultsync/v1/types.proto\"\xd3\x01\n" +
 	"\x12CreateVaultRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12=\n" +
 	"\n" +
 	"encryption\x18\x02 \x01(\x0e2\x1d.vaultsync.v1.VaultEncryptionR\n" +
 	"encryption\x12\x16\n" +
-	"\x06escrow\x18\x03 \x01(\bR\x06escrow\"@\n" +
+	"\x06escrow\x18\x03 \x01(\bR\x06escrow\x12 \n" +
+	"\fnew_vault_id\x18\x04 \x01(\tR\n" +
+	"newVaultId\x120\n" +
+	"\agenesis\x18\x05 \x01(\v2\x16.vaultsync.v1.LogEntryR\agenesis\"@\n" +
 	"\x13CreateVaultResponse\x12)\n" +
 	"\x05vault\x18\x01 \x01(\v2\x13.vaultsync.v1.VaultR\x05vault\"O\n" +
 	"\x11ListVaultsRequest\x12\x1b\n" +
@@ -379,23 +404,25 @@ var file_vaultsync_v1_vault_proto_goTypes = []any{
 	(*DeleteVaultRequest)(nil),  // 4: vaultsync.v1.DeleteVaultRequest
 	(*DeleteVaultResponse)(nil), // 5: vaultsync.v1.DeleteVaultResponse
 	(VaultEncryption)(0),        // 6: vaultsync.v1.VaultEncryption
-	(*Vault)(nil),               // 7: vaultsync.v1.Vault
+	(*LogEntry)(nil),            // 7: vaultsync.v1.LogEntry
+	(*Vault)(nil),               // 8: vaultsync.v1.Vault
 }
 var file_vaultsync_v1_vault_proto_depIdxs = []int32{
 	6, // 0: vaultsync.v1.CreateVaultRequest.encryption:type_name -> vaultsync.v1.VaultEncryption
-	7, // 1: vaultsync.v1.CreateVaultResponse.vault:type_name -> vaultsync.v1.Vault
-	7, // 2: vaultsync.v1.ListVaultsResponse.vaults:type_name -> vaultsync.v1.Vault
-	0, // 3: vaultsync.v1.VaultService.CreateVault:input_type -> vaultsync.v1.CreateVaultRequest
-	2, // 4: vaultsync.v1.VaultService.ListVaults:input_type -> vaultsync.v1.ListVaultsRequest
-	4, // 5: vaultsync.v1.VaultService.DeleteVault:input_type -> vaultsync.v1.DeleteVaultRequest
-	1, // 6: vaultsync.v1.VaultService.CreateVault:output_type -> vaultsync.v1.CreateVaultResponse
-	3, // 7: vaultsync.v1.VaultService.ListVaults:output_type -> vaultsync.v1.ListVaultsResponse
-	5, // 8: vaultsync.v1.VaultService.DeleteVault:output_type -> vaultsync.v1.DeleteVaultResponse
-	6, // [6:9] is the sub-list for method output_type
-	3, // [3:6] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	7, // 1: vaultsync.v1.CreateVaultRequest.genesis:type_name -> vaultsync.v1.LogEntry
+	8, // 2: vaultsync.v1.CreateVaultResponse.vault:type_name -> vaultsync.v1.Vault
+	8, // 3: vaultsync.v1.ListVaultsResponse.vaults:type_name -> vaultsync.v1.Vault
+	0, // 4: vaultsync.v1.VaultService.CreateVault:input_type -> vaultsync.v1.CreateVaultRequest
+	2, // 5: vaultsync.v1.VaultService.ListVaults:input_type -> vaultsync.v1.ListVaultsRequest
+	4, // 6: vaultsync.v1.VaultService.DeleteVault:input_type -> vaultsync.v1.DeleteVaultRequest
+	1, // 7: vaultsync.v1.VaultService.CreateVault:output_type -> vaultsync.v1.CreateVaultResponse
+	3, // 8: vaultsync.v1.VaultService.ListVaults:output_type -> vaultsync.v1.ListVaultsResponse
+	5, // 9: vaultsync.v1.VaultService.DeleteVault:output_type -> vaultsync.v1.DeleteVaultResponse
+	7, // [7:10] is the sub-list for method output_type
+	4, // [4:7] is the sub-list for method input_type
+	4, // [4:4] is the sub-list for extension type_name
+	4, // [4:4] is the sub-list for extension extendee
+	0, // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_vaultsync_v1_vault_proto_init() }

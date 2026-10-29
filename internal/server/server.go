@@ -222,8 +222,10 @@ var VaultProcedures = map[string]authz.Access{
 	vaultsyncv1connect.MembershipServiceLeaveVaultProcedure: authz.Read,
 	// Every member reads the epochs and their own key slots, which they
 	// need to read the vault; only owners wrap keys (SPEC.md §9.3).
-	vaultsyncv1connect.VaultKeyServiceListKeySlotsProcedure:     authz.Read,
-	vaultsyncv1connect.VaultKeyServiceListEpochsProcedure:       authz.Read,
+	vaultsyncv1connect.VaultKeyServiceListKeySlotsProcedure: authz.Read,
+	vaultsyncv1connect.VaultKeyServiceListEpochsProcedure:   authz.Read,
+	// Every member replays the membership log (docs/design/crypto.md).
+	vaultsyncv1connect.VaultKeyServiceListLogEntriesProcedure:   authz.Read,
 	vaultsyncv1connect.VaultKeyServiceListMissingSlotsProcedure: authz.Manage,
 	vaultsyncv1connect.VaultKeyServiceRotateEpochProcedure:      authz.Manage,
 	vaultsyncv1connect.VaultKeyServiceAddKeySlotsProcedure:      authz.Manage,

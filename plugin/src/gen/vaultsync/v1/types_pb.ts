@@ -12,7 +12,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file vaultsync/v1/types.proto.
  */
 export const file_vaultsync_v1_types: GenFile = /*@__PURE__*/
-  fileDesc("Chh2YXVsdHN5bmMvdjEvdHlwZXMucHJvdG8SDHZhdWx0c3luYy52MSLOAQoFVmF1bHQSCgoCaWQYASABKAkSDAoEbmFtZRgCIAEoCRIxCgplbmNyeXB0aW9uGAMgASgOMh0udmF1bHRzeW5jLnYxLlZhdWx0RW5jcnlwdGlvbhIOCgZlc2Nyb3cYBCABKAgSEAoIaGVhZF9zZXEYBSABKAQSJQoEcm9sZRgGIAEoDjIXLnZhdWx0c3luYy52MS5WYXVsdFJvbGUSLwoLY3JlYXRlX3RpbWUYByABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wIosBCgZEZXZpY2USCgoCaWQYASABKAkSDAoEbmFtZRgCIAEoCRIvCgtjcmVhdGVfdGltZRgDIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASNgoSbGFzdF9hY3Rpdml0eV90aW1lGAQgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCIrCgpDb250ZW50UmVmEg8KB2Jsb2JfaWQYASABKAwSDAoEc2l6ZRgCIAEoBCJnCghEb2N1bWVudBIKCgJpZBgBIAEoCRIQCgh2YXVsdF9pZBgCIAEoCRIoCgRraW5kGAMgASgOMhoudmF1bHRzeW5jLnYxLkRvY3VtZW50S2luZBITCgtoZWFkX3Jldl9pZBgEIAEoCSLNAgoIUmV2aXNpb24SCgoCaWQYASABKAkSEwoLZG9jdW1lbnRfaWQYAiABKAkSEAoIdmF1bHRfaWQYAyABKAkSCwoDc2VxGAQgASgEEhUKDXBhcmVudF9yZXZfaWQYBSABKAkSKAoEa2luZBgGIAEoDjIaLnZhdWx0c3luYy52MS5Eb2N1bWVudEtpbmQSLQoLY29udGVudF9yZWYYByABKAsyGC52YXVsdHN5bmMudjEuQ29udGVudFJlZhIMCgRwYXRoGAggASgMEg8KB2RlbGV0ZWQYCSABKAgSEQoJZGV2aWNlX2lkGAogASgJEg8KB3VzZXJfaWQYCyABKAkSLwoLY3JlYXRlX3RpbWUYDCABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEg4KBmFuY2hvchgNIAEoDBINCgVlcG9jaBgOIAEoDSqOAQoMRG9jdW1lbnRLaW5kEh0KGURPQ1VNRU5UX0tJTkRfVU5TUEVDSUZJRUQQABIWChJET0NVTUVOVF9LSU5EX0JMT0IQARIWChJET0NVTUVOVF9LSU5EX1RFWFQQAhIVChFET0NVTUVOVF9LSU5EX1lKUxADEhgKFERPQ1VNRU5UX0tJTkRfRk9MREVSEAQqaQoPVmF1bHRFbmNyeXB0aW9uEiAKHFZBVUxUX0VOQ1JZUFRJT05fVU5TUEVDSUZJRUQQABIZChVWQVVMVF9FTkNSWVBUSU9OX05PTkUQARIZChVWQVVMVF9FTkNSWVBUSU9OX0UyRUUQAiprCglWYXVsdFJvbGUSGgoWVkFVTFRfUk9MRV9VTlNQRUNJRklFRBAAEhQKEFZBVUxUX1JPTEVfT1dORVIQARIVChFWQVVMVF9ST0xFX0VESVRPUhACEhUKEVZBVUxUX1JPTEVfVklFV0VSEANCQFo+Z2l0aHViLmNvbS9zb2xpZERvV2FudC92YXVsdC1zeW5jL2dlbi92YXVsdHN5bmMvdjE7dmF1bHRzeW5jdjFiBnByb3RvMw", [file_google_protobuf_timestamp]);
+  fileDesc("Chh2YXVsdHN5bmMvdjEvdHlwZXMucHJvdG8SDHZhdWx0c3luYy52MSLOAQoFVmF1bHQSCgoCaWQYASABKAkSDAoEbmFtZRgCIAEoCRIxCgplbmNyeXB0aW9uGAMgASgOMh0udmF1bHRzeW5jLnYxLlZhdWx0RW5jcnlwdGlvbhIOCgZlc2Nyb3cYBCABKAgSEAoIaGVhZF9zZXEYBSABKAQSJQoEcm9sZRgGIAEoDjIXLnZhdWx0c3luYy52MS5WYXVsdFJvbGUSLwoLY3JlYXRlX3RpbWUYByABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wIosBCgZEZXZpY2USCgoCaWQYASABKAkSDAoEbmFtZRgCIAEoCRIvCgtjcmVhdGVfdGltZRgDIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASNgoSbGFzdF9hY3Rpdml0eV90aW1lGAQgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCIrCgpDb250ZW50UmVmEg8KB2Jsb2JfaWQYASABKAwSDAoEc2l6ZRgCIAEoBCJnCghEb2N1bWVudBIKCgJpZBgBIAEoCRIQCgh2YXVsdF9pZBgCIAEoCRIoCgRraW5kGAMgASgOMhoudmF1bHRzeW5jLnYxLkRvY3VtZW50S2luZBITCgtoZWFkX3Jldl9pZBgEIAEoCSLNAgoIUmV2aXNpb24SCgoCaWQYASABKAkSEwoLZG9jdW1lbnRfaWQYAiABKAkSEAoIdmF1bHRfaWQYAyABKAkSCwoDc2VxGAQgASgEEhUKDXBhcmVudF9yZXZfaWQYBSABKAkSKAoEa2luZBgGIAEoDjIaLnZhdWx0c3luYy52MS5Eb2N1bWVudEtpbmQSLQoLY29udGVudF9yZWYYByABKAsyGC52YXVsdHN5bmMudjEuQ29udGVudFJlZhIMCgRwYXRoGAggASgMEg8KB2RlbGV0ZWQYCSABKAgSEQoJZGV2aWNlX2lkGAogASgJEg8KB3VzZXJfaWQYCyABKAkSLwoLY3JlYXRlX3RpbWUYDCABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEg4KBmFuY2hvchgNIAEoDBINCgVlcG9jaBgOIAEoDSJdCghMb2dFbnRyeRILCgNzZXEYASABKAQSEQoJcHJldl9oYXNoGAIgASgMEgwKBHR5cGUYAyABKA0SDwoHcGF5bG9hZBgEIAEoDBISCgpzaWduYXR1cmVzGAUgAygMKo4BCgxEb2N1bWVudEtpbmQSHQoZRE9DVU1FTlRfS0lORF9VTlNQRUNJRklFRBAAEhYKEkRPQ1VNRU5UX0tJTkRfQkxPQhABEhYKEkRPQ1VNRU5UX0tJTkRfVEVYVBACEhUKEURPQ1VNRU5UX0tJTkRfWUpTEAMSGAoURE9DVU1FTlRfS0lORF9GT0xERVIQBCppCg9WYXVsdEVuY3J5cHRpb24SIAocVkFVTFRfRU5DUllQVElPTl9VTlNQRUNJRklFRBAAEhkKFVZBVUxUX0VOQ1JZUFRJT05fTk9ORRABEhkKFVZBVUxUX0VOQ1JZUFRJT05fRTJFRRACKmsKCVZhdWx0Um9sZRIaChZWQVVMVF9ST0xFX1VOU1BFQ0lGSUVEEAASFAoQVkFVTFRfUk9MRV9PV05FUhABEhUKEVZBVUxUX1JPTEVfRURJVE9SEAISFQoRVkFVTFRfUk9MRV9WSUVXRVIQA0JAWj5naXRodWIuY29tL3NvbGlkRG9XYW50L3ZhdWx0LXN5bmMvZ2VuL3ZhdWx0c3luYy92MTt2YXVsdHN5bmN2MWIGcHJvdG8z", [file_google_protobuf_timestamp]);
 
 /**
  * Vault is a synchronized Obsidian vault as visible to the caller.
@@ -323,6 +323,62 @@ export type Revision = Message<"vaultsync.v1.Revision"> & {
  */
 export const RevisionSchema: GenMessage<Revision> = /*@__PURE__*/
   messageDesc(file_vaultsync_v1_types, 4);
+
+/**
+ * LogEntry is one entry of an end-to-end encrypted vault's membership log
+ * (docs/design/crypto.md, "Identity keys, the membership log and signed
+ * epochs"). Its vault is the vault it belongs to. The server verifies an
+ * entry before storing it; devices replay the whole log themselves and
+ * trust only that replay.
+ *
+ * @generated from message vaultsync.v1.LogEntry
+ */
+export type LogEntry = Message<"vaultsync.v1.LogEntry"> & {
+  /**
+   * The entry's sequence number, from 1 (the genesis entry).
+   *
+   * @generated from field: uint64 seq = 1;
+   */
+  seq: bigint;
+
+  /**
+   * SHA-256 of the previous entry's body: exactly 32 bytes, all zero for
+   * the genesis entry.
+   *
+   * @generated from field: bytes prev_hash = 2;
+   */
+  prevHash: Uint8Array;
+
+  /**
+   * The entry type byte: 1 (genesis) to 8 (escrow).
+   *
+   * @generated from field: uint32 type = 3;
+   */
+  type: number;
+
+  /**
+   * The type's payload, at most the size of a genesis with an escrow
+   * bundle.
+   *
+   * @generated from field: bytes payload = 4;
+   */
+  payload: Uint8Array;
+
+  /**
+   * The Ed25519 signatures of the entry body: two for a redeem entry (the
+   * invitation key's, then the newcomer's), one for every other entry.
+   *
+   * @generated from field: repeated bytes signatures = 5;
+   */
+  signatures: Uint8Array[];
+};
+
+/**
+ * Describes the message vaultsync.v1.LogEntry.
+ * Use `create(LogEntrySchema)` to create a new message.
+ */
+export const LogEntrySchema: GenMessage<LogEntry> = /*@__PURE__*/
+  messageDesc(file_vaultsync_v1_types, 5);
 
 /**
  * DocumentKind selects how clients merge concurrent edits to a document

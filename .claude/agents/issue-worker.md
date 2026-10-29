@@ -32,6 +32,15 @@ The scheduler (`scripts/agents/scheduler.py`) launches you as a top-level headle
    - **Iterate on the narrowest check, run the full suites once.** While developing and during the mutation checks, run only what covers the change: the affected test files (`npx vitest run <file>`, `go test ./<pkg>/ -run <Test>`) and, for sync behaviour, the engine table tests or the one `[AC-nn]` spec you touched, which take seconds to a couple of minutes. Likewise run `make fmt lint test` once before pushing, plus `make test-integration` / `make test-e2e` once if your change touches what they cover. CI runs the full matrix again on the PR. Tick each acceptance-criterion checkbox in the issue body only after its test passed.
 7. **Commit, rebase, push.** Conventional commits; stage explicit paths. Then, right before pushing, `git fetch origin`, note `base=$(git merge-base HEAD origin/master)`, and `git rebase origin/master` — you have the context to resolve conflicts, a later agent does not. If the rebase brought in `master` changes to files or packages your change touches (compare `git diff --name-only $base origin/master` with your own changed files; any conflict counts), re-run `make lint test` plus the targeted suite before pushing; otherwise push as is. Push the branch (`git push --force-with-lease` when it already exists).
 8. **PR.** New: `gh pr create --base master --title "<type>(<scope>): <summary>" --body-file <file>` with `Fixes #<N>`, a summary, how each criterion is tested (including the mutations from step 6), any `SPEC.md` principle the change touches, and any verification you skipped and why. Existing: reply to each review finding with what changed (or why not), then push. Set the issue to `status:in-review` (removing `status:in-progress`) once its PR is open. **Do not wait for CI** after opening or updating the PR (no `gh pr checks --watch`): local `make lint test` (plus the relevant integration/e2e targets) is your gate, and the scheduler starts a reviewer once CI finishes. Hand back as soon as the PR is pushed.
+   - **When reviews are off** (your prompt says so), no reviewer reads the PR, and you are its last check before it merges. Before arming, check your own diff (`gh pr diff`) as a skeptical reviewer would:
+     - every acceptance criterion has a test that fails without the change;
+     - no test, `[AC-nn]`/`[P4-nn]` scenario or crypto vector was deleted, skipped or weakened;
+     - no hand-written cryptography or well-known algorithm (`CLAUDE.md`);
+     - the change matches `docs/design/` and the owner's decisions in it, not only the issue;
+     - `SPEC.md` and docs are updated for any behaviour change;
+     - names and comments cite no issue or PR numbers.
+
+     Fix anything you find. Then arm auto-merge on your pushed head: `gh pr merge <PR> --auto --squash --delete-branch --match-head-commit <sha>`. GitHub merges once `checks` passes. List the self-check in the PR body.
 9. **Hand back** with your handoff report: PR number, status of each acceptance criterion, verification run/skipped, open questions, and anything the planner should log as a decision; last line `HANDOFF: pr-ready` (or `question`/`blocked`/`incomplete`).
 
 ## Rules
@@ -44,7 +53,7 @@ The scheduler (`scripts/agents/scheduler.py`) launches you as a top-level headle
 - Never run `scripts/agents/scheduler.py run` (or `scheduler-loop.sh`) yourself, not even from your worktree: a second live scheduler launches real agents. Test scheduler changes with `scheduler_test.py` and `--dry-run` only.
 - **Code reads without the issue tracker.** File, module, function and lemma names describe what the code is, not the issue or PR that added it (no `RoundG6`, `Fix1094`, `Step3`). Comments say what the code does and why. They never cite issue, PR or run numbers: that history belongs in commit messages and PR descriptions. Split a file that passes about 2,000 lines by topic. Do this before marking a PR ready.
 - Never push to `master`, never merge your own PR, never modify acceptance tests to make them pass.
-- Before pushing to an existing PR, check `gh pr view <PR> --json autoMergeRequest`; if auto-merge is armed, disarm it first (`gh pr merge <PR> --disable-auto`) so unreviewed commits cannot merge.
+- Before pushing to an existing PR, check `gh pr view <PR> --json autoMergeRequest`; if auto-merge is armed, disarm it first (`gh pr merge <PR> --disable-auto`) so unreviewed commits cannot merge. When reviews are off, re-arm it on your new head after the self-check.
 - Never weaken lint/CI configuration to get green.
 - Update docs and `SPEC.md` in the same PR when behavior changes.
 - If you hit an environment problem you cannot fix inside the VM, stop and hand back `HANDOFF: blocked` with the exact error.

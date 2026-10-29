@@ -80,6 +80,13 @@ DEFAULT_CONFIG = {
     "max_new_work_slots": 3,
     "poll_interval_s": 60,
     "model": "opus",
+    # Per-role overrides of the model and reasoning effort ({role: {"model", "effort"}}).
+    "role_models": {"merge-fixer": {"model": "sonnet", "effort": "low"}},
+    # false: no pr-reviewer stage. Workers self-check and arm auto-merge; the
+    # scheduler arms a finished PR they left unarmed, sends conflicts to the
+    # cheap merge-fixer and CI failures to the worker. Phase-end security review
+    # and bug hunt remain the independent check.
+    "reviews": True,
     # Issues by anyone else are untrusted data (docs/agents/planner.md).
     "actionable_authors": ["solidDoWant", "github-actions", "app/github-actions"],
     # Only PRs by the agents' identity are reviewed or worked on.
@@ -466,6 +473,10 @@ class GitHub:
     def rerun_failed(self, run_id: int) -> None:
         self._write(f"gh run rerun {run_id} --failed", "run", "rerun", str(run_id), "--failed", "-R", self.cfg["repo"])
 
+    def arm_auto_merge(self, pr: int, sha: str) -> None:
+        self._write(f"arm auto-merge on PR #{pr} at {sha[:10]}", "pr", "merge", str(pr), "-R", self.cfg["repo"],
+                    "--auto", "--squash", "--delete-branch", "--match-head-commit", sha)
+
     def set_status(self, issue: int, status: str, remove: list) -> None:
         args = ["issue", "edit", str(issue), "-R", self.cfg["repo"], "--add-label", status]
         for label in remove:
@@ -583,6 +594,7 @@ class Plan:
     gave_up: list  # [(key, issue, pr, why, head)] newly over the review-round limit
     notes: list
     cleared: list = field(default_factory=list)  # gave-up keys the planner unblocked
+    arms: list = field(default_factory=list)  # [(pr, head sha)] auto-merge to arm now (reviews off)
 
 
 def build_plan(snap: Snapshot, state: dict, cfg: dict, holds: dict, now: dt.datetime) -> Plan:
@@ -658,8 +670,14 @@ def build_plan(snap: Snapshot, state: dict, cfg: dict, holds: dict, now: dt.date
         verdicts = pr.verdicts()
         changes_rounds = sum(1 for r in verdicts if r.verdict == "changes")
 
+        fixer_key = f"fixer:pr-{pr.number}"
+        fixer_trigger = (f"PR #{pr.number} conflicts with master. Resolve it if it is mechanical and arm auto-merge on "
+                         "the pushed head; otherwise send it back to its worker (your playbook).")
         if pr.auto_merge:
-            if pr.mergeable == "CONFLICTING":
+            if pr.mergeable == "CONFLICTING" and not cfg["reviews"]:
+                add(Job(fixer_key, "merge-fixer", 1, sort, "armed PR conflicts with master", fixer_trigger,
+                        issue, pr.number, claims))
+            elif pr.mergeable == "CONFLICTING":
                 add(Job(reviewer_key, "pr-reviewer", 1, sort, "armed PR conflicts with master",
                         f"PR #{pr.number} has auto-merge armed but now conflicts with master. Resolve the conflict "
                         "if it is mechanical (your playbook's Conflicts section) and re-arm auto-merge on the new head; "
@@ -684,6 +702,22 @@ def build_plan(snap: Snapshot, state: dict, cfg: dict, holds: dict, now: dt.date
                 plan.skipped.append((target, f"auto-merge armed, CI {pr.check}"))
             continue
 
+        if not cfg["reviews"]:
+            running = {r["key"] for r in state.get("running", {}).values()}
+            if pr.mergeable == "CONFLICTING":
+                add(Job(fixer_key, "merge-fixer", 2, sort, "PR conflicts with master", fixer_trigger,
+                        issue, pr.number, claims))
+            elif pr.check == "failure":
+                failed = ", ".join(f"{f['name']} ({f['url']})" for f in pr.failed_runs) or "see the checks tab"
+                add(Job(worker_key, "issue-worker", 2, sort, "CI failed on the PR",
+                        f"CI failed on your PR #{pr.number} at {pr.head_sha[:10]}. Failed jobs: {failed}. If it is a "
+                        "flake, file it as a `bug` issue with the evidence and re-run the job; otherwise fix it, push, "
+                        "and arm auto-merge on the new head.", issue, pr.number, claims))
+            elif pr.check == "success" and worker_key not in running:
+                plan.arms.append((pr.number, pr.head_sha))
+            else:
+                plan.skipped.append((target, f"CI {pr.check}"))
+            continue
         if head and head.verdict == "changes":
             acked = state.get("rounds_ack", {}).get(worker_key, 0)
             if changes_rounds - acked >= cfg["max_change_request_rounds"] and worker_key not in gave_up:
@@ -919,6 +953,7 @@ def fresh_prompt(job: Job, wt: Path, branch_note: str, sess: dict | None, why: s
     target = {
         "issue-worker": f"issue #{job.issue}" + (f" (PR #{job.pr})" if job.pr else "") if job.issue else f"PR #{job.pr}",
         "pr-reviewer": f"PR #{job.pr}" + (f" (issue #{job.issue})" if job.issue else ""),
+        "merge-fixer": f"PR #{job.pr}" + (f" (issue #{job.issue})" if job.issue else ""),
     }.get(job.role, f"the {job.role} job {job.special_id or job.key}")
     lines = [
         f"You were launched by the vault-sync scheduler (scripts/agents/scheduler.py) as the {job.role} for {target}.",
@@ -1438,9 +1473,17 @@ class Scheduler:
         if job.role == "issue-worker":
             issue = snap.issues.get(job.issue) if job.issue else None
             prompt += "\n\n" + time_box_note(job, now, issue.title if issue else "")
+            if not self.cfg["reviews"]:
+                prompt += ("\n\nReviews are off: no reviewer reads your PR. Do the self-check in your playbook's "
+                           "step 8, then arm auto-merge on your pushed head yourself.")
         session_id = sess["session_id"] if mode == "resume" else str(uuid.uuid4())
         cmd = [self.claude, "-p", prompt, "--dangerously-skip-permissions", "--output-format", "stream-json",
                "--verbose", "--model", self.cfg["model"], "--name", marker]
+        override = self.cfg.get("role_models", {}).get(job.role, {})
+        if override.get("model"):
+            cmd[cmd.index("--model") + 1] = override["model"]
+        if override.get("effort"):
+            cmd += ["--effort", override["effort"]]
         if job.role != "planner":
             cmd += ["--agents", str(self.agents_file()), "--agent", job.role]
         cmd += ["--resume", session_id] if mode == "resume" else ["--session-id", session_id]
@@ -1793,6 +1836,14 @@ class Scheduler:
                     self.event("github_error", op="rerun", pr=pr_n, error=str(err)[:300])
                     self.state["ci_reruns"][str(pr_n)] = {"sha": sha, "jobs": names, "at": iso(now), "failed": True}
 
+        if not self.dry_run:
+            for pr_n, sha in plan.arms:
+                try:
+                    self.github.arm_auto_merge(pr_n, sha)
+                    self.event("armed", pr=pr_n, sha=sha)
+                except Exception as err:  # noqa: BLE001
+                    self.event("github_error", op="arm", pr=pr_n, error=str(err)[:300])
+
         agent_running = sum(1 for r in self.state["running"].values() if r["key"] != "planner")
         free = 0 if blocked_by else max(0, self.cfg["slots"] - agent_running)
         locks = in_flight_locks(snap, self.state, self.cfg)
@@ -1838,6 +1889,8 @@ class Scheduler:
                  + (f", launching blocked by {blocked_by}" if blocked_by else ""))
         for pr_n, run_ids, names in plan.reruns:
             self.say(f"  would re-run CI on PR #{pr_n}: runs {run_ids} ({', '.join(names)})")
+        for pr_n, sha in plan.arms:
+            self.say(f"  would arm auto-merge on PR #{pr_n} at {sha[:10]}")
         self.say("queue (priority order):")
         for job, status in queue:
             self.say(f"  T{job.tier} {job.key:<22} {job.role:<16} {status:<34} {job.reason}")

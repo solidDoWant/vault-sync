@@ -108,12 +108,36 @@ func (service VaultService) CreateVault(ctx context.Context, request *connect.Re
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("this server has no escrow key"))
 	}
 
+	// The genesis entry of an E2EE vault is signed over the vault id, so the
+	// creator's device chooses it; the server chooses a plaintext vault's.
+	var (
+		vaultID uuid.UUID
+		genesis *store.LogEntry
+		err     error
+	)
+
+	switch {
+	case encryption == store.EncryptionE2EE:
+		vaultID, genesis, err = verifyGenesis(request.Msg.GetNewVaultId(), request.Msg.GetGenesis(), user.ID, request.Msg.GetEscrow())
+		if err != nil {
+			return nil, err
+		}
+	case request.Msg.GetNewVaultId() != "" || request.Msg.GetGenesis() != nil:
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("new_vault_id and genesis are only for VAULT_ENCRYPTION_E2EE"))
+	}
+
 	vault, err := service.Vaults.CreateVault(ctx, user.ID, store.NewVault{
+		ID:         vaultID,
 		Name:       name,
 		Encryption: encryption,
 		Escrow:     request.Msg.GetEscrow(),
+		Genesis:    genesis,
 	}, MaxOwnedVaultsPerUser)
 	if err != nil {
+		if errors.Is(err, store.ErrVaultExists) {
+			return nil, connect.NewError(connect.CodeAlreadyExists, errors.New("a vault with this new_vault_id exists"))
+		}
+
 		if errors.Is(err, store.ErrVaultLimit) {
 			return nil, connect.NewError(connect.CodeResourceExhausted, fmt.Errorf("at most %d vaults may be owned by one user", MaxOwnedVaultsPerUser))
 		}

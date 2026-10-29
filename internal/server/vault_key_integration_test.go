@@ -578,6 +578,10 @@ func TestVaultKeyProceduresEnforceRolesAgainstPostgres(t *testing.T) {
 			_, err := fixture.vaultKeys(0).ListEpochs(t.Context(), authorized(&vaultsyncv1.ListEpochsRequest{VaultId: vaultID}, caller.token))
 			return err
 		},
+		"ListLogEntries": func(caller *keyedMember) error {
+			_, err := fixture.vaultKeys(0).ListLogEntries(t.Context(), authorized(&vaultsyncv1.ListLogEntriesRequest{VaultId: vaultID}, caller.token))
+			return err
+		},
 		"ListMissingSlots": func(caller *keyedMember) error {
 			_, err := fixture.vaultKeys(0).ListMissingSlots(t.Context(), authorized(&vaultsyncv1.ListMissingSlotsRequest{VaultId: vaultID}, caller.token))
 			return err
@@ -599,7 +603,7 @@ func TestVaultKeyProceduresEnforceRolesAgainstPostgres(t *testing.T) {
 		assert.Equal(t, connect.CodeNotFound, connect.CodeOf(call(outsider)), "%s as a non-member", name)
 
 		err := call(viewer)
-		if name == "ListKeySlots" || name == "ListEpochs" {
+		if name == "ListKeySlots" || name == "ListEpochs" || name == "ListLogEntries" {
 			assert.NoError(t, err, "%s as a viewer", name)
 		} else {
 			assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err), "%s as a viewer", name)

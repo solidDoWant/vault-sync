@@ -48,6 +48,9 @@ const (
 	// VaultKeyServiceAddKeySlotsProcedure is the fully-qualified name of the VaultKeyService's
 	// AddKeySlots RPC.
 	VaultKeyServiceAddKeySlotsProcedure = "/vaultsync.v1.VaultKeyService/AddKeySlots"
+	// VaultKeyServiceListLogEntriesProcedure is the fully-qualified name of the VaultKeyService's
+	// ListLogEntries RPC.
+	VaultKeyServiceListLogEntriesProcedure = "/vaultsync.v1.VaultKeyService/ListLogEntries"
 )
 
 // VaultKeyServiceClient is a client for the vaultsync.v1.VaultKeyService service.
@@ -94,6 +97,12 @@ type VaultKeyServiceClient interface {
 	// slots, or an escrow slot in a vault without escrow; FAILED_PRECONDITION
 	// for a plaintext vault.
 	AddKeySlots(context.Context, *connect.Request[v1.AddKeySlotsRequest]) (*connect.Response[v1.AddKeySlotsResponse], error)
+	// ListLogEntries lists the vault's membership log (docs/design/crypto.md)
+	// in ascending seq order, from the genesis entry. A plaintext vault has
+	// no log, so its list is empty.
+	//
+	// Errors: INVALID_ARGUMENT for a malformed page_token.
+	ListLogEntries(context.Context, *connect.Request[v1.ListLogEntriesRequest]) (*connect.Response[v1.ListLogEntriesResponse], error)
 }
 
 // NewVaultKeyServiceClient constructs a client for the vaultsync.v1.VaultKeyService service. By
@@ -137,6 +146,12 @@ func NewVaultKeyServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(vaultKeyServiceMethods.ByName("AddKeySlots")),
 			connect.WithClientOptions(opts...),
 		),
+		listLogEntries: connect.NewClient[v1.ListLogEntriesRequest, v1.ListLogEntriesResponse](
+			httpClient,
+			baseURL+VaultKeyServiceListLogEntriesProcedure,
+			connect.WithSchema(vaultKeyServiceMethods.ByName("ListLogEntries")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -147,6 +162,7 @@ type vaultKeyServiceClient struct {
 	listMissingSlots *connect.Client[v1.ListMissingSlotsRequest, v1.ListMissingSlotsResponse]
 	rotateEpoch      *connect.Client[v1.RotateEpochRequest, v1.RotateEpochResponse]
 	addKeySlots      *connect.Client[v1.AddKeySlotsRequest, v1.AddKeySlotsResponse]
+	listLogEntries   *connect.Client[v1.ListLogEntriesRequest, v1.ListLogEntriesResponse]
 }
 
 // ListKeySlots calls vaultsync.v1.VaultKeyService.ListKeySlots.
@@ -172,6 +188,11 @@ func (c *vaultKeyServiceClient) RotateEpoch(ctx context.Context, req *connect.Re
 // AddKeySlots calls vaultsync.v1.VaultKeyService.AddKeySlots.
 func (c *vaultKeyServiceClient) AddKeySlots(ctx context.Context, req *connect.Request[v1.AddKeySlotsRequest]) (*connect.Response[v1.AddKeySlotsResponse], error) {
 	return c.addKeySlots.CallUnary(ctx, req)
+}
+
+// ListLogEntries calls vaultsync.v1.VaultKeyService.ListLogEntries.
+func (c *vaultKeyServiceClient) ListLogEntries(ctx context.Context, req *connect.Request[v1.ListLogEntriesRequest]) (*connect.Response[v1.ListLogEntriesResponse], error) {
+	return c.listLogEntries.CallUnary(ctx, req)
 }
 
 // VaultKeyServiceHandler is an implementation of the vaultsync.v1.VaultKeyService service.
@@ -218,6 +239,12 @@ type VaultKeyServiceHandler interface {
 	// slots, or an escrow slot in a vault without escrow; FAILED_PRECONDITION
 	// for a plaintext vault.
 	AddKeySlots(context.Context, *connect.Request[v1.AddKeySlotsRequest]) (*connect.Response[v1.AddKeySlotsResponse], error)
+	// ListLogEntries lists the vault's membership log (docs/design/crypto.md)
+	// in ascending seq order, from the genesis entry. A plaintext vault has
+	// no log, so its list is empty.
+	//
+	// Errors: INVALID_ARGUMENT for a malformed page_token.
+	ListLogEntries(context.Context, *connect.Request[v1.ListLogEntriesRequest]) (*connect.Response[v1.ListLogEntriesResponse], error)
 }
 
 // NewVaultKeyServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -257,6 +284,12 @@ func NewVaultKeyServiceHandler(svc VaultKeyServiceHandler, opts ...connect.Handl
 		connect.WithSchema(vaultKeyServiceMethods.ByName("AddKeySlots")),
 		connect.WithHandlerOptions(opts...),
 	)
+	vaultKeyServiceListLogEntriesHandler := connect.NewUnaryHandler(
+		VaultKeyServiceListLogEntriesProcedure,
+		svc.ListLogEntries,
+		connect.WithSchema(vaultKeyServiceMethods.ByName("ListLogEntries")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/vaultsync.v1.VaultKeyService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case VaultKeyServiceListKeySlotsProcedure:
@@ -269,6 +302,8 @@ func NewVaultKeyServiceHandler(svc VaultKeyServiceHandler, opts ...connect.Handl
 			vaultKeyServiceRotateEpochHandler.ServeHTTP(w, r)
 		case VaultKeyServiceAddKeySlotsProcedure:
 			vaultKeyServiceAddKeySlotsHandler.ServeHTTP(w, r)
+		case VaultKeyServiceListLogEntriesProcedure:
+			vaultKeyServiceListLogEntriesHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -296,4 +331,8 @@ func (UnimplementedVaultKeyServiceHandler) RotateEpoch(context.Context, *connect
 
 func (UnimplementedVaultKeyServiceHandler) AddKeySlots(context.Context, *connect.Request[v1.AddKeySlotsRequest]) (*connect.Response[v1.AddKeySlotsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("vaultsync.v1.VaultKeyService.AddKeySlots is not implemented"))
+}
+
+func (UnimplementedVaultKeyServiceHandler) ListLogEntries(context.Context, *connect.Request[v1.ListLogEntriesRequest]) (*connect.Response[v1.ListLogEntriesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("vaultsync.v1.VaultKeyService.ListLogEntries is not implemented"))
 }

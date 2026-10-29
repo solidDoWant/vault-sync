@@ -67,6 +67,7 @@ type VaultKeyStore interface {
 	ListMissingSlots(ctx context.Context, afterEpoch int32, afterUser uuid.UUID, limit int) ([]store.MissingSlot, error)
 	RotateEpoch(ctx context.Context, creatorID uuid.UUID, next store.NextEpoch) (store.Epoch, error)
 	AddKeySlots(ctx context.Context, creatorID uuid.UUID, slots []store.KeySlot) (int, error)
+	ListLogEntries(ctx context.Context, after int64, limit int) ([]store.LogEntry, error)
 }
 
 // KeysOf returns the VaultKeyService.Keys of a store.
@@ -76,7 +77,8 @@ func KeysOf(queries *store.Store) func(vaultID uuid.UUID) VaultKeyStore {
 
 // VaultKeyService implements vaultsync.v1.VaultKeyService. Every procedure
 // is vault-scoped and authorized by the authz interceptor before it runs:
-// ListKeySlots and ListEpochs for every member, the others for owners only.
+// ListKeySlots, ListEpochs and ListLogEntries for every member, the others
+// for owners only.
 type VaultKeyService struct {
 	// Keys returns the key store of the vault the interceptor authorized
 	// (KeysOf).
