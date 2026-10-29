@@ -3,6 +3,8 @@ import { FileSystemAdapter, FileView, MarkdownView, normalizePath, Plugin, TextF
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 
 import { DocumentKind } from "../../../src/gen/vaultsync/v1/types_pb";
+import { lastArgon2Implementation, type Argon2Implementation } from "../../../src/core/e2ee/argon2";
+import { DEFAULT_ARGON2_PARAMS, unwrapWithPassphrase, wrapWithPassphrase } from "../../../src/core/e2ee/e2ee";
 import { sha256Hex } from "../../../src/core/hash";
 import { createHttpTransport, createProtocolClient } from "../../../src/core/protocol/client";
 import type { HistoryEntry } from "../../../src/core/sync/history";
@@ -259,6 +261,35 @@ export default class VaultSyncE2EHarness extends Plugin {
     // Registered as early as a plugin can: Obsidian may still be indexing.
     const stop = new ObsidianVaultAdapter(this.app).watch((event) => this.sinceLoad.push(event));
     this.register(stop);
+  }
+
+  /**
+   * Times unlocking a private key wrapped under a passphrase with the default
+   * Argon2id parameters (64 MiB, 3 passes), on this device's JavaScript
+   * engine: the derivation an unlock runs, without the server round trip.
+   * Resolves which implementation ran it (and why not WebAssembly, if not),
+   * how long the unlock took, the longest the main thread went without
+   * running a timer meanwhile, and whether it returned the wrapped key.
+   */
+  async passphraseUnlockTiming(): Promise<{ implementation: Argon2Implementation | undefined; milliseconds: number; longestPauseMilliseconds: number; unlocked: boolean }> {
+    const secret = encoder.encode("private key");
+    const { wrapped } = await wrapWithPassphrase("correct horse battery staple", secret, new Uint8Array(0), DEFAULT_ARGON2_PARAMS);
+    let longestPauseMilliseconds = 0;
+    let lastTick = performance.now();
+    const ticker = window.setInterval(() => {
+      const now = performance.now();
+      longestPauseMilliseconds = Math.max(longestPauseMilliseconds, now - lastTick);
+      lastTick = now;
+    }, 0);
+    const started = performance.now();
+    let opened: Uint8Array;
+    try {
+      opened = await unwrapWithPassphrase("correct horse battery staple", wrapped, new Uint8Array(0));
+    } finally {
+      window.clearInterval(ticker);
+    }
+    const milliseconds = performance.now() - started;
+    return { implementation: lastArgon2Implementation(), milliseconds, longestPauseMilliseconds, unlocked: bytesToHex(opened) === bytesToHex(secret) };
   }
 
   /** The conformance case names, in suite order. */
