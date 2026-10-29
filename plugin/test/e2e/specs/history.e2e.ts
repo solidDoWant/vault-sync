@@ -139,7 +139,7 @@ describe("history and restore", function () {
     await waitForIdle();
   });
 
-  it("lists the note's revisions with time and device, previews one and restores it as a new head", async function () {
+  it("[AC-24] lists the note's revisions with time and device, previews one and restores it as a new head", async function () {
     await browser.executeObsidian(async ({ app }, id, path) => {
       await (app as unknown as { plugins: { plugins: Record<string, VaultSyncPlugin> } }).plugins.plugins[id]?.showHistory(path);
     }, pluginId, note);
@@ -192,4 +192,30 @@ describe("history and restore", function () {
     });
   });
 
+  // Last: it moves the session to the second vault.
+  describe("on another device", function () {
+    it("[AC-24] has the restored version as the note's newest version", async function () {
+      await browser.reloadObsidian({ vault: "./test/e2e/vaults/second" });
+      await configure();
+      expect(await signInAs(subject)).toBe(true);
+      const connected = await browser.executeObsidian(
+        async ({ app }, id, name) => {
+          const vaultSync = (app as unknown as { plugins: { plugins: Record<string, VaultSyncPlugin> } }).plugins.plugins[id];
+          if (vaultSync === undefined) throw new Error("vault-sync is not loaded");
+          const vault = (await vaultSync.listRemoteVaults()).find((candidate) => candidate.name === name);
+          if (vault === undefined) throw new Error(`no remote vault named ${name}`);
+          return await vaultSync.connectVault(vault, true);
+        },
+        pluginId,
+        remoteVaultName,
+      );
+      expect(connected).toBe("connected");
+
+      await browser.waitUntil(async () => (await fileText(note)) === firstVersion, { timeoutMsg: "the restored version never arrived on the second device" });
+      await waitForIdle();
+      expect(await fileText(note)).toBe(firstVersion);
+      // The second device took the restore as it is: nothing new committed for the note.
+      expect(await remoteRevisions(note)).toBe(3);
+    });
+  });
 });

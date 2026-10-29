@@ -4,7 +4,7 @@ import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 
 import { DocumentKind } from "../../../src/gen/vaultsync/v1/types_pb";
 import { sha256Hex } from "../../../src/core/hash";
-import { createProtocolClient } from "../../../src/core/protocol/client";
+import { createHttpTransport, createProtocolClient } from "../../../src/core/protocol/client";
 import type { HistoryEntry } from "../../../src/core/sync/history";
 import { IndexedDbSyncJournal } from "../../../src/core/sync/indexeddb";
 import type { JournalState } from "../../../src/core/sync/journal";
@@ -15,7 +15,9 @@ import { isVaultRelativePath } from "../../../src/core/vaultpath/vaultpath";
 import { runConformanceCase, vaultAdapterConformance, type VaultAdapterFactory } from "../../../src/core/vault/conformance";
 import type VaultSyncPlugin from "../../../src/main";
 import { HistoryModal } from "../../../src/obsidian/history-modal";
+import { requestUrlFetch } from "../../../src/obsidian/http";
 import { journalDatabaseName, localVaultId, openVaultJournal, type JournalKey } from "../../../src/obsidian/journal";
+import { pathRulesFor } from "../../../src/obsidian/platform-rules";
 import type { SyncSession, VaultHistory } from "../../../src/obsidian/session";
 import { ObsidianVaultAdapter } from "../../../src/obsidian/vault-adapter";
 
@@ -851,12 +853,15 @@ export default class VaultSyncE2EHarness extends Plugin {
    * Commits a new note to vault-sync's connected server vault as another
    * device of the signed-in user would (realtime.e2e.ts): a device of its
    * own, the blob upload, then CommitRevision. Resolves with the revision's seq.
+   * `serverUrl` reaches the same server by another address, with vault-sync's
+   * tokens: device.android.e2e.ts commits over `adb reverse` while the
+   * device's own network, which vault-sync uses, is cut.
    */
-  async commitFromAnotherDevice(path: string, text: string): Promise<string> {
+  async commitFromAnotherDevice(path: string, text: string, serverUrl?: string): Promise<string> {
     const plugin = this.vaultSync();
     const vaultId = plugin.connectedVault?.id;
     if (vaultId === undefined) throw new Error("vault-sync is not connected");
-    const client = plugin.protocolClient();
+    const client = serverUrl === undefined ? plugin.protocolClient() : this.clientAt(plugin, serverUrl);
     this.otherDeviceId ??= (await client.devices.registerDevice({ name: "e2e other device" })).device?.id;
     if (this.otherDeviceId === undefined) throw new Error("the server registered no device");
     const content = encoder.encode(text);
@@ -1057,6 +1062,140 @@ export default class VaultSyncE2EHarness extends Plugin {
     };
   }
 
+  /**
+   * From now on, vault-sync's DownloadBlob calls for the blob `blobIdHex`
+   * past its first range never return (robustness.e2e.ts): a session that
+   * downloads it is stopped mid-download, with part of it fetched, until
+   * Obsidian is restarted. Other blobs download as usual.
+   */
+  holdDownloadOf(blobIdHex: string): void {
+    const plugin = this.vaultSync();
+    const original = plugin.protocolClient.bind(plugin);
+    const held = { count: 0 };
+    this.heldDownloadCalls = held;
+    plugin.protocolClient = () => {
+      const client = original();
+      const blobs = client.blobs;
+      return {
+        ...client,
+        blobs: {
+          ...blobs,
+          downloadBlob: async (request, options) => {
+            if ((request.offset ?? 0n) > 0n && bytesToHex(request.blobId ?? new Uint8Array()) === blobIdHex) {
+              held.count++;
+              return await new Promise<never>(() => undefined);
+            }
+            return await blobs.downloadBlob(request, options);
+          },
+        },
+      };
+    };
+  }
+
+  /**
+   * Routes vault-sync's RPCs through a switch (robustness.e2e.ts): while
+   * `setServerReachable(false)`, each call goes to a port nothing listens on
+   * (`http://127.0.0.1:2`), so it fails as a server that cannot be reached
+   * does, over the real transport. Restarts vault-sync's sync session, which
+   * holds the client it started with, so the switch applies to it.
+   */
+  async installServerSwitch(): Promise<void> {
+    const plugin = this.vaultSync();
+    const original = plugin.protocolClient.bind(plugin);
+    const unreachable = this.clientAt(plugin, "http://127.0.0.1:2");
+    plugin.protocolClient = () => {
+      const client = original();
+      const routed = {} as Record<string, unknown>;
+      for (const name of Object.keys(client) as (keyof typeof client)[]) {
+        routed[name] = new Proxy(client[name], {
+          get: (target, property) => {
+            const service = (this.serverReachable ? target : unreachable[name]) as unknown as Record<PropertyKey, unknown>;
+            const value = service[property];
+            return typeof value === "function" ? (value as (...values: unknown[]) => unknown).bind(service) : value;
+          },
+        });
+      }
+      return routed as unknown as typeof client;
+    };
+    const controller = (plugin as unknown as { controller?: { restart(): Promise<void> } }).controller;
+    if (controller === undefined) throw new Error("vault-sync has no sync controller");
+    await controller.restart();
+  }
+
+  setServerReachable(reachable: boolean): void {
+    this.serverReachable = reachable;
+  }
+
+  private serverReachable = true;
+
+  /**
+   * Records the text of every Obsidian notice shown from now on (names.e2e.ts),
+   * so a spec reads a notice that has already closed.
+   */
+  recordNotices(): void {
+    if (this.noticeObserver !== undefined) return;
+    this.noticeObserver = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        for (const node of mutation.addedNodes) {
+          if (node instanceof HTMLElement && node.classList.contains("notice")) this.recordedNotices.push(node.textContent);
+        }
+      }
+    });
+    this.noticeObserver.observe(document.body, { childList: true, subtree: true });
+  }
+
+  /** The notices recorded since `recordNotices`. */
+  notices(): string[] {
+    return [...this.recordedNotices];
+  }
+
+  private noticeObserver: MutationObserver | undefined;
+  private readonly recordedNotices: string[] = [];
+
+  /**
+   * Writes `text` to the file `path` (at the vault's top level) straight on
+   * disk, past Obsidian's normalizePath, which would turn an NFD name into
+   * NFC (names.e2e.ts): the name the file system gets is `path` as given,
+   * as when another program, or macOS, spells it decomposed. Desktop only.
+   */
+  async writeFileOnDisk(path: string, text: string): Promise<void> {
+    const adapter = this.app.vault.adapter;
+    if (!(adapter instanceof FileSystemAdapter)) throw new Error("writeFileOnDisk needs desktop's file system adapter");
+    await (adapter as unknown as FileSystemInternals).fsPromises.writeFile(`${adapter.getBasePath()}/${path}`, text);
+  }
+
+  /**
+   * Gives vault-sync's sync sessions Windows' path rules, with this vault's
+   * folder counted (names.e2e.ts): a device whose path limit is 260
+   * characters, whatever the host. Restarts the running session, if any.
+   */
+  async useWindowsPathRules(): Promise<void> {
+    const controller = (this.vaultSync() as unknown as { controller?: { options: { pathRules?: unknown }; restart(): Promise<void> } }).controller;
+    if (controller === undefined) throw new Error("vault-sync has no sync controller");
+    const root = this.app.vault.adapter instanceof FileSystemAdapter ? this.app.vault.adapter.getBasePath() : undefined;
+    controller.options.pathRules = pathRulesFor({ isWin: true, isMacOS: false, isIosApp: false, isAndroidApp: false }, root);
+    await controller.restart();
+  }
+
+  /** The local files whose names the server refused and the remote documents this device skipped, with the reasons, from vault-sync's running session. */
+  async syncProblems(): Promise<{ refused: { path: string; reason: string }[]; skipped: { path: string; reason: string }[] }> {
+    const session = (this.vaultSync() as unknown as { controller?: { session?: SyncSession } }).controller?.session;
+    if (session === undefined) throw new Error("vault-sync has no running session");
+    const problems = await session.listProblems();
+    return {
+      refused: problems.refused.map(({ path, reason }) => ({ path, reason })).sort((a, b) => a.path.localeCompare(b.path)),
+      skipped: problems.skipped.map(({ path, reason }) => ({ path, reason })).sort((a, b) => a.path.localeCompare(b.path)),
+    };
+  }
+
+  /** How many DownloadBlob calls `holdDownloadOf` holds. */
+  heldDownloads(): number {
+    if (this.heldDownloadCalls === undefined) throw new Error("holdDownloadOf() first");
+    return this.heldDownloadCalls.count;
+  }
+
+  private heldDownloadCalls: { count: number } | undefined;
+
   /** How many commits the server answered since `loseCommitResponses`, none of which vault-sync saw. */
   answeredCommits(): number {
     if (this.lostCommitResponses === undefined) throw new Error("loseCommitResponses() first");
@@ -1100,6 +1239,21 @@ export default class VaultSyncE2EHarness extends Plugin {
   }
 
   private otherDeviceId: string | undefined;
+
+  /** A protocol client for `serverUrl`, authenticated with vault-sync's tokens. */
+  private clientAt(plugin: VaultSyncPlugin, serverUrl: string) {
+    const tokens = (plugin as unknown as { tokens?: { accessToken(): Promise<string>; invalidate(token: string): void } }).tokens;
+    if (tokens === undefined) throw new Error("vault-sync is not signed in");
+    return createProtocolClient({
+      transport: createHttpTransport(serverUrl, { fetch: requestUrlFetch }),
+      auth: {
+        accessToken: () => tokens.accessToken(),
+        invalidate: (token) => {
+          tokens.invalidate(token);
+        },
+      },
+    });
+  }
 
   private vaultSync(): VaultSyncPlugin {
     const plugin = (this.app as unknown as PluginRegistry).plugins.plugins["vault-sync"];
