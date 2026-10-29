@@ -702,6 +702,20 @@ def build_plan(snap: Snapshot, state: dict, cfg: dict, holds: dict, now: dt.date
                 plan.skipped.append((target, f"auto-merge armed, CI {pr.check}"))
             continue
 
+        if head and head.verdict == "changes":
+            acked = state.get("rounds_ack", {}).get(worker_key, 0)
+            if changes_rounds - acked >= cfg["max_change_request_rounds"] and worker_key not in gave_up:
+                plan.gave_up.append((worker_key, issue, pr.number,
+                                     f"PR #{pr.number} failed review {changes_rounds} times", pr.head_sha))
+                continue
+            add(Job(worker_key, "issue-worker", 3, sort, f"review requested changes ({head.url})",
+                    f"The review of PR #{pr.number} at {pr.head_sha[:10]} requested changes: {head.url} "
+                    f"(\"{head.headline}\"). Address every blocking finding, reply to each finding, rebase and push.",
+                    issue, pr.number, claims))
+            continue
+        if head and head.verdict == "reject":
+            continue
+        # Reviews off: route without a reviewer (a verdict already on this head was handled above).
         if not cfg["reviews"]:
             running = {r["key"] for r in state.get("running", {}).values()}
             if pr.mergeable == "CONFLICTING":
@@ -717,19 +731,6 @@ def build_plan(snap: Snapshot, state: dict, cfg: dict, holds: dict, now: dt.date
                 plan.arms.append((pr.number, pr.head_sha))
             else:
                 plan.skipped.append((target, f"CI {pr.check}"))
-            continue
-        if head and head.verdict == "changes":
-            acked = state.get("rounds_ack", {}).get(worker_key, 0)
-            if changes_rounds - acked >= cfg["max_change_request_rounds"] and worker_key not in gave_up:
-                plan.gave_up.append((worker_key, issue, pr.number,
-                                     f"PR #{pr.number} failed review {changes_rounds} times", pr.head_sha))
-                continue
-            add(Job(worker_key, "issue-worker", 3, sort, f"review requested changes ({head.url})",
-                    f"The review of PR #{pr.number} at {pr.head_sha[:10]} requested changes: {head.url} "
-                    f"(\"{head.headline}\"). Address every blocking finding, reply to each finding, rebase and push.",
-                    issue, pr.number, claims))
-            continue
-        if head and head.verdict == "reject":
             continue
         if head:
             continue  # reviewed (approved) on this head; nothing for us
