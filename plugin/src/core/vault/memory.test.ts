@@ -65,7 +65,7 @@ describe("InMemoryVault", () => {
       await expect(vault.write(`${"a".repeat(53)}.md`, new Uint8Array())).rejects.toSatisfy((error) => isVaultError(error, "unmaterializable"));
     });
 
-    it("renames the only file in a folder to the folder's name, in any spelling the platform matches", async () => {
+    it("keeps a folder its only file leaves, so the file cannot take the folder's name in any spelling the platform matches until the folder is deleted", async () => {
       for (const [platform, target] of [
         ["posix", "notes"],
         ["windows", "NOTES"],
@@ -73,8 +73,13 @@ describe("InMemoryVault", () => {
       ] as const) {
         const vault = new InMemoryVault({ pathRules: { platform } });
         await vault.write("notes/f.md", new Uint8Array([1]));
-        await vault.rename("notes/f.md", target);
+        await vault.rename("notes/f.md", "f.md");
+        expect(await vault.listFolders()).toEqual(["notes"]);
+        await expect(vault.rename("f.md", target)).rejects.toSatisfy((error) => isVaultError(error, "path-conflict"));
+        await vault.deleteFolder(target);
+        await vault.rename("f.md", target);
         expect(await vault.list()).toEqual([target]);
+        expect(await vault.listFolders()).toEqual([]);
       }
     });
 
@@ -98,6 +103,7 @@ describe("InMemoryVault", () => {
           expect(await vault.list()).toEqual(["Notes/Strasse.md"]);
           expect(await vault.read("Notes/Strasse.md")).toEqual(new Uint8Array([2]));
           expect(events).toEqual([
+            { type: "folder-create", path: "Notes" },
             { type: "create", path: "Notes/Strasse.md" },
             { type: "modify", path: "Notes/Strasse.md" },
           ]);
@@ -160,6 +166,7 @@ describe("InMemoryVault", () => {
           expect(await notes.read("NOTES/X.md")).toEqual(new Uint8Array([2]));
           expect(events).toEqual([
             { type: "create", path: "Notes/x.md" },
+            { type: "folder-create", path: "Notes/Sub/new" },
             { type: "create", path: "Notes/Sub/new/y.md" },
           ]);
         });
@@ -194,7 +201,10 @@ describe("InMemoryVault", () => {
           notes.watch((event) => events.push(event));
           await notes.renameFolder("Other", "NOTES/Other");
           expect((await notes.list()).sort()).toEqual(["Notes/Other/c.md", "Notes/a.md"]);
-          expect(events).toEqual([{ type: "rename", path: "Notes/Other/c.md", oldPath: "Other/c.md" }]);
+          expect(events).toEqual([
+            { type: "folder-rename", path: "Notes/Other", oldPath: "Other" },
+            { type: "rename", path: "Notes/Other/c.md", oldPath: "Other/c.md" },
+          ]);
         });
 
         it("keeps the parent's spelling when its only folder is renamed within it under another spelling (#661)", async () => {
@@ -204,7 +214,10 @@ describe("InMemoryVault", () => {
           notes.watch((event) => events.push(event));
           await notes.renameFolder("Notes/Sub", "NOTES/Other");
           expect(await notes.list()).toEqual(["Notes/Other/a.md"]);
-          expect(events).toEqual([{ type: "rename", path: "Notes/Other/a.md", oldPath: "Notes/Sub/a.md" }]);
+          expect(events).toEqual([
+            { type: "folder-rename", path: "Notes/Other", oldPath: "Notes/Sub" },
+            { type: "rename", path: "Notes/Other/a.md", oldPath: "Notes/Sub/a.md" },
+          ]);
         });
 
         it("respells a whole folder by a case-only folder rename", async () => {
@@ -408,6 +421,7 @@ describe("InMemoryVault", () => {
       vault.tapInodes((event) => tapped.push(event));
       await vault.handle("engine").renameFolder("n", "m");
       expect(tapped).toEqual([
+        { type: "folder-rename", path: "m", oldPath: "n", inode: 0, actor: "engine" },
         { type: "rename", path: "m/a.md", oldPath: "n/a.md", inode: inodes[0], actor: "engine" },
         { type: "rename", path: "m/b.md", oldPath: "n/b.md", inode: inodes[1], actor: "engine" },
       ]);

@@ -1,5 +1,5 @@
 import { sha256Hex } from "../hash";
-import { isVaultError, type VaultAdapter, type VaultErrorCode, type VaultEvent } from "./adapter";
+import { isFolderEvent, isVaultError, type VaultAdapter, type VaultErrorCode, type VaultEvent } from "./adapter";
 
 /**
  * Shared VaultAdapter conformance suite. It is framework-agnostic (no vitest
@@ -11,7 +11,8 @@ export interface VaultAdapterHarness {
   adapter: VaultAdapter;
   /**
    * Renames a folder the way the user does, outside the adapter (VaultAdapter
-   * models files only). The case that needs it fails without it.
+   * has no folder rename: the engine never renames a folder). The cases that
+   * need it fail without it.
    */
   renameFolder?: (from: string, to: string) => Promise<void>;
   /** Releases the vault after the case. */
@@ -89,13 +90,15 @@ async function sortedList(adapter: VaultAdapter): Promise<string[]> {
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-/** Records events and waits for them to arrive. */
+/** Records events (file events only, unless `folders`) and waits for them to arrive. */
 class EventRecorder {
   readonly events: VaultEvent[] = [];
   readonly stop: () => void;
 
-  constructor(adapter: VaultAdapter) {
-    this.stop = adapter.watch((event) => this.events.push(event));
+  constructor(adapter: VaultAdapter, folders = false) {
+    this.stop = adapter.watch((event) => {
+      if (folders || !isFolderEvent(event)) this.events.push(event);
+    });
   }
 
   async expect(expected: VaultEvent[], options: Required<ConformanceOptions>, what: string): Promise<void> {
@@ -372,6 +375,90 @@ export const vaultAdapterConformance: readonly ConformanceCase[] = [
       } finally {
         recorder.stop();
       }
+    },
+  },
+  {
+    name: "createFolder creates a folder and its parents, and an existing folder changes nothing",
+    run: async (adapter) => {
+      await adapter.createFolder("a/b");
+      await adapter.createFolder("a/b");
+      await adapter.write("c/note.md", bytes("x"));
+      assertEqual((await adapter.listFolders()).sort(), ["a", "a/b", "c"], "listFolders()");
+      assertEqual(await adapter.list(), ["c/note.md"], "list()");
+    },
+  },
+  {
+    name: "createFolder refuses a path where a file is or lies above",
+    run: async (adapter) => {
+      await adapter.write("file.md", bytes("x"));
+      await assertRejects(adapter.createFolder("file.md"), "path-conflict", "createFolder() onto a file");
+      await assertRejects(adapter.createFolder("file.md/sub"), "path-conflict", "createFolder() under a file");
+      assertEqual(await adapter.listFolders(), [], "listFolders()");
+    },
+  },
+  {
+    name: "a folder stays when its last file leaves, and only an empty folder is deleted",
+    run: async (adapter) => {
+      await adapter.write("dir/sub/note.md", bytes("x"));
+      await assertRejects(adapter.deleteFolder("missing"), "not-found", "deleteFolder() of a missing folder");
+      await assertRejects(adapter.deleteFolder("dir/sub"), "changed", "deleteFolder() of a folder with a file");
+      await assertRejects(adapter.deleteFolder("dir"), "changed", "deleteFolder() of a folder with a folder");
+      await adapter.rename("dir/sub/note.md", "note.md");
+      assertEqual((await adapter.listFolders()).sort(), ["dir", "dir/sub"], "listFolders() after the file left");
+      await assertRejects(adapter.write("dir", bytes("y")), "path-conflict", "write() onto an empty folder");
+      await adapter.deleteFolder("dir/sub");
+      await adapter.deleteFolder("dir");
+      assertEqual(await adapter.listFolders(), [], "listFolders() after the deletes");
+      assertEqual(await adapter.list(), ["note.md"], "list()");
+    },
+  },
+  {
+    name: "folder creates and deletes are reported as folder events",
+    run: async (adapter, options) => {
+      const recorder = new EventRecorder(adapter, true);
+      try {
+        await adapter.createFolder("empty");
+        await adapter.write("made/note.md", bytes("x"));
+        await adapter.deleteFolder("empty");
+        await recorder.expect(
+          [
+            { type: "folder-create", path: "empty" },
+            { type: "folder-create", path: "made" },
+            { type: "create", path: "made/note.md" },
+            { type: "folder-delete", path: "empty" },
+          ],
+          options,
+          "events",
+        );
+      } finally {
+        recorder.stop();
+      }
+    },
+  },
+  {
+    // A folder rename keeps the folder's document (docs/design/engine.md §2).
+    name: "a folder rename is reported as a rename of the folder and of every folder in it",
+    run: async (adapter, options, harness) => {
+      if (harness.renameFolder === undefined) throw new ConformanceFailure("the harness cannot rename folders");
+      await adapter.write("dir/sub/b.md", bytes("b"));
+      await adapter.createFolder("dir/empty");
+      const recorder = new EventRecorder(adapter, true);
+      try {
+        await harness.renameFolder("dir", "moved");
+        await recorder.expectUnordered(
+          [
+            { type: "folder-rename", path: "moved", oldPath: "dir" },
+            { type: "folder-rename", path: "moved/sub", oldPath: "dir/sub" },
+            { type: "folder-rename", path: "moved/empty", oldPath: "dir/empty" },
+            { type: "rename", path: "moved/sub/b.md", oldPath: "dir/sub/b.md" },
+          ],
+          options,
+          "events",
+        );
+      } finally {
+        recorder.stop();
+      }
+      assertEqual((await adapter.listFolders()).sort(), ["moved", "moved/empty", "moved/sub"], "listFolders()");
     },
   },
   {

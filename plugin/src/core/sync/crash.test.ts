@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import { DocumentKind } from "../../gen/vaultsync/v1/types_pb";
+
 import { InMemoryServer } from "./memory-server";
 import { createProtocolClient } from "../protocol/client";
 import type { DeletePrecondition, FileStat, VaultAdapter, VaultListener, WritePrecondition } from "../vault/adapter";
@@ -63,6 +65,20 @@ class CrashingVault implements VaultAdapter {
     return this.disk.list();
   }
 
+  listFolders(): Promise<string[]> {
+    return this.disk.listFolders();
+  }
+
+  createFolder(path: string): Promise<void> {
+    this.steps.step();
+    return this.disk.createFolder(path);
+  }
+
+  deleteFolder(path: string): Promise<void> {
+    this.steps.step();
+    return this.disk.deleteFolder(path);
+  }
+
   read(path: string): Promise<Uint8Array> {
     return this.disk.read(path);
   }
@@ -118,6 +134,8 @@ function revisions(server: InMemoryServer): [string, string, boolean][] {
   const all: [string, string, boolean][] = [];
   for (let seq = 1n; seq <= server.currentHeadSeq; seq++) {
     const revision = server.revisionAt(seq);
+    // Folder documents are not files.
+    if (revision.kind === DocumentKind.FOLDER) continue;
     all.push([revision.documentId, decoder.decode(revision.path), revision.deleted]);
   }
   return all;

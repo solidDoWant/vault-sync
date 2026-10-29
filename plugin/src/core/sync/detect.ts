@@ -10,6 +10,11 @@ import type { DocEntry, JournalChange, JournalState, PendingKind, PendingOp, Syn
  * the document, so a rename syncs as a rename; a rename the engine did not
  * see (the app was closed) is recognised by hash where it matches one to
  * one, and otherwise syncs as a delete plus a create.
+ *
+ * Every folder is a document too (docs/design/engine.md §2): a folder with no
+ * live document is a create (a re-create on its tombstone, if this device
+ * kept it), a folder document whose folder is gone is a delete, and a folder
+ * rename event keeps the document.
  */
 
 /**
@@ -145,7 +150,7 @@ export class HashCache {
   }
 }
 
-/** A file rename the vault reported: [old path, new path]. */
+/** A file or folder rename the vault reported: [old path, new path]. */
 export type RenameHint = readonly [string, string];
 
 interface Observed {
@@ -174,7 +179,7 @@ export async function detectChanges(state: JournalState, options: DetectOptions)
   // Where each live document's file is now, after the reported renames.
   const pathOf = new Map<string, string>();
   for (const projection of projections.values()) if (!projection.deleted) pathOf.set(projection.documentId, projection.path);
-  // The vault reports file renames only, a folder's as one rename per file.
+  // A folder rename is reported as one rename per folder and per file in it.
   for (const [from, to] of options.renames) {
     const byPath = new Map([...pathOf].map(([id, path]) => [path, id]));
     const moved = byPath.get(from);
@@ -186,6 +191,7 @@ export async function detectChanges(state: JournalState, options: DetectOptions)
   }
   const byPath = new Map([...pathOf].map(([id, path]) => [path, id]));
 
+  const isFolder = (id: string) => projections.get(id)?.kind === "folder";
   const changed = new Map<string, State>();
   const untracked: Observed[] = [];
   const seen = new Set<string>();
@@ -193,21 +199,38 @@ export async function detectChanges(state: JournalState, options: DetectOptions)
     if (isTemporaryPath(path)) continue;
     const file = await options.cache.read(options.vault, path);
     if (file === null) continue;
-    seen.add(path);
     const id = byPath.get(path);
-    if (id === undefined) {
+    // A file where a folder document's folder was: the folder is gone, the file is new.
+    if (id === undefined || isFolder(id)) {
       untracked.push({ path, hash: file.hash, size: file.size });
       continue;
     }
+    seen.add(path);
     const projection = projections.get(id);
     if (projection !== undefined && (projection.path !== path || projection.hash !== file.hash)) {
       changed.set(id, { path, hash: file.hash, size: file.size, deleted: false });
     }
   }
+  const folderCreates: Observed[] = [];
+  for (const path of await options.vault.listFolders()) {
+    const id = byPath.get(path);
+    if (id === undefined || !isFolder(id)) {
+      // Rule 3 of the folder rules: a folder this device kept after its document was deleted is created again on the tombstone.
+      const tombstoned = [...projections.values()].find((projection) => projection.kind === "folder" && projection.deleted && projection.lastOp === undefined && projection.path === path);
+      if (tombstoned !== undefined) changed.set(tombstoned.documentId, { path, hash: "", size: 0, deleted: false });
+      else folderCreates.push({ path, hash: "", size: 0 });
+      continue;
+    }
+    seen.add(path);
+    if (projections.get(id)?.path !== path) changed.set(id, { path, hash: "", size: 0, deleted: false });
+  }
 
-  // Documents whose file is gone: renamed while unobserved when one new file has their content and no other document shares it.
+  // Documents whose file is gone: renamed while unobserved when one new file has their content and no other document shares it. A folder is matched by its rename event only.
   const missing = [...pathOf].filter(([, path]) => !seen.has(path)).map(([id]) => id);
-  const missingByHash = groupBy(missing, (id) => projections.get(id)?.hash ?? "");
+  const missingByHash = groupBy(
+    missing.filter((id) => !isFolder(id)),
+    (id) => projections.get(id)?.hash ?? "",
+  );
   const untrackedByHash = groupBy(untracked, (file) => file.hash);
   const creates: Observed[] = [];
   for (const file of untracked) {
@@ -220,38 +243,45 @@ export async function detectChanges(state: JournalState, options: DetectOptions)
     }
     creates.push(file);
   }
-  for (const ids of missingByHash.values()) {
-    for (const id of ids) {
-      const projection = projections.get(id);
-      if (projection !== undefined) changed.set(id, { path: projection.path, hash: projection.hash, size: projection.size, deleted: true });
-    }
+  for (const id of [...missingByHash.values()].flat().concat(missing.filter(isFolder))) {
+    const projection = projections.get(id);
+    if (projection !== undefined) changed.set(id, { path: projection.path, hash: projection.hash, size: projection.size, deleted: true });
   }
+
+  // A folder and the files in it may arrive on another device in either order: applying either one first is a no-op for the other (Pull's removeEmptied, placeFolder).
+  type Step = { id: string; next: State } | { create: Observed; kind: SyncKind };
+  const steps: Step[] = [
+    ...[...changed].map(([id, next]) => ({ id, next })),
+    ...creates.map((file) => ({ create: file, kind: kindOfPath(file.path) })),
+    ...folderCreates.map((folder) => ({ create: folder, kind: "folder" as const })),
+  ];
 
   const change: Required<Pick<JournalChange, "putPending" | "deletePending">> = { putPending: [], deletePending: [] };
   let order = options.nextOrder;
-  for (const [id, next] of changed) {
-    const projection = projections.get(id);
+  for (const step of steps) {
+    if (!("id" in step)) {
+      change.putPending.push({
+        opId: uuidv7(options.now()),
+        order: order++,
+        documentId: uuidv7(options.now()),
+        kind: "create",
+        path: step.create.path,
+        docKind: step.kind,
+        revisionId: uuidv7(options.now()),
+        contentHash: step.create.hash,
+        contentSize: step.create.size,
+        sent: false,
+      });
+      continue;
+    }
+    const projection = projections.get(step.id);
     if (projection === undefined) continue;
-    const op = record(projection, next, order, options.now);
+    const op = record(projection, step.next, order, options.now);
     if (op === "drop" && projection.lastOp !== undefined) change.deletePending.push(projection.lastOp.opId);
     if (typeof op === "object") {
       change.putPending.push(op);
       if (op.order === order) order++;
     }
-  }
-  for (const file of creates) {
-    change.putPending.push({
-      opId: uuidv7(options.now()),
-      order: order++,
-      documentId: uuidv7(options.now()),
-      kind: "create",
-      path: file.path,
-      docKind: kindOfPath(file.path),
-      revisionId: uuidv7(options.now()),
-      contentHash: file.hash,
-      contentSize: file.size,
-      sent: false,
-    });
   }
   return change.putPending.length === 0 && change.deletePending.length === 0 ? {} : change;
 }

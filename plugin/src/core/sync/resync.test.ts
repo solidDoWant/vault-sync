@@ -1,15 +1,18 @@
 import { describe, expect, it } from "vitest";
 
+import { DocumentKind } from "../../gen/vaultsync/v1/types_pb";
+
 import { InMemoryServer } from "./memory-server";
 import { Device } from "./testing";
 
 const decoder = new TextDecoder();
 
-/** Each live document on the server: path → [document id, content]. */
+/** Each live file document on the server (folder documents are left out): path → [document id, content]. */
 function serverDocs(server: InMemoryServer): Record<string, [string, string]> {
   const heads = new Map<string, [string, string, boolean]>();
   for (let seq = 1n; seq <= server.currentHeadSeq; seq++) {
     const revision = server.revisionAt(seq);
+    if (revision.kind === DocumentKind.FOLDER) continue;
     heads.set(revision.documentId, [decoder.decode(revision.path), revision.deleted ? "" : decoder.decode(server.contentOf(revision)), revision.deleted]);
   }
   const result: Record<string, [string, string]> = {};

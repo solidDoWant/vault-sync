@@ -51,7 +51,7 @@ function connect(name: string, options: { create: boolean; confirmed: boolean })
   );
 }
 
-/** The server's live paths in the connected vault, and the devices that committed them, read through the plugin's client. */
+/** The server's file revisions in the connected vault (not folder documents'), with their paths and the devices that committed them, read through the plugin's client. */
 function remoteFiles() {
   return browser.executeObsidian(async ({ app }, id) => {
     const plugin = (app as unknown as { plugins: { plugins: Record<string, VaultSyncPlugin> } }).plugins.plugins[id];
@@ -59,7 +59,11 @@ function remoteFiles() {
     if (plugin === undefined || vaultId === undefined) throw new Error("vault-sync is not connected");
     const response = await plugin.protocolClient().sync.listChanges({ vaultId, sinceSeq: 0n });
     const decoder = new TextDecoder();
-    return response.revisions.map((revision) => ({ path: decoder.decode(revision.path), deviceId: revision.deviceId })).sort((a, b) => a.path.localeCompare(b.path));
+    // DOCUMENT_KIND_FOLDER (4): a folder, which has no content.
+    return response.revisions
+      .filter((revision) => revision.kind !== 4)
+      .map((revision) => ({ path: decoder.decode(revision.path), deviceId: revision.deviceId }))
+      .sort((a, b) => a.path.localeCompare(b.path));
   }, pluginId);
 }
 

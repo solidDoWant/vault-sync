@@ -234,7 +234,8 @@ async function run(testCase: Case): Promise<{ server: InMemoryServer; a: Device;
   await b.sync();
   await a.write(base, BASE);
   await a.sync();
-  const created = server.head((await a.journal.load()).docs.values().next().value?.documentId ?? "");
+  // The note's document, not its folder's.
+  const created = server.head([...(await a.journal.load()).docs.values()].find((entry) => entry.path === base)?.documentId ?? "");
   if (testCase.local !== "absent") await b.sync();
 
   const remoteChange = async () => {
