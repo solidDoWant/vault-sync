@@ -56,13 +56,14 @@ func hashInvitationID(id string) ([]byte, bool) {
 
 // parseInvitationSlots bounds and parses an invitation's or a redemption's
 // key slots, each naming its epoch; whom they are for is the store's to
-// check.
+// check. Neither ever holds an escrow slot, so no escrow key id is
+// accepted.
 func parseInvitationSlots(field string, messages []*vaultsyncv1.KeySlot) ([]store.KeySlot, error) {
 	if len(messages) > MaxInvitationSlots {
 		return nil, invalidArgument("%s must hold at most %d slots", field, MaxInvitationSlots)
 	}
 
-	return parseKeySlots(field, messages, true)
+	return parseKeySlots(field, messages, true, Escrow{})
 }
 
 // parseInvitationKeys returns the key slots and invite anchor of an E2EE
