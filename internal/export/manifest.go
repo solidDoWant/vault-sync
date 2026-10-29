@@ -20,7 +20,7 @@ import (
 // changes whenever either changes in a way a reader must know about.
 const FormatVersion = 2
 
-// File names beside a vault's directory, both outside it so no document
+// File names beside a vault's directory, all outside it so no document
 // path can be mistaken for them.
 const (
 	// ManifestSuffix follows the vault id in the name of its manifest.
@@ -29,6 +29,10 @@ const (
 	// tree, which holds the documents that cannot be placed at their path,
 	// each in a file named by its document id.
 	UnplacedSuffix = ".unplaced"
+	// DeletedSuffix follows the vault id in the name of the file marking a
+	// vault an owner deleted and the server has not purged yet. It holds
+	// the deletion time (RFC 3339).
+	DeletedSuffix = ".DELETED"
 )
 
 // Manifest line types.

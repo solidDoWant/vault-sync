@@ -1210,3 +1210,32 @@ func TestExportLeavesNoEmptyDirectoryForARefusedDocument(t *testing.T) {
 		})
 	}
 }
+
+func TestExportMarksADeletedVault(t *testing.T) {
+	space := newWorkspace(t)
+	source := newFakeSource()
+
+	live := source.addVault("Live", store.EncryptionNone)
+	source.addDocument(live, "a.md", []byte("live"))
+
+	deleted := source.addVault("Deleted", store.EncryptionNone)
+	source.addDocument(deleted, "a.md", []byte("deleted"))
+
+	deletedAt := time.Date(2026, 10, 20, 12, 30, 0, 0, time.FixedZone("CEST", 2*60*60))
+	source.vaults[1].DeletedAt = &deletedAt
+
+	_, err := space.run(t, t.Context(), source)
+	require.NoError(t, err)
+
+	assert.Equal(t, map[string]string{
+		live.String() + "/a.md":    "live",
+		deleted.String() + "/a.md": "deleted",
+	}, files(t, space.output), "a deleted vault is still exported")
+
+	marker, err := os.ReadFile(filepath.Join(space.output, deleted.String()+export.DeletedSuffix))
+	require.NoError(t, err)
+	assert.Equal(t, "2026-10-20T10:30:00Z\n", string(marker), "the marker holds the deletion time")
+
+	_, err = os.Stat(filepath.Join(space.output, live.String()+export.DeletedSuffix))
+	require.ErrorIs(t, err, fs.ErrNotExist, "a live vault has no marker")
+}

@@ -186,6 +186,16 @@ kubectl exec deploy/vault-sync -- /bin/vault-sync-server retention unset -vault 
 
 Every replica applies the change from its next hourly run. The chart has no values for overrides: they live in PostgreSQL. To refuse overrides shorter than a floor, set `config.server.retention.overrideMinKeepAll` (and `config.server.retention.overrideMinKeepDaily`): they put `VAULT_SYNC_RETENTION_OVERRIDE_MIN_KEEP_ALL` and `VAULT_SYNC_RETENTION_OVERRIDE_MIN_KEEP_DAILY` into the server's environment, which the subcommand run in its pod reads (the server itself ignores them). The export's read-only role cannot set overrides.
 
+## Undeleting a vault
+
+An owner's deleted vault is kept for 30 days and then purged by the retention job (`docs/design/sharing.md`, Deleting a vault). Before then, the operator can restore it with the server binary's `vault` subcommand, run with the server's database settings like `retention`:
+
+```sh
+kubectl exec deploy/vault-sync -- /bin/vault-sync-server vault undelete 0192f2c4-7a1e-7c3d-9f0a-2b4c6d8e0f12
+```
+
+Its members can use the vault again at once, on every replica, with all its documents, history and attachments. It is allowed even if an owner already owns 100 vaults. The command exits 1 with `no vault ID: it does not exist or has been purged` for an unknown vault or one whose purge has started, and with `vault ID is not deleted` for a vault that is not deleted; it exits 2 on a usage error.
+
 ## Chart values
 
 The chart has two top-level keys. `config` is the chart's own interface, described below; every empty value leaves its variable unset, so the server's default applies. `resources` is passed to the [bjw-s common library chart](https://github.com/bjw-s-labs/helm-charts/tree/main/charts/library/common) (5.3.0) and deep-merged over what the chart computes, so anything that library supports can be overridden or added there (see [Overriding the computed resources](#overriding-the-computed-resources)).

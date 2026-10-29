@@ -167,3 +167,34 @@ func TestDeleteVaultNotifiesTheVaultsSubscribers(t *testing.T) {
 	cancel()
 	require.NoError(t, <-listened)
 }
+
+func TestExportListsDeletedVaultsUntilTheirPurgeStarts(t *testing.T) {
+	pool := migratedPool(t)
+	queries := store.New(pool)
+
+	owner, err := queries.UpsertUser(t.Context(), testIssuer, "owner", "")
+	require.NoError(t, err)
+
+	var vaults []uuid.UUID
+
+	for _, name := range []string{"Live", "Deleted", "Purging"} {
+		vault, err := queries.CreateVault(t.Context(), owner, store.NewVault{Name: name, Encryption: store.EncryptionNone}, 10)
+		require.NoError(t, err)
+
+		vaults = append(vaults, vault.ID)
+	}
+
+	require.NoError(t, queries.DeleteVault(t.Context(), vaults[1]))
+	require.NoError(t, queries.DeleteVault(t.Context(), vaults[2]))
+
+	_, err = pool.Exec(t.Context(), `UPDATE vaults SET purged_at = now() WHERE id = $1`, vaults[2])
+	require.NoError(t, err)
+
+	listed, err := queries.AllVaults(t.Context(), uuid.Nil, 10)
+	require.NoError(t, err)
+	require.Equal(t, vaults[:2], vaultIDs(listed), "a vault whose purge started is not listed")
+
+	assert.Nil(t, listed[0].DeletedAt)
+	require.NotNil(t, listed[1].DeletedAt)
+	assert.WithinDuration(t, time.Now(), *listed[1].DeletedAt, time.Minute)
+}

@@ -227,6 +227,7 @@ func TestRetentionRunsAreCounted(t *testing.T) {
 		// The purges' markers, once past the horizon.
 		"vault_sync_retention_purge_markers_pruned_total": 2,
 		"vault_sync_retention_run_failures_total":         1,
+		"vault_sync_retention_vaults_purged_total":        0,
 	}, counters())
 }
 

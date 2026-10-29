@@ -1,12 +1,14 @@
 // Package retention runs the server's retention job (SPEC.md §11): it purges
-// the revisions the retention policy no longer keeps and then garbage-
-// collects the blobs no revision references any more, once their grace
-// period has passed.
+// vaults deleted more than 30 days ago (docs/design/sharing.md), purges the
+// revisions the retention policy no longer keeps and then garbage-collects
+// the blobs no revision references any more, once their grace period has
+// passed.
 package retention
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -48,6 +50,14 @@ const (
 	// DefaultMarkersPerRun bounds how many purge markers one run prunes,
 	// so a backlog is worked off over several runs.
 	DefaultMarkersPerRun = 100_000
+	// DefaultVaultPurgeAge is how long a deleted vault is kept, and can be
+	// undeleted, before it is purged.
+	DefaultVaultPurgeAge = 30 * 24 * time.Hour
+	// DefaultVaultsPerRun bounds how many deleted vaults one run purges.
+	DefaultVaultsPerRun = 10
+	// DefaultVaultObjectsPerRun bounds how many objects of purged vaults
+	// one run deletes; a larger vault is finished over several runs.
+	DefaultVaultObjectsPerRun = 10_000
 )
 
 // Job purges revisions and collects blobs.
@@ -72,6 +82,11 @@ type Job struct {
 	BlobsPerRun          int
 	MarkersPerBatch      int
 	MarkersPerRun        int
+	VaultsPerRun         int
+	VaultObjectsPerRun   int
+	// VaultPurgeAge is how long after its deletion a vault is purged; zero
+	// selects DefaultVaultPurgeAge.
+	VaultPurgeAge time.Duration
 	// MarkerHorizon is how long a purge marker is kept after its purge;
 	// zero selects DefaultMarkerHorizon.
 	MarkerHorizon time.Duration
@@ -93,10 +108,13 @@ type Result struct {
 	ObjectsDeleted int
 	// MarkersPruned counts purge markers this run deleted.
 	MarkersPruned int
+	// VaultsPurged counts deleted vaults this run finished purging.
+	VaultsPurged int
 }
 
-// RunOnce performs one bounded pass: purge, then prune purge markers past
-// the horizon, then collect, then delete collected objects, and records it in Metrics. A run that fails in part
+// RunOnce performs one bounded pass: purge deleted vaults, then purge
+// revisions, then prune purge markers past the horizon, then collect, then
+// delete collected objects, and records it in Metrics. A run that fails in part
 // counts as a failure unless ctx was canceled (the server is stopping).
 // Not safe for concurrent use with itself; separate server processes may
 // run it concurrently.
@@ -112,6 +130,15 @@ func (job *Job) runOnce(ctx context.Context) (Result, error) {
 		result   Result
 		problems []error
 	)
+
+	if job.Objects != nil {
+		purged, err := job.purgeVaults(ctx)
+		result.VaultsPurged = purged
+
+		if err != nil {
+			problems = append(problems, err)
+		}
+	}
 
 	documents := orDefault(job.DocumentsPerRun, DefaultDocumentsPerRun)
 
@@ -254,7 +281,7 @@ func (job *Job) Run(ctx context.Context, interval time.Duration) {
 
 		if result != (Result{}) {
 			logger.InfoContext(ctx, "applied the retention policy",
-				"revisions", result.RevisionsPurged, "purge_markers", result.MarkersPruned, "blobs", result.BlobsCollected, "objects", result.ObjectsDeleted)
+				"vaults", result.VaultsPurged, "revisions", result.RevisionsPurged, "purge_markers", result.MarkersPruned, "blobs", result.BlobsCollected, "objects", result.ObjectsDeleted)
 		}
 
 		select {
@@ -263,6 +290,65 @@ func (job *Job) Run(ctx context.Context, interval time.Duration) {
 		case <-ticker.C:
 		}
 	}
+}
+
+// purgeVaults purges the vaults deleted more than VaultPurgeAge ago, and
+// finishes purges an earlier run left part done: each vault's rows, then its
+// objects, then its vaults row. It reports how many vaults it finished.
+func (job *Job) purgeVaults(ctx context.Context) (int, error) {
+	age := job.VaultPurgeAge
+	if age <= 0 {
+		age = DefaultVaultPurgeAge
+	}
+
+	vaults, err := job.Store.PurgeableVaults(ctx, age, orDefault(job.VaultsPerRun, DefaultVaultsPerRun))
+	if err != nil {
+		return 0, err
+	}
+
+	budget := orDefault(job.VaultObjectsPerRun, DefaultVaultObjectsPerRun)
+	finished := 0
+
+	var problems []error
+
+	for _, vaultID := range vaults {
+		purging, err := job.Store.PurgeVaultRows(ctx, vaultID, age)
+		if err != nil {
+			problems = append(problems, err)
+
+			continue
+		}
+
+		if !purging || budget <= 0 {
+			continue
+		}
+
+		deleted, empty, err := job.Objects.DeletePrefix(ctx, blobstore.VaultPrefix(vaultID), budget)
+		budget -= deleted
+
+		if err != nil {
+			problems = append(problems, fmt.Errorf("delete objects of purged vault %s: %w", vaultID, err))
+
+			continue
+		}
+
+		if !empty {
+			continue
+		}
+
+		removed, err := job.Store.DeleteVaultRecord(ctx, vaultID)
+		if err != nil {
+			problems = append(problems, err)
+
+			continue
+		}
+
+		if removed {
+			finished++
+		}
+	}
+
+	return finished, errors.Join(problems...)
 }
 
 // pruneMarkers deletes purge markers older than the horizon in batches,
