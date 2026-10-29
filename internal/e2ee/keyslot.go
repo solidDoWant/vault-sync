@@ -27,6 +27,9 @@ const (
 
 	recipientKindUserByte   byte = 0x01
 	recipientKindEscrowByte byte = 0x02
+	// recipientKindInvitationByte is the recipient kind of a pending
+	// invitation in an epoch record.
+	recipientKindInvitationByte byte = 0x03
 
 	// MaxRecipientIDSize bounds the encoded recipient id of a key slot, whose
 	// length is one byte in the slot associated data.
