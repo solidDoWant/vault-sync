@@ -124,6 +124,10 @@ After every row, set `base = R` (rows A2, A5 and A11 drop the document instead).
 - any part is `.` or `..`, or is longer than 255 UTF-8 bytes;
 - the whole relative path is longer than 1024 UTF-8 bytes.
 
+**Unicode version.** Names may only use code points assigned in **Unicode 15.0** (owner decision, 2026-10-29), so that the Go and JavaScript standard libraries normalize and fold them identically. Other names are refused like any unportable name.
+
+**Libraries, not hand-written code** (owner decision, 2026-10-29): NFC through `golang.org/x/text/unicode/norm` and `String.prototype.normalize`; case folding through `golang.org/x/text/cases` and a maintained JavaScript Unicode data package; the three-way merge through `diff-match-patch` (what Obsidian Sync uses); the OAuth/OIDC client through `oauth4webapi`; UUIDs through the `uuid` package.
+
 **Normalization.** Paths are stored and compared in Unicode NFC. The device converts names it reads from disk to NFC, which covers macOS respelling names as NFD.
 
 **One name per key.** `path_key` = NFC, then Unicode case folding, then the NTFS upcase mapping (dotless `ı` and `I` become the same key). Two live documents can't share a key: the server refuses the second (P2 or P3). A case-only rename of a document is a rename of that document, and is allowed.
