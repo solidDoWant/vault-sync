@@ -344,11 +344,12 @@ func (vault *VaultStore) checkPathCurrent(ctx context.Context, tx pgx.Tx, isNew 
 // candidates' real path keys, so a digest collision can never refuse a
 // commit (#428). There are no more candidates than digest matches.
 const (
-	// folderIsLiveQuery: a live document's key is a folder of the key.
-	// One probe of documents_live_path_key_idx per folder of the key.
+	// folderIsLiveQuery: a live document other than a folder document has
+	// a key that is a folder of the key. One probe of
+	// documents_live_path_key_idx per folder of the key.
 	folderIsLiveQuery = `
 		SELECT 1 FROM documents
-		WHERE vault_id = $1 AND NOT deleted
+		WHERE vault_id = $1 AND NOT deleted AND kind <> 'folder'
 			AND documents_path_key_digest(path_key) = ANY (ARRAY(
 				SELECT documents_path_key_digest(folder) FROM unnest(documents_path_key_folders($2)) AS folder))
 			AND path_key = ANY (documents_path_key_folders($2))`
@@ -368,14 +369,20 @@ const (
 
 // checkPathFolders returns ErrPathFolderTaken if a live document's path_key
 // is a folder of revision's (a proper prefix ending before a "/"), or
-// revision's is a folder of a live document's. A key is never a folder of
-// itself, so the document's own row cannot match. Both directions are index
-// probes, bounded by the number of folders in one key.
+// revision's is a folder of a live document's, unless the document that is
+// the folder is a folder document: a folder document may hold other live
+// documents. A key is never a folder of itself, so the document's own row
+// cannot match. Both directions are index probes, bounded by the number of
+// folders in one key.
 func (vault *VaultStore) checkPathFolders(ctx context.Context, tx pgx.Tx, revision NewRevision) error {
+	query := `SELECT EXISTS (` + folderIsLiveQuery + `)`
+	if revision.Kind != KindFolder {
+		query += ` OR EXISTS (` + isLiveFolderQuery + `)`
+	}
+
 	var taken bool
 
-	err := tx.QueryRow(ctx, `SELECT EXISTS (`+folderIsLiveQuery+`) OR EXISTS (`+isLiveFolderQuery+`)`,
-		vault.vaultID, revision.PathKey).Scan(&taken)
+	err := tx.QueryRow(ctx, query, vault.vaultID, revision.PathKey).Scan(&taken)
 	if err != nil {
 		return fmt.Errorf("check path folders: %w", err)
 	}
