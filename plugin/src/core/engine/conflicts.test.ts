@@ -20,7 +20,7 @@ async function overlappingEdits(h: Harness, id: string, path: string): Promise<v
 }
 
 /** A path so deep that no conflict-copy name for a file in it fits the path limits (SPEC.md §7). */
-const deepFolder = `${Array.from({ length: 16 }, () => "f".repeat(250)).join("/")}/${"g".repeat(60)}`;
+const deepFolder = Array.from({ length: 4 }, () => "f".repeat(250)).join("/");
 
 describe("openConflicts (the conflict view, SPEC.md §7)", () => {
   describe("given a conflict copy the engine kept", () => {

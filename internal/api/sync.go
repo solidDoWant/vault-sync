@@ -374,6 +374,12 @@ func (service SyncService) CommitRevision(ctx context.Context, request *connect.
 	}
 
 	committed, err := vault.CommitRevision(ctx, revision)
+	if errors.Is(err, store.ErrPathNotCurrent) {
+		// Name the rule the path breaks.
+		return nil, invalidArgument("%w; only a live document already at this path may keep it "+
+			"(edit or delete it in place, or rename it to a path that keeps the rules)", vaultpath.CheckNew(revision.Path))
+	}
+
 	if err != nil {
 		return nil, service.commitError(ctx, err)
 	}
@@ -481,9 +487,10 @@ func parseCommit(message *vaultsyncv1.CommitRevisionRequest) (store.NewRevision,
 		return store.NewRevision{}, err
 	}
 
-	// A vault-relative path with a "\" (#191) or a drive-like prefix such as
-	// "1:" (#148) may no longer be created, but a document committed before
-	// those rules may keep it (SPEC.md §6.2).
+	// A vault-relative path that breaks a new-path rule (a "\", a drive-like
+	// prefix such as "1:", or a name that is not portable) may not be given
+	// to a document, but a document committed before those rules may keep it
+	// (SPEC.md §6.2).
 	revision.PathMustBeCurrent = errors.Is(vaultpath.CheckNew(revision.Path), vaultpath.ErrNotNew)
 
 	revision.Deleted = message.GetDeleted()

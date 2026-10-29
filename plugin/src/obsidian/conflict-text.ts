@@ -78,6 +78,18 @@ export function rejectedReasonText(reason: RejectedReason, detail: string): stri
       return "The path contains a backslash (\\), which the server does not accept in a new path.";
     case "drive-prefix":
       return "The path starts with a character and a colon, which Windows reads as a drive.";
+    case "forbidden-character":
+      return 'A file or folder name in the path contains one of < > : " | ? *, which Windows does not allow.';
+    case "edge-space":
+      return "A file or folder name in the path starts or ends with a space, which Windows does not allow.";
+    case "trailing-dot":
+      return "A file or folder name in the path ends in a dot, which Windows does not allow.";
+    case "reserved-name":
+      return "A file or folder name in the path is reserved on Windows (CON, PRN, AUX, NUL, COM1 to COM9 or LPT1 to LPT9, with or without an extension).";
+    case "name-too-long":
+      return "A file or folder name in the path is longer than 255 bytes.";
+    case "path-too-long":
+      return "The path is longer than 1024 bytes, the limit for a new path.";
     case "path-taken":
       return "Another document has this path, and no other name for this file could be synced.";
     case "refused":

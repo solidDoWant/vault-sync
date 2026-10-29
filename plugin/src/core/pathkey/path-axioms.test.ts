@@ -327,8 +327,8 @@ describe("F and K are not related (no axiom relates them)", () => {
       expect(F(device, "Straße.md")).not.toBe(F(device, "STRASSE.md"));
   });
 
-  it("shares an F but not a K: ı.md and I.md on case-insensitive platforms", () => {
-    expect(K("ı.md")).not.toBe(K("I.md"));
+  it("shares a K and, on case-insensitive platforms, an F: ı.md and I.md (the NTFS upcase mapping, engine.md §6)", () => {
+    expect(K("ı.md")).toBe(K("I.md"));
     for (const device of ["windows", "android", "macos"] as const)
       expect(F(device, "ı.md")).toBe(F(device, "I.md"));
   });

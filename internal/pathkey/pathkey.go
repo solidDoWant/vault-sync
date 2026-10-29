@@ -3,13 +3,15 @@
 //
 // A path_key is NFC(toCasefold(NFD(path))): Unicode canonical caseless
 // matching (Unicode §3.13, D145) with full, locale-independent case folding
-// (CaseFolding.txt statuses C and F, never T), emitted in NFC. Two paths that
-// would collide on a case-insensitive, normalization-insensitive filesystem
-// get the same key. Nothing else is altered: separators, whitespace and dots
+// (CaseFolding.txt statuses C and F, never T), emitted in NFC, with the NTFS
+// upcase mapping on top (docs/design/engine.md §6): a code point whose
+// simple uppercase folds differently from it folds as that uppercase does,
+// so the dotless ı and I share a key. Two paths that would collide on a
+// case-insensitive, normalization-insensitive filesystem get the same key. Nothing else is altered: separators, whitespace and dots
 // are preserved, and no validation is performed.
 //
 // Case folding uses a table generated from the vendored Unicode
-// CaseFolding.txt rather than golang.org/x/text/cases, whose Fold diverges
+// CaseFolding.txt, with the upcase merges from UnicodeData.txt, rather than golang.org/x/text/cases, whose Fold diverges
 // from CaseFolding.txt (e.g. it lowercases Cherokee). Normalization likewise
 // uses tables generated from the vendored UnicodeData.txt and
 // CompositionExclusions.txt rather than golang.org/x/text/unicode/norm, whose

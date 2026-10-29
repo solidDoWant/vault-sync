@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { InMemoryVault } from "../vault/memory";
-import { deferredDocuments } from "./deferred";
 import { PathSpace } from "./pathspace";
-import { files, harness } from "./testing";
 
 const nfc = (value: string) => value.normalize("NFC");
 const nfd = (value: string) => value.normalize("NFD");
@@ -17,7 +14,7 @@ describe("PathSpace", () => {
   it("keys paths for the server by path key on every platform", () => {
     for (const space of [windows, macos, posix]) {
       expect(space.serverKey("Notes/Straße.md")).toBe("notes/strasse.md");
-      expect(space.serverKey("ı.md")).toBe("ı.md");
+      expect(space.serverKey("ı.md")).toBe("i.md");
       expect(space.serverKey(nfd("Café.md"))).toBe(nfc("café.md"));
     }
   });
@@ -44,8 +41,8 @@ describe("PathSpace", () => {
           expect(space.fileKey(nfd("Café.md"))).toBe(space.fileKey(nfc("Café.md")));
         });
 
-        it("joins the dotless ı and I, which the filesystem takes for one name although their path keys differ (§6.4 item 4)", () => {
-          expect(space.serverKey("ı.md")).not.toBe(space.serverKey("I.md"));
+        it("joins the dotless ı and I, which share a path key (the NTFS upcase mapping, engine.md §6) and one filesystem name", () => {
+          expect(space.serverKey("ı.md")).toBe(space.serverKey("I.md"));
           expect(space.oneFile("ı.md", "I.md")).toBe(true);
           expect(space.fileKey("ı.md")).toBe("i.md");
           expect(space.fileKey("I.md")).toBe("i.md");
@@ -211,7 +208,7 @@ describe("PathSpace", () => {
       { name: "a folder of the other and a file", a: "notes/a.md", b: "NOTES", server: true, file: { posix: false, windows: true } },
       { name: "a shared folder only", a: "notes/a.md", b: "notes/b.md", server: false, file: { posix: false, windows: false } },
       { name: "a name prefix that is no folder", a: "notes", b: "notes2/a.md", server: false, file: { posix: false, windows: false } },
-      { name: "ı and I", a: "ı.md", b: "I.md", server: false, file: { posix: false, windows: true } },
+      { name: "ı and I", a: "ı.md", b: "I.md", server: true, file: { posix: false, windows: true } },
     ];
     for (const { name, a, b, server, file } of cases) {
       it(`${name}: server ${String(server)}, file ${String(file.posix)} on posix and ${String(file.windows)} on windows`, () => {
@@ -228,37 +225,3 @@ describe("PathSpace", () => {
     }
   });
 });
-
-describe.each(["windows", "macos", "android"] as const)("documents at ı.md and I.md on %s, one file on the device (§6.4 item 4)", (platform) => {
-  it("never writes the second document over the first document's file", async () => {
-    const h = harness({ merge: "default", pathRules: { platform }, vault: new InMemoryVault({ pathRules: { platform } }) });
-    h.server.commit({ documentId: "dotless", path: "ı.md", content: "dotless\n" });
-    await h.engine.pull();
-    h.server.commit({ documentId: "capital", path: "I.md", content: "capital\n" });
-    await h.engine.pull();
-    for (let round = 0; round < 3; round++) {
-      await h.engine.push();
-      await h.engine.settled();
-      await h.engine.pull();
-    }
-
-    // The server's documents keep their own content: neither became the other's.
-    expect(h.server.liveDocuments().get("ı.md")).toBe("dotless");
-    expect(h.server.liveFiles().get("ı.md")).toBe("dotless\n");
-    expect(h.server.liveFiles().get("I.md")).toBe("capital\n");
-    // The device's one file at that name is still the first document's.
-    expect(await files(h.vault)).toEqual(new Map([["ı.md", "dotless\n"]]));
-    expect(text(await h.vault.read("I.md"))).toBe("dotless\n");
-    // The device can hold only one of the two (decision #52, #736): the second is unmaterializable
-    // here (`alias`), a non-disk blocker listed for the user (#585 item 2), never a path conflict
-    // that waits for good or a hidden local change.
-    expect((await h.journal.listDeferred()).map((deferred) => [deferred.revision.documentId, deferred.reason, deferred.unmaterializable])).toEqual([["capital", "unmaterializable", "alias"]]);
-    expect((await h.engine.unmaterializable()).map((document) => [document.documentId, document.reason])).toEqual([["capital", "alias"]]);
-    expect(await deferredDocuments(h.journal, h.vault)).toEqual([]);
-  });
-});
-
-function text(content: Uint8Array): string {
-  return new TextDecoder().decode(content);
-}
-

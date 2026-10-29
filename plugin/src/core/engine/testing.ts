@@ -717,18 +717,17 @@ export type WorldCommand =
   | { type: "restore-during-push"; fraction: number; lost?: boolean }
   | { type: "purge"; revision: number };
 
+/** A portable path of 274 characters, which the server accepts and Windows cannot hold. */
+const longWindowsPath = `${"l".repeat(200)}/${"l".repeat(70)}.md`;
+
 /**
  * The paths commands pick from: case variants, NFC/NFD spellings, ß/SS
  * (one path key, two files on every platform), a folder whose name is also a
- * file name, and names Windows cannot hold (a forbidden character, a trailing
- * dot): on `windows` a remote create or rename onto one makes the document
- * unmaterializable there, and the user cannot create one (#587). The colon is
- * not second: `a:b.md` is a drive prefix the server refuses on every platform
- * (SPEC.md §6). `ı.md` and `I.md` have two path keys but are one file on
- * `windows` and `macos` (an `F`-alias, design §3.1): the device holds only
- * one of two such live documents (#736).
+ * file name, and a portable path longer than Windows' 260-character limit:
+ * on `windows` a remote create or rename onto it makes the document
+ * unmaterializable there.
  */
-export const worldPaths: readonly string[] = ["a.md", "A.md", "b.md", "Café.md", "Café.md", "Straße.md", "STRASSE.md", "x", "x/a.md", "X/b.md", "y/x.md", "no:te.md", "b.md.", "ı.md", "I.md"];
+export const worldPaths: readonly string[] = ["a.md", "A.md", "b.md", "Café.md", "Café.md", "Straße.md", "STRASSE.md", "x", "x/a.md", "X/b.md", "y/x.md", longWindowsPath];
 
 /** The remote device's id: its commits are not device A's. */
 export const remoteDeviceId = "device-remote";

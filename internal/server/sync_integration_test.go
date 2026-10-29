@@ -599,7 +599,8 @@ func TestPathKeyCollisions(t *testing.T) {
 		{name: "ASCII case", existing: "Notes/Todo.md", other: "notes/TODO.MD", collide: true},
 		{name: "German sharp s", existing: "Straße.md", other: "STRASSE.md", collide: true},
 		{name: "Turkish dotted capital I", existing: "İstanbul.md", other: "i̇stanbul.md", collide: true},
-		{name: "Turkish dotless i is distinct from i", existing: "ıx.md", other: "ix.md", collide: false},
+		{name: "Turkish dotless i takes the key of I (NTFS upcase)", existing: "ıx.md", other: "Ix.md", collide: true},
+		{name: "Turkish dotless i takes the key of i", existing: "ıy.md", other: "iy.md", collide: true},
 		{name: "full-width letters fold among themselves", existing: "Ｎｏｔｅ.md", other: "ｎｏｔｅ.md", collide: true},
 		{name: "full-width letters are distinct from ASCII", existing: "Ｎｏｔｅ.md", other: "Note.md", collide: false},
 		{name: "different names", existing: "a.md", other: "b.md", collide: false},
@@ -1191,8 +1192,8 @@ func TestSyncRequestsAreValidated(t *testing.T) {
 		})
 	}
 
-	// The longest valid path is accepted.
-	alice.mustCommit(t, alice.create(t, strings.Repeat("a", api.MaxPathBytes-3)+".md", content))
+	// The longest new path is accepted: 1024 bytes in names of 255.
+	alice.mustCommit(t, alice.create(t, strings.Repeat(strings.Repeat("a", 254)+"/", 4)+"a.md", content))
 
 	assert.Equal(t, 2, fixture.count(t, "revisions", alice.vaultID))
 

@@ -25,7 +25,7 @@ describe("a stale intermediate revision on a feed page", () => {
       { type: "remote-create", path: 0 }, // D at a.md
       { type: "pull" },
       { type: "user-edit", file: 0 }, // step 3: "user 3"
-      { type: "remote-rename", document: 0, path: 11 }, // D -> no:te.md, which Windows cannot hold
+      { type: "remote-rename", document: 0, path: 11 }, // D -> a path too long for Windows to hold
       { type: "remote-create", path: 0 }, // E takes a.md
       { type: "remote-rename", document: 1, path: 2 }, // D -> b.md
       { type: "pull" }, // one page of three revisions
@@ -45,7 +45,7 @@ describe("a stale intermediate revision on a feed page", () => {
       { type: "remote-create", path: 0 }, // D at a.md
       { type: "pull" },
       { type: "user-edit", file: 0 }, // step 3: "user 3"
-      { type: "remote-rename", document: 0, path: 11 }, // D -> no:te.md
+      { type: "remote-rename", document: 0, path: 11 }, // D -> the long path
       { type: "pull" }, // D's revision waits, unmaterializable; the device keeps the edited a.md
       { type: "remote-create", path: 0 }, // E takes a.md
       { type: "remote-delete", document: 0 }, // E deleted
@@ -71,9 +71,9 @@ describe("a stale intermediate revision on an earlier feed page", () => {
       { type: "pull" },
       { type: "user-edit", file: 0 }, // step 3: "user 3"
       { type: "remote-create", path: 5 }, // F at Straße.md, which fills the first page
-      { type: "remote-rename", document: 1, path: 11 }, // D -> no:te.md (live: Straße.md, a.md)
+      { type: "remote-rename", document: 1, path: 11 }, // D -> the long path (live: Straße.md, a.md)
       { type: "remote-create", path: 0 }, // E takes a.md
-      { type: "remote-rename", document: 2, path: 2 }, // D -> b.md, on the next page (live: Straße.md, a.md, no:te.md)
+      { type: "remote-rename", document: 2, path: 2 }, // D -> b.md, on the next page (live: Straße.md, a.md, the long path)
       { type: "pull" },
       { type: "push" },
     );
@@ -91,10 +91,10 @@ describe("a stale intermediate revision on an earlier feed page", () => {
       { type: "pull" },
       { type: "user-edit", file: 0 }, // step 3: "user 3"
       { type: "remote-create", path: 5 }, // F at Straße.md, which fills the first page
-      { type: "remote-rename", document: 1, path: 11 }, // D -> no:te.md
+      { type: "remote-rename", document: 1, path: 11 }, // D -> the long path
       { type: "remote-create", path: 0 }, // E takes a.md
-      { type: "remote-delete", document: 1 }, // E deleted, on the next page (live: Straße.md, a.md, no:te.md)
-      { type: "remote-rename", document: 1, path: 0 }, // D back to a.md (live: Straße.md, no:te.md)
+      { type: "remote-delete", document: 1 }, // E deleted, on the next page (live: Straße.md, a.md, the long path)
+      { type: "remote-rename", document: 1, path: 0 }, // D back to a.md (live: Straße.md, the long path)
       { type: "pull" },
       { type: "push" },
     );
@@ -111,7 +111,7 @@ describe("a stale intermediate revision on an earlier feed page", () => {
       { type: "pull" },
       { type: "user-edit", file: 0 }, // step 3: "user 3"
       { type: "remote-create", path: 5 }, // F at Straße.md, which fills the first page
-      { type: "remote-rename", document: 1, path: 11 }, // D -> no:te.md
+      { type: "remote-rename", document: 1, path: 11 }, // D -> the long path
       { type: "remote-create", path: 0 }, // E takes a.md
       { type: "remote-create", path: 3 }, // G at Café.md, on the next page
       { type: "pull" },
@@ -138,7 +138,7 @@ describe("a crash while a document follows its newer revision on the feed page",
         { type: "remote-create", path: 0 }, // D at a.md
         { type: "pull" },
         { type: "user-edit", file: 0 }, // step 3: "user 3"
-        { type: "remote-rename", document: 0, path: 11 }, // D -> no:te.md
+        { type: "remote-rename", document: 0, path: 11 }, // D -> the long path
         { type: "remote-create", path: 0 }, // E takes a.md
         { type: "remote-rename", document: 1, path: 2 }, // D -> b.md
         { type: "crash", write },
@@ -166,12 +166,12 @@ describe("a crash while a document follows its newer revision on the feed page",
 // same file in both runs. The class: a crash at each write, then each kind of
 // user change on each file before the next push.
 describe("a crash while W(b) postpones a holder's detach", () => {
-  // The paths of the property suite's ghost alphabet: path 1 is `no:te.md`, which Windows cannot hold.
-  const paths = ["a.md", "no:te.md", "ı.md", "I.md", "b.md"];
+  // The paths of the property suite's ghost alphabet: path 1 is `the long path`, which Windows cannot hold.
+  const paths = ["a.md", "the long path", "ı.md", "I.md", "b.md"];
   const prefix: WorldCommand[] = [
     { type: "user-create", path: 0 }, // D at a.md
     { type: "push" },
-    { type: "remote-rename", document: 0, path: 1 }, // D -> no:te.md
+    { type: "remote-rename", document: 0, path: 1 }, // D -> the long path
     { type: "edit-during-pull", file: 0 }, // D's unsynced edit
     { type: "remote-create", path: 0 }, // E takes a.md: its revision waits for D's detach (postponed)
     { type: "pull" },
