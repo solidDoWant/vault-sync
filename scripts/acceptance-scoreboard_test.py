@@ -116,5 +116,53 @@ class Scoreboard(unittest.TestCase):
         self.assertEqual(output.strip().splitlines()[-1], "passing 2/25")
 
 
+    def test_counts_a_tagged_go_subtest_for_its_scenario(self):
+        events = [
+            {"Action": "run", "Test": "TestImportSubcommand"},
+            {"Action": "pass", "Test": "TestImportSubcommand/[AC-23]_a_device_syncs_exactly_the_imported_notes"},
+            {"Action": "pass", "Test": "TestImportSubcommand/[AC-23]_a_device_syncs_exactly_the_imported_notes/a_nested_step"},
+            {"Action": "fail", "Test": "TestImportSubcommand/[AC-24]_the_history_survives"},
+            {"Action": "fail", "Test": "TestImportSubcommand/an_untagged_subtest"},
+            {"Action": "fail", "Test": "TestImportSubcommand"},
+        ]
+        (self.results / "go-test.json").write_text("".join(json.dumps(event) + "\n" for event in events), encoding="utf-8")
+        output = self.run_scoreboard()
+        statuses = self.statuses(output)
+
+        self.assertEqual(statuses["AC-23"], "pass")
+        self.assertEqual(statuses["AC-24"], "fail")
+        self.assertEqual(output.strip().splitlines()[-1], "passing 1/25")
+
+    def test_a_tagged_go_subtest_without_a_result_is_not_run(self):
+        (self.sources / "internal" / "store" / "import_integration_test.go").write_text(
+            'package store\n\nfunc TestImportSubcommand(t *testing.T) {\n\tt.Run("[AC-23] a device syncs the notes", func(t *testing.T) {})\n}\n',
+            encoding="utf-8",
+        )
+        statuses = self.statuses(self.run_scoreboard())
+
+        self.assertEqual(statuses["AC-23"], "not run")
+        self.assertEqual(statuses["AC-24"], "no test")
+
+    def test_the_go_run_pattern_selects_the_tests_holding_tagged_subtests(self):
+        (self.sources / "internal" / "store" / "import_integration_test.go").write_text(
+            "package store\n\n"
+            "func TestUntagged(t *testing.T) {\n\tt.Run(\"plain\", func(t *testing.T) {})\n}\n\n"
+            "func TestImportSubcommand(t *testing.T) {\n\tsetUp(t)\n\n\tt.Run(\"[AC-23] a device syncs the notes\", func(t *testing.T) {})\n}\n",
+            encoding="utf-8",
+        )
+        completed = subprocess.run(
+            [sys.executable, "-I", str(SCRIPT), "--go-run-pattern", "--sources", str(self.sources)],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        pattern = re.compile(completed.stdout.strip())
+
+        for name in ("TestAC22OfflineRestore", "TestPluginProtocolClient", "TestImportSubcommand"):
+            self.assertTrue(pattern.fullmatch(name), name)
+        for name in ("TestUntagged", "TestImportSubcommandOther", "TestPluginProtocolClientExtra"):
+            self.assertFalse(pattern.fullmatch(name), name)
+
+
 if __name__ == "__main__":
     unittest.main()

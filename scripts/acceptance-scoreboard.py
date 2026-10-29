@@ -3,8 +3,9 @@
 of the checklist with the result of its tests, then the number passing.
 
 A test belongs to a scenario by its name: `[AC-nn] ...` for the e2e and plugin
-integration tests (mocha and vitest titles), `TestACnn...` for Go tests (Go
-names cannot hold brackets). The results directory holds what the runs wrote:
+integration tests (mocha and vitest titles) and Go subtests (`t.Run`), and
+`TestACnn...` for top-level Go tests (Go function names cannot hold brackets).
+The results directory holds what the runs wrote:
 
 - `*.jsonl`: one `{"title": ..., "passed": ...}` per e2e test (wdio.conf.mts);
 - `go-*.json`: `go test -json` output;
@@ -13,6 +14,10 @@ names cannot hold brackets). The results directory holds what the runs wrote:
 A scenario is `fail` if any of its tests failed, `pass` if its tests ran and
 all passed, `not run` if it has tagged tests (in the sources or skipped in the
 results) of which none failed and not all passed, and `no test` otherwise.
+
+With `--go-run-pattern`, it prints instead the `go test -run` pattern that
+selects the Go acceptance tests: the `TestACnn...` tests, the plugin protocol
+client test and every top-level test that holds an `[AC-nn] ...` subtest.
 """
 
 import argparse
@@ -25,6 +30,11 @@ SCENARIO = re.compile(r"^- \*\*(AC-\d+)\*\*\s*(.*)$")
 TAG = re.compile(r"\[(AC-\d+)\]")
 GO_TEST = re.compile(r"^TestAC(\d+)")
 GO_DECLARATION = re.compile(r"^func TestAC(\d+)\w*\(", re.MULTILINE)
+GO_FUNCTION = re.compile(r"^func (Test\w+)\(", re.MULTILINE)
+GO_SUBTEST = re.compile(r"""\bt\.Run\(\s*["`]\[(AC-\d+)\]""")
+# Go tests the acceptance run selects besides the tagged ones: the plugin
+# integration suite runs inside TestPluginProtocolClient.
+GO_EXTRA_TESTS = ["TestPluginProtocolClient"]
 
 
 def scenarios(checklist):
@@ -43,8 +53,13 @@ def title_id(title):
 
 
 def go_id(name):
-    match = GO_TEST.match(name)
-    return f"AC-{match.group(1)}" if match else None
+    """The scenario of a `go test` result: a top-level `TestACnn...` test, or
+    a subtest named `[AC-nn] ...` (its own result, not one of its subtests')."""
+    elements = name.split("/")
+    if len(elements) == 1:
+        match = GO_TEST.match(name)
+        return f"AC-{match.group(1)}" if match else None
+    return title_id(elements[-1])
 
 
 def results(directory):
@@ -65,8 +80,7 @@ def results(directory):
             event = json.loads(line)
             name = event.get("Test", "")
             action = event.get("Action")
-            # Top-level tests only: a subtest's result is in its parent's.
-            if "/" in name or action not in ("pass", "fail", "skip"):
+            if action not in ("pass", "fail", "skip"):
                 continue
             scenario = go_id(name)
             if scenario:
@@ -95,9 +109,32 @@ def tagged_in_sources(root):
     for path in root.rglob("*_test.go"):
         if "node_modules" in path.parts:
             continue
-        for match in GO_DECLARATION.finditer(path.read_text(encoding="utf-8")):
+        source = path.read_text(encoding="utf-8")
+        for match in GO_DECLARATION.finditer(source):
             ids.add(f"AC-{match.group(1)}")
+        for match in GO_SUBTEST.finditer(source):
+            ids.add(match.group(1))
     return ids
+
+
+def go_tests_with_tagged_subtests(root):
+    """Names of the top-level Go tests that hold an `[AC-nn] ...` subtest."""
+    names = set()
+    for path in root.rglob("*_test.go"):
+        if "node_modules" in path.parts:
+            continue
+        source = path.read_text(encoding="utf-8")
+        functions = list(GO_FUNCTION.finditer(source))
+        for subtest in GO_SUBTEST.finditer(source):
+            enclosing = [function for function in functions if function.start() < subtest.start()]
+            if enclosing:
+                names.add(enclosing[-1].group(1))
+    return sorted(names)
+
+
+def go_run_pattern(root):
+    names = GO_EXTRA_TESTS + go_tests_with_tagged_subtests(root)
+    return "^(TestAC[0-9]+.*|" + "|".join(names) + ")$"
 
 
 def status(outcomes, tagged):
@@ -112,10 +149,16 @@ def status(outcomes, tagged):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--checklist", type=pathlib.Path, required=True)
-    parser.add_argument("--results", type=pathlib.Path, required=True)
+    parser.add_argument("--checklist", type=pathlib.Path)
+    parser.add_argument("--results", type=pathlib.Path)
     parser.add_argument("--sources", type=pathlib.Path, required=True)
+    parser.add_argument("--go-run-pattern", action="store_true", help="print the go test -run pattern of the Go acceptance tests")
     arguments = parser.parse_args()
+    if arguments.go_run_pattern:
+        print(go_run_pattern(arguments.sources))
+        return 0
+    if arguments.checklist is None or arguments.results is None:
+        parser.error("--checklist and --results are required to print the scoreboard")
 
     ids = scenarios(arguments.checklist)
     outcomes = {scenario: [] for scenario in ids}
