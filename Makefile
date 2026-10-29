@@ -37,10 +37,11 @@ lint-fix: ## Run golangci-lint and perform fixes.
 	golangci-lint run --fix ./...
 
 .PHONY: test
-test: fmt vet plugin-test ## Run unit tests: Go (race detector) + plugin vitest + buf breaking check tests + flake source check + release script tests + test-image pull/cache script tests + agent wait-ci script and scheduler tests + native versitygw pin check.
+test: fmt vet plugin-test ## Run unit tests: Go (race detector) + plugin vitest + buf breaking check tests + flake source check + acceptance scoreboard tests + release script tests + test-image pull/cache script tests + agent wait-ci script and scheduler tests + native versitygw pin check.
 	go test -race -count=1 ./...
 	./scripts/buf-breaking_test.sh
 	./scripts/flake-source_test.sh
+	./scripts/acceptance-scoreboard_test.py
 	./scripts/npm-audit_test.sh
 	./scripts/test-images_test.sh
 	./scripts/release_test.sh
@@ -59,6 +60,10 @@ test-integration-postgres14: ## Run the store/migration integration tests and th
 .PHONY: test-e2e
 test-e2e: plugin-build ## Run the plugin e2e suite in a pinned real Obsidian (wdio-obsidian-service; headless via xvfb) against a real server (docker compose; VAULT_SYNC_E2E_MOBILE=1 emulates mobile).
 	./scripts/test-e2e.sh
+
+.PHONY: acceptance
+acceptance: plugin-build ## Run every acceptance test ([AC-nn] e2e and integration tests, Go TestACnn) and print the scoreboard for docs/acceptance/phase-2.md (docker compose; written to build/acceptance/).
+	./scripts/acceptance.sh
 
 .PHONY: vulncheck
 vulncheck: $(PLUGIN_DIR)/node_modules/.package-lock.json ## Report known vulnerabilities in Go and npm dependencies.

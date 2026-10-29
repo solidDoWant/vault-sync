@@ -210,7 +210,7 @@ describe("syncing between two vaults", function () {
     expect((await syncState()).storedDeviceId).toBe(firstDeviceId);
   });
 
-  it("brings the file to a second vault, after warning that both vaults have files", async function () {
+  it("[AC-03] brings the file to a second vault, after warning that both vaults have files", async function () {
     await browser.reloadObsidian({ vault: "./test/e2e/vaults/second" });
     await configure();
     expect(await signInAs(subject)).toBe(true);

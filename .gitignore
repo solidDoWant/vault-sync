@@ -15,3 +15,6 @@ bin/
 /node_modules/
 
 .direnv/
+
+# make acceptance output (scoreboard, results, logs)
+/build/acceptance/
