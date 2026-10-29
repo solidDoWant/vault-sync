@@ -66,12 +66,7 @@ describe("offline edits and conflicts between two devices", function () {
     await goOffline(b);
     await use(a);
     await writeNote("Merge.md", "one from A\ntwo\nthree\nfour\nfive\n");
-    await waitForServer(
-      a,
-      (heads) =>
-        heads["Merge.md"] === contentOf("one from A\ntwo\nthree\nfour\nfive\n"),
-      "A's edit",
-    );
+    await waitForServer(a, (heads) => heads["Merge.md"] === contentOf("one from A\ntwo\nthree\nfour\nfive\n"), "A's edit");
     await use(b);
     await writeNote("Merge.md", "one\ntwo\nthree\nfour\nfive from B\n");
     await goOnline(b, remoteVaultName);
@@ -88,13 +83,7 @@ describe("offline edits and conflicts between two devices", function () {
     await goOffline(b);
     await use(a);
     await writeNote("Clash.md", "intro\nthe line as A wrote it\noutro\n");
-    await waitForServer(
-      a,
-      (heads) =>
-        heads["Clash.md"] ===
-        contentOf("intro\nthe line as A wrote it\noutro\n"),
-      "A's edit",
-    );
+    await waitForServer(a, (heads) => heads["Clash.md"] === contentOf("intro\nthe line as A wrote it\noutro\n"), "A's edit");
     await use(b);
     await writeNote("Clash.md", "intro\nthe line as B wrote it\noutro\n");
     await goOnline(b, remoteVaultName);
@@ -104,9 +93,7 @@ describe("offline edits and conflicts between two devices", function () {
     const copies = conflictCopies(files);
     expect(copies).toHaveLength(1);
     expect(copies[0]).toMatch(/^Clash \(Conflicted copy .+\)\.md$/);
-    expect(files[copies[0] ?? ""]).toBe(
-      "intro\nthe line as B wrote it\noutro\n",
-    );
+    expect(files[copies[0] ?? ""]).toBe("intro\nthe line as B wrote it\noutro\n");
   });
 
   it("[AC-13] changes to one attachment keep the newest at the path and the other as a conflict copy", async function () {
@@ -116,11 +103,7 @@ describe("offline edits and conflicts between two devices", function () {
     await goOffline(b);
     await use(a);
     const fromA = await writeBinary("Picture.png", 210_000, 0x2222);
-    await waitForServer(
-      a,
-      (heads) => heads["Picture.png"] === fromA,
-      "A's change",
-    );
+    await waitForServer(a, (heads) => heads["Picture.png"] === fromA, "A's change");
     // B's change is made after A's reached the server, so B's is the newest.
     await use(b);
     const fromB = await writeBinary("Picture.png", 220_000, 0x3333);
@@ -128,9 +111,7 @@ describe("offline edits and conflicts between two devices", function () {
 
     const files = await waitForCopies(2);
     expect(files["Picture.png"]).toBe(fromB);
-    const copies = conflictCopies(files).filter((path) =>
-      path.startsWith("Picture ("),
-    );
+    const copies = conflictCopies(files).filter((path) => path.startsWith("Picture ("));
     expect(copies).toHaveLength(1);
     expect(copies[0]).toMatch(/^Picture \(Conflicted copy .+\)\.png$/);
     expect(files[copies[0] ?? ""]).toBe(fromA);
@@ -156,11 +137,7 @@ describe("offline edits and conflicts between two devices", function () {
     await goOffline(b);
     await use(a);
     await renamePath("Old name.md", "New name.md");
-    await waitForServer(
-      a,
-      (heads) => "New name.md" in heads && !("Old name.md" in heads),
-      "A's rename",
-    );
+    await waitForServer(a, (heads) => "New name.md" in heads && !("Old name.md" in heads), "A's rename");
     await use(b);
     await writeNote("Old name.md", "the note\nB's edit\n");
     await goOnline(b, remoteVaultName);
@@ -177,13 +154,7 @@ describe("offline edits and conflicts between two devices", function () {
     await use(a);
     await writeNote("Same.md", "the same text\n");
     await writeNote("Different.md", "A's text\n");
-    await waitForServer(
-      a,
-      (heads) =>
-        heads["Same.md"] === contentOf("the same text\n") &&
-        heads["Different.md"] === contentOf("A's text\n"),
-      "A's notes",
-    );
+    await waitForServer(a, (heads) => heads["Same.md"] === contentOf("the same text\n") && heads["Different.md"] === contentOf("A's text\n"), "A's notes");
     await use(b);
     await writeNote("Same.md", "the same text\n");
     await writeNote("Different.md", "B's text\n");
@@ -191,13 +162,9 @@ describe("offline edits and conflicts between two devices", function () {
 
     const files = await waitForCopies(copiesBefore + 1);
     expect(files["Same.md"]).toBe("the same text\n");
-    expect(
-      conflictCopies(files).filter((path) => path.startsWith("Same (")),
-    ).toEqual([]);
+    expect(conflictCopies(files).filter((path) => path.startsWith("Same ("))).toEqual([]);
     expect(files["Different.md"]).toBe("A's text\n");
-    const copies = conflictCopies(files).filter((path) =>
-      path.startsWith("Different ("),
-    );
+    const copies = conflictCopies(files).filter((path) => path.startsWith("Different ("));
     expect(copies).toHaveLength(1);
     expect(files[copies[0] ?? ""]).toBe("B's text\n");
   });

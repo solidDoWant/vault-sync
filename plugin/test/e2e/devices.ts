@@ -39,10 +39,7 @@ export async function use(device: Device): Promise<void> {
  * without its stored settings, the harness and wdio's helper), and switches
  * to it.
  */
-export async function openSecondDevice(
-  name: string,
-  source: string,
-): Promise<Device> {
+export async function openSecondDevice(name: string, source: string): Promise<Device> {
   const firstBase = await callHarness("vaultBasePath");
   if (firstBase === null) throw new Error("the current vault has no base path");
   const before = await browser.getWindowHandles();
@@ -69,17 +66,12 @@ export async function openSecondDevice(
     ).electron;
     return electron.ipcRenderer.sendSync("vault-open", vaultPath, false);
   }, vault);
-  if (opened !== true)
-    throw new Error(
-      `Obsidian did not open the second vault: ${String(opened)}`,
-    );
+  if (opened !== true) throw new Error(`Obsidian did not open the second vault: ${String(opened)}`);
 
   let handle: string | undefined;
   await browser.waitUntil(
     async () => {
-      handle = (await browser.getWindowHandles()).find(
-        (candidate) => !before.includes(candidate),
-      );
+      handle = (await browser.getWindowHandles()).find((candidate) => !before.includes(candidate));
       return handle !== undefined;
     },
     { timeoutMsg: "the second vault's window never opened" },
@@ -91,17 +83,9 @@ export async function openSecondDevice(
   // Community plugins start off in a vault Obsidian has not seen ("restricted
   // mode"): turn them on for this vault's id, as the launcher does for the
   // first, and load the window again so they load.
-  await browser.waitUntil(
-    async () =>
-      await browser.execute(
-        () =>
-          (window as unknown as { app?: { appId?: string } }).app?.appId !==
-          undefined,
-      ),
-    {
-      timeoutMsg: "the second vault never started",
-    },
-  );
+  await browser.waitUntil(async () => await browser.execute(() => (window as unknown as { app?: { appId?: string } }).app?.appId !== undefined), {
+    timeoutMsg: "the second vault never started",
+  });
   await browser.execute(() => {
     const app = (window as unknown as { app: { appId: string } }).app;
     localStorage.setItem(`enable-plugin-${app.appId}`, "true");
@@ -116,11 +100,7 @@ export async function openSecondDevice(
             wdioObsidianService?: unknown;
           }
         ).app;
-        return (
-          app?.plugins?.plugins[id] !== undefined &&
-          (window as unknown as { wdioObsidianService?: unknown })
-            .wdioObsidianService !== undefined
-        );
+        return app?.plugins?.plugins[id] !== undefined && (window as unknown as { wdioObsidianService?: unknown }).wdioObsidianService !== undefined;
       }, pluginId),
     { timeoutMsg: "vault-sync never loaded in the second vault" },
   );
@@ -135,13 +115,8 @@ export function connect(name: string, create: boolean) {
     async ({ app }, id, vaultName, creating) => {
       const plugin = (app as unknown as Plugins).plugins.plugins[id];
       if (plugin === undefined) throw new Error("vault-sync is not loaded");
-      const vault = creating
-        ? await plugin.createRemoteVault(vaultName)
-        : (await plugin.listRemoteVaults()).find(
-            (candidate) => candidate.name === vaultName,
-          );
-      if (vault === undefined)
-        throw new Error(`no remote vault named ${vaultName}`);
+      const vault = creating ? await plugin.createRemoteVault(vaultName) : (await plugin.listRemoteVaults()).find((candidate) => candidate.name === vaultName);
+      if (vault === undefined) throw new Error(`no remote vault named ${vaultName}`);
       return await plugin.connectVault(vault, true);
     },
     pluginId,
@@ -164,28 +139,17 @@ export async function goOffline(device: Device): Promise<void> {
   }, pluginId);
 }
 
-export async function goOnline(
-  device: Device,
-  vaultName: string,
-): Promise<void> {
+export async function goOnline(device: Device, vaultName: string): Promise<void> {
   await use(device);
-  if ((await connect(vaultName, false)) !== "connected")
-    throw new Error(`${device.name} did not connect again`);
+  if ((await connect(vaultName, false)) !== "connected") throw new Error(`${device.name} did not connect again`);
 }
 
 /** Signs `device` in as `subject` and connects it to the remote vault `vaultName`, creating it if `create`. */
-export async function setUpDevice(
-  device: Device,
-  subject: string,
-  vaultName: string,
-  create: boolean,
-): Promise<void> {
+export async function setUpDevice(device: Device, subject: string, vaultName: string, create: boolean): Promise<void> {
   await use(device);
   await configure();
-  if ((await signInAs(subject)) !== true)
-    throw new Error(`${device.name} did not sign in`);
-  if ((await connect(vaultName, create)) !== "connected")
-    throw new Error(`${device.name} did not connect`);
+  if ((await signInAs(subject)) !== true) throw new Error(`${device.name} did not sign in`);
+  if ((await connect(vaultName, create)) !== "connected") throw new Error(`${device.name} did not connect`);
 }
 
 /** The current device's files outside the config folder, each with its text (Markdown) or SHA-256 (anything else). */
@@ -196,14 +160,8 @@ export function vaultFiles() {
       if (file.extension === "md") {
         files[file.path] = await app.vault.read(file);
       } else {
-        const digest = new Uint8Array(
-          await crypto.subtle.digest(
-            "SHA-256",
-            await app.vault.readBinary(file),
-          ),
-        );
-        files[file.path] =
-          `sha256:${[...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+        const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", await app.vault.readBinary(file)));
+        files[file.path] = `sha256:${[...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
       }
     }
     return files;
@@ -237,11 +195,8 @@ export function writeNote(path: string, text: string) {
         await app.vault.modify(file, content);
         return;
       }
-      const folder = filePath.includes("/")
-        ? filePath.slice(0, filePath.lastIndexOf("/"))
-        : "";
-      if (folder !== "" && app.vault.getFolderByPath(folder) === null)
-        await app.vault.createFolder(folder);
+      const folder = filePath.includes("/") ? filePath.slice(0, filePath.lastIndexOf("/")) : "";
+      if (folder !== "" && app.vault.getFolderByPath(folder) === null) await app.vault.createFolder(folder);
       await app.vault.create(filePath, content);
     },
     path,
@@ -265,16 +220,11 @@ export function writeBinary(path: string, size: number, seed: number) {
       if (file !== null) {
         await app.vault.modifyBinary(file, content.buffer);
       } else {
-        const folder = filePath.includes("/")
-          ? filePath.slice(0, filePath.lastIndexOf("/"))
-          : "";
-        if (folder !== "" && app.vault.getFolderByPath(folder) === null)
-          await app.vault.createFolder(folder);
+        const folder = filePath.includes("/") ? filePath.slice(0, filePath.lastIndexOf("/")) : "";
+        if (folder !== "" && app.vault.getFolderByPath(folder) === null) await app.vault.createFolder(folder);
         await app.vault.createBinary(filePath, content.buffer);
       }
-      const digest = new Uint8Array(
-        await crypto.subtle.digest("SHA-256", content),
-      );
+      const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", content));
       return `sha256:${[...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
     },
     path,
@@ -289,11 +239,8 @@ export function renamePath(from: string, to: string) {
     async ({ app }, source, target) => {
       const item = app.vault.getAbstractFileByPath(source);
       if (item === null) throw new Error(`${source} does not exist`);
-      const folder = target.includes("/")
-        ? target.slice(0, target.lastIndexOf("/"))
-        : "";
-      if (folder !== "" && app.vault.getFolderByPath(folder) === null)
-        await app.vault.createFolder(folder);
+      const folder = target.includes("/") ? target.slice(0, target.lastIndexOf("/")) : "";
+      if (folder !== "" && app.vault.getFolderByPath(folder) === null) await app.vault.createFolder(folder);
       await app.fileManager.renameFile(item, target);
     },
     from,
@@ -311,11 +258,7 @@ export function deletePath(path: string) {
 }
 
 export function syncStatus() {
-  return browser.executeObsidian(
-    ({ app }, id) =>
-      (app as unknown as Plugins).plugins.plugins[id]?.syncStatus ?? null,
-    pluginId,
-  );
+  return browser.executeObsidian(({ app }, id) => (app as unknown as Plugins).plugins.plugins[id]?.syncStatus ?? null, pluginId);
 }
 
 export async function waitForIdle(device: Device): Promise<void> {
@@ -332,11 +275,7 @@ export async function waitForIdle(device: Device): Promise<void> {
 }
 
 /** Waits until `device` holds `text` at `path` (null: no file there). */
-export async function waitForText(
-  device: Device,
-  path: string,
-  text: string | null,
-): Promise<void> {
+export async function waitForText(device: Device, path: string, text: string | null): Promise<void> {
   await use(device);
   await browser.waitUntil(async () => (await fileText(path)) === text, {
     timeoutMsg: `${path} on ${device.name} never became ${JSON.stringify(text)}, it is ${JSON.stringify(await fileText(path))}`,
@@ -344,11 +283,7 @@ export async function waitForText(
 }
 
 /** Waits until `device`'s files (see `vaultFiles`) satisfy `check`. */
-export async function waitForFiles(
-  device: Device,
-  check: (files: Record<string, string>) => boolean,
-  what: string,
-): Promise<void> {
+export async function waitForFiles(device: Device, check: (files: Record<string, string>) => boolean, what: string): Promise<void> {
   await use(device);
   await browser.waitUntil(async () => check(await vaultFiles()), {
     timeoutMsg: `${what} never held on ${device.name}: ${JSON.stringify(await vaultFiles())}`,
@@ -360,10 +295,7 @@ export async function waitForFiles(
  * returns those files. A device that receives a change becomes idle only
  * after it applied it, so this waits on the files, then on idle again.
  */
-export async function converged(
-  first: Device,
-  second: Device,
-): Promise<Record<string, string>> {
+export async function converged(first: Device, second: Device): Promise<Record<string, string>> {
   let files: Record<string, string> = {};
   let seen = "";
   const wait = browser.waitUntil(
@@ -385,11 +317,7 @@ export async function converged(
           folders: secondFolders,
         },
       });
-      return (
-        JSON.stringify(sorted(firstFiles)) ===
-          JSON.stringify(sorted(secondFiles)) &&
-        JSON.stringify(firstFolders) === JSON.stringify(secondFolders)
-      );
+      return JSON.stringify(sorted(firstFiles)) === JSON.stringify(sorted(secondFiles)) && JSON.stringify(firstFolders) === JSON.stringify(secondFolders);
     },
     { timeoutMsg: `${first.name} and ${second.name} never converged` },
   );
@@ -405,9 +333,7 @@ function sorted(files: Record<string, string>): [string, string][] {
 
 /** The paths among `files` that are conflict copies (engine.md §5, rule C). */
 export function conflictCopies(files: Record<string, string>): string[] {
-  return Object.keys(files).filter((path) =>
-    path.includes(" (Conflicted copy "),
-  );
+  return Object.keys(files).filter((path) => path.includes(" (Conflicted copy "));
 }
 
 /** A note's text as `serverHeads` shows it: its SHA-256. */
@@ -420,16 +346,10 @@ export function serverHeads() {
   return browser.executeObsidian(async ({ app }, id) => {
     const plugin = (app as unknown as Plugins).plugins.plugins[id];
     const vaultId = plugin?.connectedVault?.id;
-    if (plugin === undefined || vaultId === undefined)
-      throw new Error("vault-sync is not connected");
+    if (plugin === undefined || vaultId === undefined) throw new Error("vault-sync is not connected");
     const decoder = new TextDecoder();
-    const heads = new Map<
-      string,
-      { path: string; deleted: boolean; seq: bigint; hash: string }
-    >();
-    for (const revision of (
-      await plugin.protocolClient().sync.listChanges({ vaultId, sinceSeq: 0n })
-    ).revisions) {
+    const heads = new Map<string, { path: string; deleted: boolean; seq: bigint; hash: string }>();
+    for (const revision of (await plugin.protocolClient().sync.listChanges({ vaultId, sinceSeq: 0n })).revisions) {
       const head = heads.get(revision.documentId);
       if (head !== undefined && revision.seq <= head.seq) continue;
       const blobId = revision.contentRef?.blobId ?? new Uint8Array();
@@ -437,24 +357,17 @@ export function serverHeads() {
         path: decoder.decode(revision.path),
         deleted: revision.deleted,
         seq: revision.seq,
-        hash: [...blobId]
-          .map((byte) => byte.toString(16).padStart(2, "0"))
-          .join(""),
+        hash: [...blobId].map((byte) => byte.toString(16).padStart(2, "0")).join(""),
       });
     }
     const live: Record<string, string> = {};
-    for (const head of heads.values())
-      if (!head.deleted) live[head.path] = `sha256:${head.hash}`;
+    for (const head of heads.values()) if (!head.deleted) live[head.path] = `sha256:${head.hash}`;
     return live;
   }, pluginId);
 }
 
 /** Waits until the server's live documents, read from `device`, satisfy `check`: a change made there has been committed. */
-export async function waitForServer(
-  device: Device,
-  check: (heads: Record<string, string>) => boolean,
-  what: string,
-): Promise<void> {
+export async function waitForServer(device: Device, check: (heads: Record<string, string>) => boolean, what: string): Promise<void> {
   await use(device);
   await browser.waitUntil(async () => check(await serverHeads()), {
     timeoutMsg: `${what} never reached the server from ${device.name}`,

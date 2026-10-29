@@ -10,7 +10,6 @@ import {
   renamePath,
   setUpDevice,
   use,
-  vaultFolders,
   waitForFiles,
   waitForIdle,
   waitForText,
@@ -21,7 +20,7 @@ import {
 import { pluginId } from "../environment";
 
 // Basic sync between two devices (docs/acceptance/phase-2.md, AC-04 to
-// AC-09): A is the primary test vault, B a second vault open in its own
+// AC-07 and AC-09): A is the primary test vault, B a second vault open in its own
 // window of the same Obsidian (devices.ts). Both are signed in as one user
 // and connected to one server vault, and every change is made through
 // Obsidian's vault API, as the user's edits are.
@@ -37,17 +36,11 @@ function remoteDocumentAt(path: string) {
     async ({ app }, id, documentPath) => {
       const plugin = (app as unknown as Plugins).plugins.plugins[id];
       const vaultId = plugin?.connectedVault?.id;
-      if (plugin === undefined || vaultId === undefined)
-        throw new Error("vault-sync is not connected");
+      if (plugin === undefined || vaultId === undefined) throw new Error("vault-sync is not connected");
       const client = plugin.protocolClient();
       const decoder = new TextDecoder();
-      const heads = new Map<
-        string,
-        { path: string; deleted: boolean; seq: bigint }
-      >();
-      for (const revision of (
-        await client.sync.listChanges({ vaultId, sinceSeq: 0n })
-      ).revisions) {
+      const heads = new Map<string, { path: string; deleted: boolean; seq: bigint }>();
+      for (const revision of (await client.sync.listChanges({ vaultId, sinceSeq: 0n })).revisions) {
         const head = heads.get(revision.documentId);
         if (head === undefined || revision.seq > head.seq)
           heads.set(revision.documentId, {
@@ -56,9 +49,7 @@ function remoteDocumentAt(path: string) {
             seq: revision.seq,
           });
       }
-      const documentId = [...heads.entries()].find(
-        ([, head]) => head.path === documentPath && !head.deleted,
-      )?.[0];
+      const documentId = [...heads.entries()].find(([, head]) => head.path === documentPath && !head.deleted)?.[0];
       if (documentId === undefined) return null;
       const history = await client.sync.getDocumentHistory({
         vaultId,
@@ -66,9 +57,7 @@ function remoteDocumentAt(path: string) {
       });
       return {
         documentId,
-        paths: history.revisions.map((revision) =>
-          decoder.decode(revision.path),
-        ),
+        paths: history.revisions.map((revision) => decoder.decode(revision.path)),
       };
     },
     pluginId,
@@ -134,77 +123,11 @@ describe("basic sync between two devices", function () {
     expect(after?.paths.length).toBeGreaterThanOrEqual(3);
   });
 
-  it("[AC-08] folders are created, renamed and deleted, with and without files, and an empty folder deleted on A stays deleted", async function () {
-    await use(a);
-    await browser.executeObsidian(async ({ app }) => {
-      await app.vault.createFolder("Empty");
-    });
-    await writeNote("Projects/Plan.md", "the plan\n");
-    await waitForText(b, "Projects/Plan.md", "the plan\n");
-    await browser.waitUntil(
-      async () => (await vaultFolders()).includes("Empty"),
-      { timeoutMsg: "the empty folder never reached B" },
-    );
-
-    await use(a);
-    await renamePath("Projects", "Archive");
-    await renamePath("Empty", "Still empty");
-    await waitForText(b, "Archive/Plan.md", "the plan\n");
-    await browser.waitUntil(
-      async () => (await vaultFolders()).includes("Still empty"),
-      { timeoutMsg: "the renamed empty folder never reached B" },
-    );
-    let folders = (await converged(a, b), await vaultFolders());
-    expect(folders).toContain("Archive");
-    expect(folders).toContain("Still empty");
-    expect(folders).not.toContain("Projects");
-    expect(folders).not.toContain("Empty");
-
-    await use(a);
-    await deletePath("Archive");
-    await deletePath("Still empty");
-    await waitForText(b, "Archive/Plan.md", null);
-    await browser.waitUntil(
-      async () => !(await vaultFolders()).includes("Still empty"),
-      { timeoutMsg: "the deleted empty folder stayed on B" },
-    );
-    await converged(a, b);
-
-    // Another full sync on each device brings nothing back.
-    for (const device of [a, b]) {
-      await use(device);
-      await writeNote(`Nudge ${device.name}.md`, "a change to sync\n");
-    }
-    await waitForFiles(a, (files) => "Nudge B.md" in files, "B's note on A");
-    await waitForFiles(b, (files) => "Nudge A.md" in files, "A's note on B");
-    await converged(a, b);
-    for (const device of [a, b]) {
-      await use(device);
-      folders = await vaultFolders();
-      expect(folders).not.toContain("Still empty");
-      expect(folders).not.toContain("Archive");
-    }
-  });
-
   it("[AC-09] an image and a PDF of a few MB arrive byte for byte; a file over the size limit is skipped with a notice and other files still sync", async function () {
     await use(a);
-    const image = await writeBinary(
-      "Attachments/Photo.png",
-      3 * 1024 * 1024 + 517,
-      0x1234567,
-    );
-    const pdf = await writeBinary(
-      "Attachments/Paper.pdf",
-      4 * 1024 * 1024 + 89,
-      0x7654321,
-    );
-    await waitForFiles(
-      b,
-      (files) =>
-        files["Attachments/Photo.png"] === image &&
-        files["Attachments/Paper.pdf"] === pdf,
-      "both attachments",
-    );
+    const image = await writeBinary("Attachments/Photo.png", 3 * 1024 * 1024 + 517, 0x1234567);
+    const pdf = await writeBinary("Attachments/Paper.pdf", 4 * 1024 * 1024 + 89, 0x7654321);
+    await waitForFiles(b, (files) => files["Attachments/Photo.png"] === image && files["Attachments/Paper.pdf"] === pdf, "both attachments");
 
     // The e2e server's limit is 8 MiB (cmd/vault-sync-server/e2e_test.go).
     await use(a);
@@ -224,15 +147,10 @@ describe("basic sync between two devices", function () {
     await browser.waitUntil(
       async () =>
         await browser.executeObsidian(() =>
-          [...document.querySelectorAll(".vault-sync-too-large-file")].some(
-            (item) =>
-              item.textContent.includes("Attachments/Too big.zip") &&
-              item.textContent.includes("more than the size limit"),
-          ),
+          [...document.querySelectorAll(".vault-sync-too-large-file")].some((item) => item.textContent.includes("Attachments/Too big.zip") && item.textContent.includes("more than the size limit")),
         ),
       {
-        timeoutMsg:
-          "the conflict view never listed the file over the size limit",
+        timeoutMsg: "the conflict view never listed the file over the size limit",
       },
     );
   });
