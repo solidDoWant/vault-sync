@@ -1,3 +1,4 @@
+import { appendFileSync, readdirSync, readFileSync } from "node:fs";
 import { copyFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -37,6 +38,19 @@ const emulateMobile = process.env.VAULT_SYNC_E2E_MOBILE === "1";
 // fails.
 const logDir = process.env.VAULT_SYNC_E2E_LOG_DIR;
 
+// VAULT_SYNC_ACCEPTANCE_RESULTS (`make acceptance`, scripts/acceptance.sh)
+// runs only the spec files with an acceptance test, a test whose title starts
+// with its checklist id (`[AC-04] ...`, docs/acceptance/phase-2.md), and
+// appends each test's result to e2e.jsonl in that directory for the
+// scoreboard. Whole files run, not just the tagged tests: a spec's tests build
+// on the ones before them.
+const acceptanceResults = process.env.VAULT_SYNC_ACCEPTANCE_RESULTS;
+const specDir = path.join(root, "test", "e2e", "specs");
+const acceptanceSpecs = readdirSync(specDir)
+  .filter((name) => name.endsWith(".e2e.ts") && !name.endsWith(".android.e2e.ts"))
+  .filter((name) => /\bit\(\s*["'`]\[AC-\d+\]/.test(readFileSync(path.join(specDir, name), "utf8")))
+  .map((name) => `./test/e2e/specs/${name}`);
+
 // Windows: render in software inside Obsidian's main process. On a loaded
 // Windows runner (no GPU) Electron's separate GPU process kept dying until
 // Chromium gave up and ended Obsidian with "GPU process isn't usable.
@@ -75,7 +89,7 @@ await copyFile(path.join(harnessDir, "manifest.json"), path.join(harnessOut, "ma
 export const config: WebdriverIO.Config = {
   runner: "local",
   framework: "mocha",
-  specs: ["./test/e2e/specs/**/*.e2e.ts"],
+  specs: acceptanceResults === undefined ? ["./test/e2e/specs/**/*.e2e.ts"] : acceptanceSpecs,
   // Device checks (process kill, background, airplane mode) need a real
   // Android device; only wdio.android.conf.mts runs them.
   exclude: ["./test/e2e/specs/**/*.android.e2e.ts"],
@@ -113,6 +127,13 @@ export const config: WebdriverIO.Config = {
   logLevel: "warn",
   ...(logDir === undefined ? {} : { outputDir: logDir }),
   waitforTimeout: 30_000,
+  ...(acceptanceResults === undefined
+    ? {}
+    : {
+        afterTest(test: { title: string }, _context: unknown, result: { passed: boolean }) {
+          appendFileSync(path.join(acceptanceResults, "e2e.jsonl"), `${JSON.stringify({ title: test.title, passed: result.passed })}\n`);
+        },
+      }),
   connectionRetryTimeout: 120_000,
   connectionRetryCount: 1,
 };

@@ -432,8 +432,8 @@ export function moveHeadBeforeCommit(h: Harness, commit: () => void): void {
 // (each user and engine write, rename and delete is recorded against it), the
 // origin of every content (every user and remote write carries bytes no
 // other write has, so a content hash names exactly one origin), which
-// document each inode is bound to, and every revision the server held. The
-// property suite (properties.test.ts) drives it with fast-check commands.
+// document each inode is bound to, and every revision the server held. Engine
+// tests drive it with WorldCommand sequences.
 // ---------------------------------------------------------------------------
 
 /**
@@ -1129,7 +1129,7 @@ export class PropertyWorld {
   /**
    * P7 (INV-10): the local changes the engine reported that no user change
    * emitted, i.e. its own writes, renames and deletes it took for the
-   * user's, as the simulation's `engine-echo` check finds them.
+   * user's.
    */
   ownChangesReported(): string[] {
     return this.localChanges.filter((event) => !this.userEvents.has(event)).map((event) => `the engine reported its own ${event.type} of ${JSON.stringify(event.path)} as a local change`);

@@ -93,12 +93,12 @@ describe("src/core type-check program (tsconfig.core.json)", () => {
     expect(core.portable).toEqual([]);
   });
 
-  it("covers every src/core module and test, plus sim/, but not main.ts or the adapter", () => {
+  it("covers every src/core module and test, but not main.ts or the adapter", () => {
     const fileNames = parseConfig("tsconfig.core.json").fileNames.map((fileName) => path.relative(pluginDir, fileName));
     expect(fileNames).toContain(path.join("src", "core", "index.ts"));
     expect(fileNames).toContain(path.join("src", "core", "hash.test.ts"));
     expect(fileNames).toContain(path.join("src", "core", "vault", "memory.test.ts"));
-    const allowed = [path.join("src", "core") + path.sep, path.join("..", "sim") + path.sep];
+    const allowed = [path.join("src", "core") + path.sep];
     expect(fileNames.filter((fileName) => !allowed.some((prefix) => fileName.startsWith(prefix)))).toEqual([]);
   });
 
@@ -236,7 +236,7 @@ describe("package imports from the src/core program", () => {
 
   // These also pull in declaration files of their own undeclared transitive
   // dependencies (e.g. vitest's types import @vitest/* and chai); only direct
-  // imports from src/core and sim/ must be declared.
+  // imports from src/core must be declared.
   it("accepts imports of declared dependencies, including deep and scoped ones", () => {
     const source =
       'import { sha256 } from "@noble/hashes/sha2.js";\n' +
@@ -269,32 +269,6 @@ describe("package imports from the src/core program", () => {
   ])("treats %s as declared by %j: %s", (specifier, declared, expected) => {
     expect(isDeclaredImport(specifier, new Set(declared))).toBe(expected);
   });
-});
-
-// sim/ has no package.json: it resolves packages through the committed
-// symlink sim/node_modules -> ../plugin/node_modules, and its imports are
-// checked against plugin/package.json like src/core's.
-describe("package imports from sim/", () => {
-  const simProbe = path.join(pluginDir, "..", "sim", "zz-probe.ts");
-  const check = (source: string) => checkCoreProgram([], new Map([[simProbe, source]]));
-
-  it("resolves declared dependencies through the plugin's node_modules", () => {
-    const source =
-      'import { Code, type Transport } from "@connectrpc/connect";\n' +
-      'import { sha256 } from "@noble/hashes/sha2.js";\n' +
-      'import { describe } from "vitest";\n' +
-      "export const all = [Code.Unavailable, sha256, describe];\n" +
-      "export type T = Transport;\n";
-    expect(check(source)).toEqual([]);
-  }, 60_000);
-
-  it.each([
-    ["obsidian", 'import type { App } from "obsidian";\nexport type A = App;\n', /\.\.\/sim\/zz-probe\.ts: import "obsidian" is not allowed/],
-    ["moment (an undeclared obsidian dependency)", 'import moment from "moment";\nexport const m = moment();\n', /\.\.\/sim\/zz-probe\.ts: import "moment" is not a declared dependency/],
-    ["a Node built-in", 'import { readFileSync } from "node:fs";\nexport const r = readFileSync;\n', /\.\.\/sim\/zz-probe\.ts: import "node:fs" is not a declared dependency/],
-  ])("fails on an import of %s", (_name, source, problem) => {
-    expect(check(source)).toContainEqual(expect.stringMatching(problem));
-  }, 60_000);
 });
 
 // Real files on disk: the directory scan is about files that are not part of

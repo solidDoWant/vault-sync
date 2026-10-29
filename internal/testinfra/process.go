@@ -17,7 +17,7 @@ import (
 
 // The child-process helpers below start the server, node and vitest for
 // every test that runs them: cmd/vault-sync-server's integration and e2e
-// tests and the simulation driver in sim/.
+// tests.
 
 const (
 	// maxChildGrace caps how long before the test binary's deadline a

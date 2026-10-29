@@ -27,6 +27,10 @@ const (
 	clientForeignTokenEnv = "VAULT_SYNC_IT_FOREIGN_TOKEN"
 )
 
+// The directory `make acceptance` (scripts/acceptance.sh) collects test
+// results in.
+const acceptanceResultsEnv = "VAULT_SYNC_ACCEPTANCE_RESULTS"
+
 // TestPluginProtocolClient runs the plugin's protocol client (TypeScript,
 // plugin/src/core/protocol) against the real server binary backed by
 // PostgreSQL and a fake OIDC issuer. The assertions live in the vitest suite
@@ -85,6 +89,11 @@ func TestPluginProtocolClient(t *testing.T) {
 	}).API
 
 	report := filepath.Join(t.TempDir(), "report.json")
+	// `make acceptance` (scripts/acceptance.sh) keeps the report for its
+	// scoreboard, which reads the results of the `[AC-nn]` tests in it.
+	if results := os.Getenv(acceptanceResultsEnv); results != "" {
+		report = filepath.Join(results, "vitest-protocol-client.json")
+	}
 
 	suite := testinfra.NewChild(t, vitest, "run",
 		"--config", "vitest.integration.config.ts",

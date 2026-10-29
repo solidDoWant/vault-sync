@@ -11,7 +11,7 @@ import { releasedRows, type Absence, type Binding, type ConflictRecord, type Def
  * fully recorded or not at all; the engine's write ordering does the rest.
  *
  * The `IDBFactory` is passed in, so this module touches no global: the
- * plugin passes the window's, tests and the Node simulation pass
+ * plugin passes the window's, tests pass
  * `fake-indexeddb`.
  */
 export class IndexedDbJournal implements Journal {

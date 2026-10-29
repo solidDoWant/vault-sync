@@ -11,7 +11,7 @@
 # supported version, exists) and fails unless the running server reports that
 # major version.
 #
-# Used by scripts/test-integration.sh, scripts/test-sim.sh and scripts/test-e2e.sh.
+# Used by scripts/test-integration.sh and scripts/test-e2e.sh.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
