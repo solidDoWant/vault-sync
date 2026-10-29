@@ -60,6 +60,36 @@ Status: approved by the owner on 2026-10-29. It adds to `SPEC.md` §9.3–§9.4,
 - **Rotating the escrow key:** the server publishes the new escrow public key, and new epochs use it. The job re-wraps every existing escrow slot to the new key through a job-only endpoint, after checking each slot against its key commitment, including vaults deleted within the last 30 days. It repeats until no slot uses the old key, then the old identity can be destroyed.
 - **Turning escrow off** for a vault rotates the key without an escrow slot. Older epochs stay escrowed until the re-key job moves their revisions to a newer epoch and retires them, so turning escrow off eventually removes escrow from all content history (epoch 1's slots stay, see *Formats and rules*).
 
+## Protection against an active server
+
+Owner decision of 2026-10-29: end-to-end encryption also protects against a server that is actively malicious while members use it, or an attacker who controls the running server. Such a server must not obtain an epoch key, either by adding or swapping a public key, by injecting an epoch, or by rolling one back.
+
+It may still see metadata, withhold, delay or replay changes (devices detect key and membership rollback, not content freshness), and refuse service. Encryption still does not prove which member wrote a revision. All of this is said in `docs/encryption.md`.
+
+The rule: **a device wraps an epoch key only to recipients, and uses an epoch key only from an epoch, that an owner signed in a log the device has verified.** It never relies on the server's word for either. Byte formats are in `crypto.md`.
+
+- **Identity keys.** Each user's key pair gains an Ed25519 signing key (`@noble/curves`, Go `crypto/ed25519`). The user's private key, wrapped under the passphrase, holds both seeds. The user key bundle is (user id, signing public key, hybrid public key). Its **fingerprint** is shown in the member list so that people can compare keys out of band. Ed25519 is fine for now: forging a signature needs a quantum computer at the time of the attack, unlike decrypting recorded traffic. A later suite can move to ML-DSA.
+- **Membership log.** Each encrypted vault has an append-only, hash-chained log. Every entry is signed:
+  - *Genesis*, by the creator: the creator's bundle and the escrow key, if any.
+  - *Invite* and *revoke invitation*, by an owner. An invite entry carries the invitation's role and the invitation's own signing public key, which is derived from `<secret>`.
+  - *Redeem*, by the newcomer and by the invitation's signing key: the newcomer's bundle.
+  - *Remove member* and *set role*, by an owner.
+  - *Leave*, by the leaving member.
+  - *Escrow on/off*, by an owner.
+
+  Every membership change sends its entry in the same request (`CreateInvitation`, `RedeemInvitation`, `RemoveMember`, `LeaveVault`, role change, escrow change). The server verifies the signatures and the chain, appends with compare-and-set on the next sequence number under the vault row lock, and applies the change in the same transaction. A concurrent append loses and retries on top of the winner, just as rotation does. The server's own membership tables stay what authorization uses; the log is what devices trust.
+- **Verifying the log.** A device replays the log from genesis, checking every hash link, every signature, and every signer's right to sign at that point (owners for owner entries). The member set and each member's keys come only from this replay. A device stores the highest sequence number and hash it has verified for each vault. A shorter log, or a different hash at a sequence number it has already verified, is a **hard stop**.
+- **Signed epochs.** An epoch record is signed by an owner who is an owner in the log at the sequence number it names. It holds the vault, the epoch number, its commitment, the previous epoch's commitment, that log position, and the sorted recipients with their key fingerprints. The recipients must be exactly the members at that log position, the pending invitations, and the escrow key if escrow is on. A device uses an epoch key only from a verified record. It wraps keys only to recipients from the verified log, and it refuses an epoch number below the highest it has verified. `RotateEpoch` carries the signed record. The server checks it as it already checks recipients, and still applies the compare-and-set.
+- **Trust anchors.** A device must know which genesis is real:
+  - The creator's device knows it, because it made it.
+  - A newcomer learns it from the invitation: the inviting device seals the genesis hash and its own fingerprint to the invitation's public key. The server cannot forge that, because it never learns `<secret>`.
+  - A user's other devices read the user's **anchor list**: vault id to genesis hash, sealed under a key derived from the user's private key and stored on the server with a version number. Writes are compare-and-set on the version, and a device refuses a lower version than it has seen.
+- **Escrow key.** The escrow key has its own Ed25519 signing key, held with the escrow identity. A device pins the deployment's escrow bundle when it first sees it and records it in genesis. A new escrow key is accepted only with an **escrow rotation statement** signed by the previous escrow signing key. The server publishes the chain of statements, and the export job writes the next one when the escrow key rotates. Any other change is a hard stop at vault creation and at rotation. The operator also publishes the escrow fingerprint, so an owner can compare it when creating a vault.
+- **Converting a plaintext vault.** The converting owner writes genesis listing every member's bundle as the server reports it then. That moment trusts the server, like any first meeting. The plugin therefore shows every member's fingerprint and asks the owner to compare them before converting.
+- **Passphrase parameters.** A device remembers the Argon2id parameters it has seen for an account and refuses lower ones at unlock.
+- **Hard stop.** On any verification failure the plugin stops syncing that vault, keeps the local files, and shows what failed: "the server sent key or membership data that doesn't verify". It never falls back to trusting the server.
+- **Lost passphrase without escrow.** The user's identity is gone. An owner removes them and invites them again with a new key. There is no "replace a member's key" entry.
+
 ## Formats and rules settled during implementation
 
 Operator decisions of 2026-10-29, from the questions on #1206, #1207, #1210 and #1227 and the Phase 4 design review. Byte formats are in `crypto.md`.
