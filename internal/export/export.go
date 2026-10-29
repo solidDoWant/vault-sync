@@ -459,6 +459,15 @@ func (run *run) exportVault(ctx context.Context, staging string, vault store.Vau
 		return fmt.Errorf("create vault directory: %w", err)
 	}
 
+	if vault.DeletedAt != nil {
+		deletedAt := vault.DeletedAt.UTC().Format(time.RFC3339Nano) + "\n"
+
+		err := os.WriteFile(filepath.Join(staging, vault.ID.String()+DeletedSuffix), []byte(deletedAt), fileMode)
+		if err != nil {
+			return fmt.Errorf("write deleted marker: %w", err)
+		}
+	}
+
 	tree, err := openVaultTree(directory)
 	if err != nil {
 		return err

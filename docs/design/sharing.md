@@ -31,10 +31,10 @@ Its journal is kept, so it can reconnect if access comes back. Leaving is availa
 
 - **Who and how:** `DeleteVault` is owner-only. The plugin asks the owner to type the vault name to confirm.
 - **On the server:** the vault is marked deleted and becomes invisible to everyone.
-- **Purge:** a background job purges a deleted vault 30 days after deletion: rows, then blobs.
-- **Undo:** `vault-sync-server vault undelete <vault-id>` restores a vault that hasn't been purged yet. There is no undo in the plugin.
+- **Purge:** a background job purges a deleted vault 30 days after deletion: rows, then blobs. The retention job does it on every replica: in one transaction it marks the vault purged (`vaults.purged_at`) and deletes its rows, then deletes every object under the vault's S3 prefix (bounded per run), then the vault's row. A purge cut short resumes on the next run.
+- **Undo:** `vault-sync-server vault undelete <vault-id>` restores a vault that hasn't been purged yet. Once its purge has started, the vault counts as purged and can't be undeleted. There is no undo in the plugin.
 - **Owned-vault limit:** a deleted vault doesn't count toward the owner's 100-vault limit. `vault undelete` is an operator action and is allowed even above the limit.
-- **Export:** the export keeps writing a deleted vault until it is purged, with a `DELETED` marker file holding the deletion time.
+- **Export:** the export keeps writing a deleted vault until it is purged, with a `<vault-id>.DELETED` marker file next to its folder holding the deletion time.
 
 ## Attribution
 

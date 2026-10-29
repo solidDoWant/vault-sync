@@ -59,6 +59,9 @@ type Vault struct {
 	// Role is the member's role in the vault.
 	Role      Role
 	CreatedAt time.Time
+	// DeletedAt is when an owner deleted the vault; set only by AllVaults,
+	// nil for a vault that is not deleted.
+	DeletedAt *time.Time
 }
 
 // CreateVault creates a vault with ownerID as its owner, in one transaction.

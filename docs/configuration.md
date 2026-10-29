@@ -169,6 +169,7 @@ Besides the standard Go runtime (`go_*`) and process (`process_*`) metrics:
 | `vault_sync_retention_blobs_collected_total` | counter | | Blobs no revision references whose rows this replica's retention job deleted. |
 | `vault_sync_retention_objects_deleted_total` | counter | | Collected blobs' S3 objects this replica's retention job deleted. |
 | `vault_sync_retention_purge_markers_pruned_total` | counter | | Purge markers older than `VAULT_SYNC_RETENTION_PURGE_MARKER_HORIZON` that this replica's retention job deleted. A run prunes at most 100,000: growth by that much every run means pruning is falling behind the purges (see [Retention and history](#retention-and-history)). |
+| `vault_sync_retention_vaults_purged_total` | counter | | Vaults deleted more than 30 days ago whose rows and S3 objects this replica's retention job purged (see [Deleting a vault](design/sharing.md#deleting-a-vault)). |
 | `vault_sync_retention_run_failures_total` | counter | | Retention runs on this replica that failed in part (logged as `retention run failed`); the next run retries. Alert if it keeps rising. |
 
 Calls rejected for authentication are counted with code `unauthenticated`. Requests rejected before reaching an RPC handler (oversized declared bodies, unknown routes, malformed messages) are not counted.

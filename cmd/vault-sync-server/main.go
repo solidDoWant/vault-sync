@@ -10,6 +10,9 @@
 //
 // `vault-sync-server retention set|unset|list` manages per-vault retention
 // overrides and exits (docs/configuration.md, SPEC.md §11).
+//
+// `vault-sync-server vault undelete VAULT_ID` restores a deleted vault that
+// has not been purged yet and exits (docs/design/sharing.md).
 package main
 
 import (
@@ -21,6 +24,7 @@ import (
 	"github.com/solidDoWant/vault-sync/internal/export"
 	"github.com/solidDoWant/vault-sync/internal/retentioncmd"
 	"github.com/solidDoWant/vault-sync/internal/server"
+	"github.com/solidDoWant/vault-sync/internal/vaultcmd"
 	"github.com/solidDoWant/vault-sync/internal/vaultimport"
 )
 
@@ -36,6 +40,8 @@ func main() {
 		code = vaultimport.Main(ctx, os.Args[2:], os.LookupEnv, os.Stdout, os.Stderr)
 	case len(os.Args) > 1 && os.Args[1] == "retention":
 		code = retentioncmd.Main(ctx, os.Args[2:], os.LookupEnv, os.Stdout, os.Stderr)
+	case len(os.Args) > 1 && os.Args[1] == "vault":
+		code = vaultcmd.Main(ctx, os.Args[2:], os.LookupEnv, os.Stdout, os.Stderr)
 	default:
 		code = server.Main(ctx, os.Args[1:], os.LookupEnv, os.Stdout, os.Stderr)
 	}

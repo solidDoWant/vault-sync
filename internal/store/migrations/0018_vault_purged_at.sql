@@ -1,0 +1,13 @@
+-- Purging deleted vaults (docs/design/sharing.md, "Deleting a vault").
+--
+-- The retention job purges a vault deleted more than 30 days ago: it sets
+-- vaults.purged_at and deletes every row of the vault in one transaction,
+-- then deletes the vault's objects, then the vaults row itself. A vault with
+-- purged_at set can no longer be undeleted, and a purge interrupted after
+-- its rows resumes with the objects on the next run.
+--
+-- Additive and nullable, so adding it rewrites no row, and the previous
+-- release runs unchanged against this schema during a rolling upgrade
+-- (SPEC.md §12): it never names the column, and the vault rows it would
+-- read are already refused as deleted.
+ALTER TABLE vaults ADD COLUMN purged_at timestamptz;

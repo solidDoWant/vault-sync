@@ -36,6 +36,7 @@ An export is a copy of your vaults' current files, meant to be archived. Restori
 
 - Every file that exists (is not deleted) in a plaintext vault when that vault's export starts, byte for byte, as last synced to the server. This includes notes, attachments, and any other file clients sync.
 - Files that a filesystem cannot hold at their path, for example a file `a` next to a folder `a` that contains `a/b.md`, or a name longer than 255 bytes. These are kept in a separate folder next to the vault's folder, named by document id, and the manifest records their original path (see [Documents that cannot be placed at their path](#documents-that-cannot-be-placed-at-their-path)). A file is never left out because of its name.
+- Vaults an owner deleted, until the server purges them 30 days later, so backups still hold a vault while it can be undeleted. A deleted vault is exported like any other, with a `<vault-id>.DELETED` file next to its folder that holds the deletion time. A purged vault is no longer exported.
 - A manifest per vault that lists every file with its path, kind, revision, size and SHA-256, and says where in the export its bytes are.
 
 **Not in the export:**
@@ -56,6 +57,7 @@ DIR/
   <vault-id>/                           the vault's tree: each document at its path
   <vault-id>.unplaced/<document-id>     documents that cannot be placed at their path (only if there are any)
   <vault-id>.manifest.jsonl             the vault's manifest
+  <vault-id>.DELETED                    only for a vault an owner deleted: its deletion time (RFC 3339)
 ```
 
 - Each vault's directory is named by its id, not its name, because names are mutable, can collide and are chosen by users. The summary and the manifest map ids to names.

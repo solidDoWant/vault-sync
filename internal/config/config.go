@@ -927,3 +927,24 @@ func checkDatabase(database store.Config) error {
 
 	return nil
 }
+
+// LoadVaultCommand reads the database configuration of the vault
+// subcommand, with which the operator undeletes a vault, through lookup,
+// like Load. Only the database is required; every other variable is
+// ignored.
+func LoadVaultCommand(lookup func(string) (string, bool)) (store.Config, error) {
+	get := func(name string) string {
+		value, _ := lookup(name)
+
+		return strings.TrimSpace(value)
+	}
+
+	cfg := store.Config{
+		DSN:         get(DatabaseURLEnv),
+		TLSCertFile: get(DatabaseTLSCertFileEnv),
+		TLSKeyFile:  get(DatabaseTLSKeyFileEnv),
+		TLSCAFile:   get(DatabaseTLSCAFileEnv),
+	}
+
+	return cfg, checkDatabase(cfg)
+}

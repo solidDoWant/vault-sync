@@ -10,13 +10,14 @@ import (
 
 // AllVaults returns up to limit vaults in ascending id order, starting after
 // the vault id after (uuid.Nil for the first page), regardless of
-// membership. Role is empty. It exists for the export job (SPEC.md §4),
+// membership, including deleted vaults until their purge starts. Role is
+// empty. It exists for the export job (SPEC.md §4),
 // which archives every vault; request handlers must use ListVaults.
 func (store *Store) AllVaults(ctx context.Context, after uuid.UUID, limit int) ([]Vault, error) {
 	rows, err := store.pool.Query(ctx, `
-		SELECT id, name, encryption, escrow, head_seq, created_at
+		SELECT id, name, encryption, escrow, head_seq, created_at, deleted_at
 		FROM vaults
-		WHERE id > $1
+		WHERE id > $1 AND purged_at IS NULL
 		ORDER BY id
 		LIMIT $2`, after, limit)
 	if err != nil {
@@ -26,7 +27,7 @@ func (store *Store) AllVaults(ctx context.Context, after uuid.UUID, limit int) (
 	vaults, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Vault, error) {
 		var vault Vault
 
-		err := row.Scan(&vault.ID, &vault.Name, &vault.Encryption, &vault.Escrow, &vault.HeadSeq, &vault.CreatedAt)
+		err := row.Scan(&vault.ID, &vault.Name, &vault.Encryption, &vault.Escrow, &vault.HeadSeq, &vault.CreatedAt, &vault.DeletedAt)
 
 		return vault, err
 	})
