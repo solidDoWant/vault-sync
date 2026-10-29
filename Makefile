@@ -162,12 +162,13 @@ plugin-release-assets: plugin-build ## Collect the plugin release assets (main.j
 
 # Dry run by default: the image and chart are built (not pushed) and the tag,
 # tag push and GitHub release are printed. PUSH_ALL=true releases for real.
-# The preflight (version, gh auth, and for a real release a clean tree, HEAD
+# The preflight (version, gh auth, a non-empty CHANGELOG.md section for the
+# version, and for a real release a clean tree, HEAD
 # equal to origin/master and a new tag) runs before anything is built, and
 # the plugin assets are built and checked before the image and chart are
 # pushed, so the pushes are the last steps before tagging.
 .PHONY: release
-release: ## Release VERSION: build and (PUSH_ALL=true) push the image and chart, tag VERSION and create a GitHub release with the plugin's main.js, manifest.json and styles.css for BRAT. Dry run unless PUSH_ALL=true. Requires gh.
+release: ## Release VERSION: build and (PUSH_ALL=true) push the image and chart, tag VERSION and create a GitHub release whose notes are VERSION's CHANGELOG.md section, with the plugin's main.js, manifest.json and styles.css for BRAT. Dry run unless PUSH_ALL=true. Requires gh.
 	./scripts/release.sh preflight "$(VERSION)" "$(PUSH_ALL)"
 	$(MAKE) plugin-release-assets VERSION="$(VERSION)"
 	./scripts/release.sh check-assets "$(VERSION)" "$(PUSH_ALL)" "$(RELEASE_ASSET_DIR)"

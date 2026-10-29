@@ -5,7 +5,8 @@
 #
 # Usage:
 #   scripts/release.sh preflight VERSION PUSH_ALL
-#       Checks VERSION and gh authentication; for a real release also that
+#       Checks VERSION, gh authentication and that CHANGELOG.md has a
+#       non-empty "## VERSION" section; for a real release also that
 #       the working tree is clean, that HEAD is the published master
 #       (origin/master, fetched first) and that the tag does not exist yet.
 #       Runs before anything is built or pushed.
@@ -15,8 +16,10 @@
 #       runs it before the image and chart are pushed, so a broken asset
 #       stops the release before anything is published.
 #   scripts/release.sh publish VERSION PUSH_ALL ASSET_DIR
-#       Checks the assets again, then tags HEAD as VERSION, pushes the tag
-#       and creates the GitHub release with the assets attached.
+#       Checks the assets again, writes the "## VERSION" section of
+#       CHANGELOG.md (heading excluded) to ASSET_DIR/release-notes.md, then
+#       tags HEAD as VERSION, pushes the tag and creates the GitHub release
+#       with those notes and the assets attached. A dry run prints the notes.
 #
 # The tag is VERSION exactly, without a "v": Obsidian and BRAT require the
 # release tag, the release name and the version in the released
@@ -74,11 +77,35 @@ check_assets() {
 	fi
 }
 
+# release_notes: prints the "## VERSION" section of the checkout's
+# CHANGELOG.md, without its heading and surrounding blank lines, up to the
+# next "## " heading; refuses a missing file, a missing section and one that
+# is blank.
+release_notes() {
+	local changelog notes
+	changelog="$(git rev-parse --show-toplevel)/CHANGELOG.md"
+	[[ -f $changelog ]] || die "$changelog does not exist; it holds the release notes"
+	if ! grep -qxF -- "## $version" "$changelog"; then
+		die "CHANGELOG.md has no '## $version' section; add the release notes there first"
+	fi
+	notes="$(awk -v heading="## $version" '
+		$0 == heading { in_section = 1; next }
+		in_section && /^## / { exit }
+		in_section { print }
+	' "$changelog")"
+	# Trim surrounding blank lines: $(...) drops trailing newlines, sed the
+	# leading blank lines.
+	notes="$(sed '/[^[:space:]]/,$!d' <<<"$notes")"
+	[[ -n $notes ]] || die "the '## $version' section of CHANGELOG.md is empty; add the release notes there first"
+	printf '%s\n' "$notes"
+}
+
 case "$step" in
 preflight)
 	# Unprefixed, so an unauthenticated gh stops the release before any
 	# image is built or pushed.
 	gh auth status
+	release_notes >/dev/null
 	if $dry_run; then
 		echo "dry run: skipping the clean-tree and existing-tag checks (set PUSH_ALL=true to release)"
 		exit 0
@@ -114,9 +141,16 @@ publish)
 		prerelease=(--prerelease --latest=false)
 	fi
 
+	notes_file="$4/release-notes.md"
+	release_notes >"$notes_file"
+	if $dry_run; then
+		echo "dry run: release notes ($notes_file, from CHANGELOG.md):"
+		cat "$notes_file"
+	fi
+
 	run git tag -a "$version" -m "Release $version"
 	run git push origin "refs/tags/$version"
-	run gh release create "$version" --verify-tag --title "$version" --generate-notes "${prerelease[@]}" "${assets[@]}"
+	run gh release create "$version" --verify-tag --title "$version" --notes-file "$notes_file" "${prerelease[@]}" "${assets[@]}"
 	if $dry_run; then
 		echo "dry run complete: nothing was tagged, pushed or published (set PUSH_ALL=true to release)"
 	fi
