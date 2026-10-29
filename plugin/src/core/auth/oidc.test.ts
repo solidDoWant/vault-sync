@@ -280,7 +280,7 @@ describe("refreshAccessToken", () => {
     try {
       const silent: HttpClient = () => new Promise(() => undefined);
       let failure: unknown;
-      void refreshAccessToken(silent, { issuer: "", deviceAuthorizationEndpoint: "", tokenEndpoint: "https://idp.example/t" }, "c", "r").catch((error: unknown) => {
+      void refreshAccessToken(silent, { issuer: "https://idp.example/", deviceAuthorizationEndpoint: "", tokenEndpoint: "https://idp.example/t" }, "c", "r").catch((error: unknown) => {
         failure = error;
       });
       await vi.advanceTimersByTimeAsync(29_999);
@@ -294,9 +294,9 @@ describe("refreshAccessToken", () => {
   });
 
   it("takes the expiry from expires_in when the access token is not a JWT", async () => {
-    const http = staticHttp(200, { access_token: "opaque", expires_in: 120 });
+    const http = staticHttp(200, { access_token: "opaque", token_type: "Bearer", expires_in: 120 });
 
-    const tokens = await refreshAccessToken(http, { issuer: "", deviceAuthorizationEndpoint: "", tokenEndpoint: "https://idp.example/t" }, "c", "r", { now: () => 5000 });
+    const tokens = await refreshAccessToken(http, { issuer: "https://idp.example/", deviceAuthorizationEndpoint: "", tokenEndpoint: "https://idp.example/t" }, "c", "r", { now: () => 5000 });
 
     expect(tokens).toEqual({ accessToken: "opaque", obtainedAt: 5000, expiresAt: 125_000 });
   });

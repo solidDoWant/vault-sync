@@ -193,7 +193,7 @@ export class InMemoryIdentityProvider {
 }
 
 function json(status: number, body: unknown): HttpResponse {
-  return { status, text: JSON.stringify(body) };
+  return { status, headers: { "Content-Type": "application/json" }, text: JSON.stringify(body) };
 }
 
 function base64Url(text: string): string {

@@ -1,8 +1,10 @@
 // The OAuth 2.0 calls the plugin makes to the identity provider (SPEC.md
 // §9.1): OpenID discovery, the Device Authorization Grant (RFC 8628) and the
-// refresh-token grant. HTTP goes through an injected client so the same code
-// runs on Obsidian's requestUrl (desktop and Android alike, no CORS) and in
-// unit tests.
+// refresh-token grant, built on oauth4webapi. HTTP goes through an injected
+// client (the library's custom fetch hook) so the same code runs on Obsidian's
+// requestUrl (desktop and Android alike, no CORS) and in unit tests.
+
+import * as oauth from "oauth4webapi";
 
 /** One HTTP request to the identity provider. */
 export interface HttpRequest {
@@ -15,6 +17,8 @@ export interface HttpRequest {
 
 export interface HttpResponse {
   status: number;
+  /** The response headers; oauth4webapi reads an OAuth error body only when its `Content-Type` is `application/json`. */
+  headers?: Record<string, string>;
   text: string;
 }
 
@@ -92,8 +96,8 @@ export class IdentityProviderError extends Error {
    */
   readonly unreachable: boolean;
 
-  constructor(message: string, options: { unreachable?: boolean } = {}) {
-    super(message);
+  constructor(message: string, options: { unreachable?: boolean; cause?: unknown } = {}) {
+    super(message, options.cause === undefined ? undefined : { cause: options.cause });
     this.unreachable = options.unreachable ?? false;
   }
 }
@@ -107,7 +111,6 @@ const maxResponseBytes = 64 * 1024;
 const defaultIntervalMs = 5000;
 /** RFC 8628 §3.5: `slow_down` adds 5 seconds to the interval. */
 const slowDownMs = 5000;
-const deviceCodeGrant = "urn:ietf:params:oauth:grant-type:device_code";
 
 /**
  * Throws unless `url` is an absolute https URL, or plain http to a loopback
@@ -130,17 +133,83 @@ function isLoopback(hostname: string): boolean {
 }
 
 /**
+ * The oauth4webapi request options that send every request through `http`.
+ * requireSecureUrl checks every URL before it is used, so the library's own
+ * https-only check, which has no loopback exception, is turned off.
+ */
+function requestOptions(http: HttpClient) {
+  return {
+    [oauth.customFetch]: async (url: string, init: oauth.CustomFetchOptions<string, unknown>): Promise<Response> => {
+      const response = await send(http, {
+        url,
+        method: init.method === "POST" ? "POST" : "GET",
+        headers: init.headers,
+        ...(init.body instanceof URLSearchParams ? { body: init.body.toString() } : {}),
+      });
+      try {
+        return new Response(nullBodyStatuses.has(response.status) ? null : response.text, { status: response.status, ...(response.headers === undefined ? {} : { headers: response.headers }) });
+      } catch (error) {
+        throw new IdentityProviderError(`the identity provider answered with HTTP status ${String(response.status)}`, { cause: error });
+      }
+    },
+    // Plain http to a loopback host, for development, is the one insecure URL requireSecureUrl lets through.
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    [oauth.allowInsecureRequests]: true,
+  };
+}
+
+/** HTTP statuses a Response may not carry a body with. */
+const nullBodyStatuses = new Set([101, 103, 204, 205, 304]);
+
+/** A public client: it authenticates with its client_id alone. */
+function publicClient(clientId: string): oauth.Client {
+  return { client_id: clientId };
+}
+
+function authorizationServer(endpoints: OidcEndpoints): oauth.AuthorizationServer {
+  return { issuer: endpoints.issuer, device_authorization_endpoint: endpoints.deviceAuthorizationEndpoint, token_endpoint: endpoints.tokenEndpoint };
+}
+
+/**
+ * Maps what oauth4webapi throws for a response with HTTP status `status`
+ * onto this module's errors: an OAuth error body becomes an OAuthError, a
+ * response that is not a valid one an IdentityProviderError.
+ */
+function translateError(error: unknown, status: number): unknown {
+  if (error instanceof oauth.ResponseBodyError) return new OAuthError(error.error, error.error_description);
+  if (error instanceof oauth.OperationProcessingError || error instanceof oauth.UnsupportedOperationError || error instanceof oauth.WWWAuthenticateChallengeError) {
+    return new IdentityProviderError(`the identity provider's response is not valid: ${error.message}`, { unreachable: status >= 500 });
+  }
+  return error;
+}
+
+async function processResponse<T>(response: Response, process: (response: Response) => Promise<T>): Promise<T> {
+  try {
+    return await process(response);
+  } catch (error) {
+    throw translateError(error, response.status);
+  }
+}
+
+/**
  * Fetches the issuer's OpenID configuration and returns its device-flow and
- * token endpoints. The document must name `issuer` exactly (OpenID Connect
- * Discovery §4.3), and every endpoint must be secure.
+ * token endpoints. The document must name `issuer` (OpenID Connect Discovery
+ * §4.3), and every endpoint must be secure.
  */
 export async function discoverOidc(http: HttpClient, issuer: string): Promise<OidcEndpoints> {
-  requireSecureUrl(issuer, "The OIDC issuer");
-  const url = `${issuer.replace(/\/+$/, "")}/.well-known/openid-configuration`;
-  const response = await send(http, { url, method: "GET", headers: { Accept: "application/json" } });
-  if (response.status !== 200) throw new IdentityProviderError(`OpenID discovery at ${url} failed with HTTP ${String(response.status)}`, { unreachable: response.status >= 500 });
-  const document = parseObject(response.text, "the OpenID configuration");
-  if (document.issuer !== issuer) throw new Error(`the OpenID configuration names issuer ${JSON.stringify(document.issuer)}, not ${JSON.stringify(issuer)}`);
+  const issuerUrl = requireSecureUrl(issuer, "The OIDC issuer");
+  const response = await oauth.discoveryRequest(issuerUrl, { ...requestOptions(http), algorithm: "oidc" });
+  if (response.status !== 200) throw new IdentityProviderError(`OpenID discovery for ${issuer} failed with HTTP ${String(response.status)}`, { unreachable: response.status >= 500 });
+  let document: oauth.AuthorizationServer;
+  try {
+    document = await oauth.processDiscoveryResponse(issuerUrl, response);
+  } catch (error) {
+    if (error instanceof oauth.OperationProcessingError && error.code === oauth.JSON_ATTRIBUTE_COMPARISON) {
+      const named = (error.cause as { body?: { issuer?: unknown } } | undefined)?.body?.issuer;
+      throw new Error(`the OpenID configuration names issuer ${JSON.stringify(named)}, not ${JSON.stringify(issuer)}`, { cause: error });
+    }
+    throw translateError(error, response.status);
+  }
   const deviceAuthorizationEndpoint = document.device_authorization_endpoint;
   const tokenEndpoint = document.token_endpoint;
   if (typeof deviceAuthorizationEndpoint !== "string" || deviceAuthorizationEndpoint === "") {
@@ -160,24 +229,20 @@ export async function startDeviceAuthorization(
   options: { scope?: string; now?: () => number } = {},
 ): Promise<DeviceAuthorization> {
   const now = options.now ?? Date.now;
-  const response = await postForm(http, endpoints.deviceAuthorizationEndpoint, { client_id: clientId, scope: options.scope ?? defaultScope });
-  const body = parseObject(response.text, "the device authorization response");
-  if (response.status !== 200) throw oauthError(response.status, body);
-  const deviceCode = requireString(body, "device_code");
-  const userCode = requireString(body, "user_code");
-  const verificationUri = requireString(body, "verification_uri");
-  requireSecureUrl(verificationUri, "The verification URL");
-  const expiresIn = body.expires_in;
-  if (typeof expiresIn !== "number" || !(expiresIn > 0)) throw new IdentityProviderError("the device authorization response has no valid expires_in");
+  const server = authorizationServer(endpoints);
+  const client = publicClient(clientId);
+  const response = await oauth.deviceAuthorizationRequest(server, client, oauth.None(), { scope: options.scope ?? defaultScope }, requestOptions(http));
+  const body = await processResponse(response, (received) => oauth.processDeviceAuthorizationResponse(server, client, received));
+  requireSecureUrl(body.verification_uri, "The verification URL");
   const authorization: DeviceAuthorization = {
-    deviceCode,
-    userCode,
-    verificationUri,
-    expiresAt: now() + expiresIn * 1000,
-    intervalMs: typeof body.interval === "number" && body.interval > 0 ? body.interval * 1000 : defaultIntervalMs,
+    deviceCode: body.device_code,
+    userCode: body.user_code,
+    verificationUri: body.verification_uri,
+    expiresAt: now() + body.expires_in * 1000,
+    intervalMs: body.interval === undefined ? defaultIntervalMs : body.interval * 1000,
   };
   const complete = body.verification_uri_complete;
-  if (typeof complete === "string" && complete !== "") {
+  if (complete !== undefined) {
     requireSecureUrl(complete, "The verification URL");
     authorization.verificationUriComplete = complete;
   }
@@ -209,34 +274,33 @@ export async function pollDeviceAuthorization(
 ): Promise<TokenSet> {
   const now = options.now ?? Date.now;
   const sleep = options.sleep ?? abortableSleep;
+  const server = authorizationServer(endpoints);
+  const client = publicClient(clientId);
   let interval = authorization.intervalMs;
   for (;;) {
     await sleep(interval, options.signal);
     options.signal?.throwIfAborted();
     if (now() >= authorization.expiresAt) throw new OAuthError("expired_token", "the sign-in code expired");
-    let response: HttpResponse;
+    let response: Response;
     try {
-      response = await postForm(http, endpoints.tokenEndpoint, { grant_type: deviceCodeGrant, device_code: authorization.deviceCode, client_id: clientId });
+      response = await oauth.deviceCodeGrantRequest(server, client, oauth.None(), authorization.deviceCode, requestOptions(http));
     } catch (error) {
       if (error instanceof IdentityProviderError) continue;
       throw error;
     }
     if (response.status >= 500) continue;
-    let body: Record<string, unknown>;
     try {
-      body = parseObject(response.text, "the token response");
+      return tokenSet(await oauth.processDeviceCodeResponse(server, client, response), now());
     } catch (error) {
-      if (error instanceof IdentityProviderError) continue;
-      throw error;
+      if (error instanceof oauth.ResponseBodyError && error.error === "authorization_pending") continue;
+      if (error instanceof oauth.ResponseBodyError && error.error === "slow_down") {
+        interval += slowDownMs;
+        continue;
+      }
+      // A body that is not JSON may be a proxy's error page: poll again.
+      if (error instanceof oauth.OperationProcessingError && (error.code === oauth.PARSE_ERROR || error.code === oauth.RESPONSE_IS_NOT_CONFORM)) continue;
+      throw translateError(error, response.status);
     }
-    if (response.status === 200) return tokenSet(body, now());
-    const code = body.error;
-    if (code === "authorization_pending") continue;
-    if (code === "slow_down") {
-      interval += slowDownMs;
-      continue;
-    }
-    throw oauthError(response.status, body);
   }
 }
 
@@ -254,13 +318,16 @@ export async function refreshAccessToken(
   options: { now?: () => number } = {},
 ): Promise<TokenSet> {
   const now = options.now ?? Date.now;
-  const response = await postForm(http, endpoints.tokenEndpoint, { grant_type: "refresh_token", refresh_token: refreshToken, client_id: clientId });
+  const server = authorizationServer(endpoints);
+  const client = publicClient(clientId);
+  const response = await oauth.refreshTokenGrantRequest(server, client, oauth.None(), refreshToken, requestOptions(http));
   if (response.status >= 500) throw new IdentityProviderError(`the token endpoint failed with HTTP ${String(response.status)}`, { unreachable: true });
-  const body = parseObject(response.text, "the token response");
-  if (response.status === 200) return tokenSet(body, now());
-  const error = oauthError(response.status, body);
-  if (error instanceof OAuthError && error.code === "invalid_grant") throw new SignInRequiredError(`the identity provider refused the refresh token (${error.message})`);
-  throw error;
+  try {
+    return tokenSet(await processResponse(response, (received) => oauth.processRefreshTokenResponse(server, client, received)), now());
+  } catch (error) {
+    if (error instanceof OAuthError && error.code === "invalid_grant") throw new SignInRequiredError(`the identity provider refused the refresh token (${error.message})`);
+    throw error;
+  }
 }
 
 /** The identity provider and client the plugin signs in with. */
@@ -309,11 +376,11 @@ export function oidcRefresher(http: HttpClient, config: OidcClientConfig, option
   };
 }
 
-function tokenSet(body: Record<string, unknown>, obtainedAt: number): TokenSet {
-  const accessToken = requireString(body, "access_token");
+function tokenSet(body: oauth.TokenEndpointResponse, obtainedAt: number): TokenSet {
+  const accessToken = body.access_token;
   const tokens: TokenSet = { accessToken, obtainedAt };
-  if (typeof body.refresh_token === "string" && body.refresh_token !== "") tokens.refreshToken = body.refresh_token;
-  const expiresAt = jwtExpiry(accessToken) ?? (typeof body.expires_in === "number" && body.expires_in > 0 ? obtainedAt + body.expires_in * 1000 : undefined);
+  if (body.refresh_token !== undefined) tokens.refreshToken = body.refresh_token;
+  const expiresAt = jwtExpiry(accessToken) ?? (body.expires_in !== undefined && body.expires_in > 0 ? obtainedAt + body.expires_in * 1000 : undefined);
   if (expiresAt !== undefined) tokens.expiresAt = expiresAt;
   return tokens;
 }
@@ -365,15 +432,6 @@ function jwtClaims(token: string): Record<string, unknown> | undefined {
   }
 }
 
-async function postForm(http: HttpClient, url: string, form: Record<string, string>): Promise<HttpResponse> {
-  return send(http, {
-    url,
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
-    body: new URLSearchParams(form).toString(),
-  });
-}
-
 /**
  * How long a request to the identity provider may go unanswered before it
  * counts as unreachable (SPEC.md §4, #730): a black-holed connection would
@@ -407,30 +465,6 @@ async function send(http: HttpClient, request: HttpRequest): Promise<HttpRespons
 function utf8Length(text: string): number {
   if (text.length > maxResponseBytes) return text.length;
   return new TextEncoder().encode(text).length;
-}
-
-function parseObject(text: string, what: string): Record<string, unknown> {
-  let value: unknown;
-  try {
-    value = JSON.parse(text);
-  } catch {
-    throw new IdentityProviderError(`${what} is not JSON`);
-  }
-  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new IdentityProviderError(`${what} is not a JSON object`);
-  return value as Record<string, unknown>;
-}
-
-function requireString(body: Record<string, unknown>, field: string): string {
-  const value = body[field];
-  if (typeof value !== "string" || value === "") throw new IdentityProviderError(`the identity provider's response has no ${field}`);
-  return value;
-}
-
-function oauthError(status: number, body: Record<string, unknown>): Error {
-  if (typeof body.error !== "string" || body.error === "") {
-    return new IdentityProviderError(`the identity provider answered HTTP ${String(status)} without an OAuth error`, { unreachable: status >= 500 });
-  }
-  return new OAuthError(body.error, typeof body.error_description === "string" ? body.error_description : undefined);
 }
 
 function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
