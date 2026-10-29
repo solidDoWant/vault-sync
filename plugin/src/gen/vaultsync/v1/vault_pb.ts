@@ -4,7 +4,7 @@
 
 import type { GenFile, GenMessage, GenService } from "@bufbuild/protobuf/codegenv2";
 import { fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2";
-import type { Vault, VaultEncryption } from "./types_pb";
+import type { LogEntry, Vault, VaultEncryption } from "./types_pb";
 import { file_vaultsync_v1_types } from "./types_pb";
 import type { Message } from "@bufbuild/protobuf";
 
@@ -12,7 +12,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file vaultsync/v1/vault.proto.
  */
 export const file_vaultsync_v1_vault: GenFile = /*@__PURE__*/
-  fileDesc("Chh2YXVsdHN5bmMvdjEvdmF1bHQucHJvdG8SDHZhdWx0c3luYy52MSJlChJDcmVhdGVWYXVsdFJlcXVlc3QSDAoEbmFtZRgBIAEoCRIxCgplbmNyeXB0aW9uGAIgASgOMh0udmF1bHRzeW5jLnYxLlZhdWx0RW5jcnlwdGlvbhIOCgZlc2Nyb3cYAyABKAgiOQoTQ3JlYXRlVmF1bHRSZXNwb25zZRIiCgV2YXVsdBgBIAEoCzITLnZhdWx0c3luYy52MS5WYXVsdCI6ChFMaXN0VmF1bHRzUmVxdWVzdBIRCglwYWdlX3NpemUYASABKA0SEgoKcGFnZV90b2tlbhgCIAEoCSJSChJMaXN0VmF1bHRzUmVzcG9uc2USIwoGdmF1bHRzGAEgAygLMhMudmF1bHRzeW5jLnYxLlZhdWx0EhcKD25leHRfcGFnZV90b2tlbhgCIAEoCSImChJEZWxldGVWYXVsdFJlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkiFQoTRGVsZXRlVmF1bHRSZXNwb25zZTKNAgoMVmF1bHRTZXJ2aWNlElQKC0NyZWF0ZVZhdWx0EiAudmF1bHRzeW5jLnYxLkNyZWF0ZVZhdWx0UmVxdWVzdBohLnZhdWx0c3luYy52MS5DcmVhdGVWYXVsdFJlc3BvbnNlIgASUQoKTGlzdFZhdWx0cxIfLnZhdWx0c3luYy52MS5MaXN0VmF1bHRzUmVxdWVzdBogLnZhdWx0c3luYy52MS5MaXN0VmF1bHRzUmVzcG9uc2UiABJUCgtEZWxldGVWYXVsdBIgLnZhdWx0c3luYy52MS5EZWxldGVWYXVsdFJlcXVlc3QaIS52YXVsdHN5bmMudjEuRGVsZXRlVmF1bHRSZXNwb25zZSIAQkBaPmdpdGh1Yi5jb20vc29saWREb1dhbnQvdmF1bHQtc3luYy9nZW4vdmF1bHRzeW5jL3YxO3ZhdWx0c3luY3YxYgZwcm90bzM", [file_vaultsync_v1_types]);
+  fileDesc("Chh2YXVsdHN5bmMvdjEvdmF1bHQucHJvdG8SDHZhdWx0c3luYy52MSKkAQoSQ3JlYXRlVmF1bHRSZXF1ZXN0EgwKBG5hbWUYASABKAkSMQoKZW5jcnlwdGlvbhgCIAEoDjIdLnZhdWx0c3luYy52MS5WYXVsdEVuY3J5cHRpb24SDgoGZXNjcm93GAMgASgIEhQKDG5ld192YXVsdF9pZBgEIAEoCRInCgdnZW5lc2lzGAUgASgLMhYudmF1bHRzeW5jLnYxLkxvZ0VudHJ5IjkKE0NyZWF0ZVZhdWx0UmVzcG9uc2USIgoFdmF1bHQYASABKAsyEy52YXVsdHN5bmMudjEuVmF1bHQiOgoRTGlzdFZhdWx0c1JlcXVlc3QSEQoJcGFnZV9zaXplGAEgASgNEhIKCnBhZ2VfdG9rZW4YAiABKAkiUgoSTGlzdFZhdWx0c1Jlc3BvbnNlEiMKBnZhdWx0cxgBIAMoCzITLnZhdWx0c3luYy52MS5WYXVsdBIXCg9uZXh0X3BhZ2VfdG9rZW4YAiABKAkiJgoSRGVsZXRlVmF1bHRSZXF1ZXN0EhAKCHZhdWx0X2lkGAEgASgJIhUKE0RlbGV0ZVZhdWx0UmVzcG9uc2UyjQIKDFZhdWx0U2VydmljZRJUCgtDcmVhdGVWYXVsdBIgLnZhdWx0c3luYy52MS5DcmVhdGVWYXVsdFJlcXVlc3QaIS52YXVsdHN5bmMudjEuQ3JlYXRlVmF1bHRSZXNwb25zZSIAElEKCkxpc3RWYXVsdHMSHy52YXVsdHN5bmMudjEuTGlzdFZhdWx0c1JlcXVlc3QaIC52YXVsdHN5bmMudjEuTGlzdFZhdWx0c1Jlc3BvbnNlIgASVAoLRGVsZXRlVmF1bHQSIC52YXVsdHN5bmMudjEuRGVsZXRlVmF1bHRSZXF1ZXN0GiEudmF1bHRzeW5jLnYxLkRlbGV0ZVZhdWx0UmVzcG9uc2UiAEJAWj5naXRodWIuY29tL3NvbGlkRG9XYW50L3ZhdWx0LXN5bmMvZ2VuL3ZhdWx0c3luYy92MTt2YXVsdHN5bmN2MWIGcHJvdG8z", [file_vaultsync_v1_types]);
 
 /**
  * CreateVaultRequest describes the vault to create.
@@ -44,6 +44,24 @@ export type CreateVaultRequest = Message<"vaultsync.v1.CreateVaultRequest"> & {
    * @generated from field: bool escrow = 3;
    */
   escrow: boolean;
+
+  /**
+   * The new vault's id, a UUID chosen by the creator's device, which signs
+   * it into the genesis entry. Required for VAULT_ENCRYPTION_E2EE; must be
+   * empty for VAULT_ENCRYPTION_NONE, whose id the server chooses.
+   *
+   * @generated from field: string new_vault_id = 4;
+   */
+  newVaultId: string;
+
+  /**
+   * The genesis entry of the vault's membership log (seq 1), signed by the
+   * caller. Required for VAULT_ENCRYPTION_E2EE; must be unset for
+   * VAULT_ENCRYPTION_NONE.
+   *
+   * @generated from field: vaultsync.v1.LogEntry genesis = 5;
+   */
+  genesis?: LogEntry | undefined;
 };
 
 /**
@@ -178,10 +196,18 @@ export const VaultService: GenService<{
    * CreateVault creates a vault owned by the caller.
    *
    * Errors: INVALID_ARGUMENT for an empty or over-long name, a name containing
-   * a control character (such as U+0000), an unspecified encryption mode, or
-   * escrow requested for a plaintext vault; FAILED_PRECONDITION for escrow
-   * on a server without an escrow key (GetServerInfo's escrow_public_key
-   * is empty).
+   * a control character (such as U+0000), an unspecified encryption mode,
+   * escrow requested for a plaintext vault, a new_vault_id or genesis on a
+   * plaintext vault, or a missing or invalid new_vault_id or genesis on an E2EE
+   * vault; FAILED_PRECONDITION for escrow on a server without an escrow key
+   * (GetServerInfo's escrow_public_key is empty); ALREADY_EXISTS when
+   * new_vault_id names an existing vault. A refused request creates no vault.
+   *
+   * A VAULT_ENCRYPTION_E2EE vault starts its membership log with the
+   * genesis entry, which the creator's device signs over the vault id it
+   * chose (docs/design/crypto.md). The server stores it after checking that
+   * it verifies as the log's first entry, names the caller as its creator,
+   * and records escrow exactly when escrow is requested.
    *
    * A new VAULT_ENCRYPTION_E2EE vault has no key epoch and a pending
    * rotation: the owner's client creates epoch 1 with VaultKeyService's

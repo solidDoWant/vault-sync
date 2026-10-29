@@ -161,3 +161,24 @@ message Revision {
   // in a plaintext vault.
   uint32 epoch = 14;
 }
+
+// LogEntry is one entry of an end-to-end encrypted vault's membership log
+// (docs/design/crypto.md, "Identity keys, the membership log and signed
+// epochs"). Its vault is the vault it belongs to. The server verifies an
+// entry before storing it; devices replay the whole log themselves and
+// trust only that replay.
+message LogEntry {
+  // The entry's sequence number, from 1 (the genesis entry).
+  uint64 seq = 1;
+  // SHA-256 of the previous entry's body: exactly 32 bytes, all zero for
+  // the genesis entry.
+  bytes prev_hash = 2;
+  // The entry type byte: 1 (genesis) to 8 (escrow).
+  uint32 type = 3;
+  // The type's payload, at most the size of a genesis with an escrow
+  // bundle.
+  bytes payload = 4;
+  // The Ed25519 signatures of the entry body: two for a redeem entry (the
+  // invitation key's, then the newcomer's), one for every other entry.
+  repeated bytes signatures = 5;
+}

@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // ErrVaultNotFound is returned when a vault does not exist or the user is not
@@ -18,6 +19,10 @@ var ErrVaultNotFound = errors.New("vault not found")
 // (DeleteVault). Non-members of a deleted vault get ErrVaultNotFound, as for
 // any other vault.
 var ErrVaultDeleted = errors.New("vault deleted")
+
+// ErrVaultExists is returned when a vault is created with the id of an
+// existing vault.
+var ErrVaultExists = errors.New("vault id already exists")
 
 // ErrVaultLimit is returned when a user already owns the maximum number of
 // vaults.
@@ -44,9 +49,15 @@ const (
 
 // NewVault describes a vault to create.
 type NewVault struct {
+	// ID is the vault's id, chosen by the creator's device for an E2EE
+	// vault (it signs it into Genesis); uuid.Nil has the store choose one.
+	ID         uuid.UUID
 	Name       string
 	Encryption Encryption
 	Escrow     bool
+	// Genesis is the first entry of an E2EE vault's membership log, which
+	// the caller has verified; nil for a plaintext vault.
+	Genesis *LogEntry
 }
 
 // Vault is a vault as seen by one of its members.
@@ -67,16 +78,23 @@ type Vault struct {
 // CreateVault creates a vault with ownerID as its owner, in one transaction.
 // It returns ErrVaultLimit when the user already owns limit vaults that are
 // not deleted, and
-// ErrUserNotFound when the user does not exist.
+// ErrUserNotFound when the user does not exist. With vault.ID set it returns
+// ErrVaultExists when a vault with that id exists. With vault.Genesis set it
+// stores it as the vault's first log entry, in the same transaction.
 func (store *Store) CreateVault(ctx context.Context, ownerID uuid.UUID, vault NewVault, limit int) (Vault, error) {
-	id, err := uuid.NewV7()
-	if err != nil {
-		return Vault{}, fmt.Errorf("generate vault id: %w", err)
+	id := vault.ID
+	if id == uuid.Nil {
+		generated, err := uuid.NewV7()
+		if err != nil {
+			return Vault{}, fmt.Errorf("generate vault id: %w", err)
+		}
+
+		id = generated
 	}
 
 	created := Vault{ID: id, Name: vault.Name, Encryption: vault.Encryption, Escrow: vault.Escrow, Role: RoleOwner}
 
-	err = pgx.BeginFunc(ctx, store.pool, func(tx pgx.Tx) error {
+	err := pgx.BeginFunc(ctx, store.pool, func(tx pgx.Tx) error {
 		// Locking the user row serializes concurrent creations by the same
 		// user, so the limit cannot be overshot (see RegisterDevice).
 		var locked uuid.UUID
@@ -113,6 +131,10 @@ func (store *Store) CreateVault(ctx context.Context, ownerID uuid.UUID, vault Ne
 			// epoch 1 with RotateEpoch (SPEC.md §9.3).
 			vault.Encryption == EncryptionE2EE).
 			Scan(&created.HeadSeq, &created.CreatedAt)
+		if pgErr, ok := errors.AsType[*pgconn.PgError](err); ok && pgErr.Code == uniqueViolation && pgErr.ConstraintName == "vaults_pkey" {
+			return ErrVaultExists
+		}
+
 		if err != nil {
 			return fmt.Errorf("insert vault: %w", err)
 		}
@@ -121,6 +143,12 @@ func (store *Store) CreateVault(ctx context.Context, ownerID uuid.UUID, vault Ne
 			id, ownerID, RoleOwner)
 		if err != nil {
 			return fmt.Errorf("insert owner membership: %w", err)
+		}
+
+		if vault.Genesis != nil {
+			if err := insertLogEntry(ctx, tx, id, *vault.Genesis); err != nil {
+				return err
+			}
 		}
 
 		return nil
