@@ -8,10 +8,10 @@ import { configure, dialog, isDialogOpen, issuerPost, signInResult, startSignIn 
 // Signing in with the OAuth device flow inside real Obsidian (SPEC.md §9.1),
 // against the harness-started server and the driver's fake OIDC issuer:
 // the dialog shows the verification URL and user code, "the user" approves
-// the code at the issuer, and the plugin stores the refresh token, with the
-// identity provider that issued it, in its plugin data. Access tokens are
-// kept in memory only, so every check after a plugin reload goes through the
-// refresh grant.
+// the code at the issuer, and the plugin stores the refresh token in
+// Obsidian's device-local storage, never in data.json, and the identity
+// provider that issued it in data.json. Access tokens are kept in memory
+// only, so every check after a plugin reload goes through the refresh grant.
 
 /** The outcome of ListVaults through the plugin's authenticated client. */
 type CallResult = { ok: true; vaults: number } | { ok: false; code: number | null; message: string };
@@ -27,19 +27,67 @@ function closeDialog() {
   return browser.keys("Escape");
 }
 
-function pluginStatus() {
-  return browser.executeObsidian(async ({ app }, id) => {
-    const plugin = (app as unknown as { plugins: { plugins: Record<string, VaultSyncPlugin> } }).plugins.plugins[id];
-    if (plugin === undefined) throw new Error("vault-sync is not loaded");
-    const path = `${plugin.manifest.dir ?? ""}/data.json`;
-    const stored = (await app.vault.adapter.exists(path)) ? (JSON.parse(await app.vault.adapter.read(path)) as Record<string, unknown>) : {};
-    // Only whether a refresh token is stored: the token itself never leaves the plugin.
-    return {
-      authState: plugin.authState,
-      storedRefreshToken: typeof stored.refreshToken === "string" && stored.refreshToken !== "",
-      storedIdentityProvider: stored.identityProvider ?? null,
-    };
-  }, pluginId);
+/** The local storage key the plugin keeps the refresh token under. */
+const refreshTokenKey = "vault-sync-refresh-token";
+
+/**
+ * The plugin's auth state and what it stored: whether local storage holds a
+ * refresh token, and the identity provider in data.json. data.json must
+ * never hold a refresh token.
+ */
+async function pluginStatus() {
+  const status = await browser.executeObsidian(
+    async ({ app }, id, key) => {
+      const plugin = (app as unknown as { plugins: { plugins: Record<string, VaultSyncPlugin> } }).plugins.plugins[id];
+      if (plugin === undefined) throw new Error("vault-sync is not loaded");
+      const path = `${plugin.manifest.dir ?? ""}/data.json`;
+      const stored = (await app.vault.adapter.exists(path)) ? (JSON.parse(await app.vault.adapter.read(path)) as Record<string, unknown>) : {};
+      const local: unknown = app.loadLocalStorage(key);
+      // Only whether a refresh token is stored: the token itself never leaves Obsidian.
+      return {
+        authState: plugin.authState,
+        storedRefreshToken: typeof local === "string" && local !== "",
+        storedIdentityProvider: stored.identityProvider ?? null,
+        tokenInDataJson: "refreshToken" in stored,
+        statusState: plugin.syncStatus.state,
+      };
+    },
+    pluginId,
+    refreshTokenKey,
+  );
+  const { tokenInDataJson, statusState, ...rest } = status;
+  expect(tokenInDataJson).toBe(false);
+  if (rest.authState === "sign-in-required") expect(statusState).toBe("sign-in-required");
+  return rest;
+}
+
+/** Disables the plugin, runs `change` on the vault's local storage and data.json, and enables the plugin again; resolves whether it loaded. */
+function withPluginDisabled(change: "move-token-to-data-json" | "clear-local-storage" | "restore-local-storage") {
+  return browser.executeObsidian(
+    async ({ app }, id, key, step) => {
+      const registry = (app as unknown as { plugins: { plugins: Record<string, VaultSyncPlugin>; disablePlugin(id: string): Promise<void>; enablePlugin(id: string): Promise<boolean> } }).plugins;
+      const dir = registry.plugins[id]?.manifest.dir ?? "";
+      await registry.disablePlugin(id);
+      // The token is parked in the page, never handed to the test runner.
+      const parked = window as unknown as { vaultSyncParkedToken?: unknown };
+      if (step === "move-token-to-data-json") {
+        const path = `${dir}/data.json`;
+        const stored = JSON.parse(await app.vault.adapter.read(path)) as Record<string, unknown>;
+        await app.vault.adapter.write(path, JSON.stringify({ ...stored, refreshToken: app.loadLocalStorage(key) as unknown }));
+        app.saveLocalStorage(key, null);
+      } else if (step === "clear-local-storage") {
+        parked.vaultSyncParkedToken = app.loadLocalStorage(key);
+        app.saveLocalStorage(key, null);
+      } else {
+        app.saveLocalStorage(key, parked.vaultSyncParkedToken ?? null);
+        delete parked.vaultSyncParkedToken;
+      }
+      return registry.enablePlugin(id);
+    },
+    pluginId,
+    refreshTokenKey,
+    change,
+  );
 }
 
 async function listVaults(): Promise<CallResult> {
@@ -95,6 +143,24 @@ describe("signing in with the device flow", function () {
   it("stays signed in across a plugin reload, refreshing the access token with the stored refresh token", async function () {
     expect(await reloadPlugin(pluginId)).toBe(true);
 
+    expect(await pluginStatus()).toEqual({ authState: "signed-in", storedRefreshToken: true, storedIdentityProvider: issuer() });
+    expect(await listVaults()).toEqual({ ok: true, vaults: 0 });
+  });
+
+  it("moves a refresh token that data.json still holds to local storage on load, staying signed in", async function () {
+    expect(await withPluginDisabled("move-token-to-data-json")).toBe(true);
+
+    expect(await pluginStatus()).toEqual({ authState: "signed-in", storedRefreshToken: true, storedIdentityProvider: issuer() });
+    expect(await listVaults()).toEqual({ ok: true, vaults: 0 });
+  });
+
+  it("shows sign-in needed when local storage was cleared, and works again once the token is back", async function () {
+    expect(await withPluginDisabled("clear-local-storage")).toBe(true);
+
+    expect(await pluginStatus()).toEqual({ authState: "sign-in-required", storedRefreshToken: false, storedIdentityProvider: issuer() });
+    expect(await listVaults()).toMatchObject({ ok: false, code: unauthenticated });
+
+    expect(await withPluginDisabled("restore-local-storage")).toBe(true);
     expect(await pluginStatus()).toEqual({ authState: "signed-in", storedRefreshToken: true, storedIdentityProvider: issuer() });
     expect(await listVaults()).toEqual({ ok: true, vaults: 0 });
   });
