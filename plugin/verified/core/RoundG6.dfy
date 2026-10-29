@@ -4978,4 +4978,113 @@ abstract module RoundG6 refines RoundGuarantees {
     RuleWriteClass(platform, accepted, rows, doc, r, inner, revs', first, d);
     SettleWriteKept(platform, device0, d, accepted, rows0[e], read0, pass, doc, r, input, revs, first, effect.content);
   }
+
+  lemma SettlePulledKeepsKept(platform: Platform, device0: Device, d: DeviceId, accepted: map<RevId, Revision>,
+                              rows0: map<DocId, Document>, listing0: Listing, pass: RoundPass,
+                              revisions: seq<Revision>, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires device0.platform == platform && ListingDistinct(platform, listing0)
+    requires PassNUD(platform, device0, accepted, pass)
+    requires PassKept(platform, d, accepted, rows0, listing0, pass)
+    requires forall i | 0 <= i < |revisions| :: AcceptedAs(accepted, revisions[i])
+    requires PulledInPass(platform, d, pass, revisions, input, revs, first)
+    ensures PassKept(platform, d, accepted, rows0, listing0, SettlePulled(platform, pass, revisions, input, revs, first))
+    decreases |revisions|
+  {
+    if |revisions| > 0 {
+      var next := SettleRevision(platform, pass, revisions[0].doc, revisions[0], input, revs, first);
+      SettleKeepsKept(platform, device0, d, accepted, rows0, listing0, pass, revisions[0].doc, revisions[0], input, revs, first);
+      SettleKeepsNUD(platform, device0, accepted, pass, revisions[0].doc, revisions[0], input, revs, first);
+      assert forall i | 0 <= i < |revisions[1..]| :: revisions[1..][i] == revisions[i + 1];
+      SettlePulledKeepsKept(platform, device0, d, accepted, rows0, listing0, next, revisions[1..], input, revs, first);
+    }
+  }
+
+  lemma RetryKeepsKept(platform: Platform, device0: Device, d: DeviceId, accepted: map<RevId, Revision>,
+                       rows0: map<DocId, Document>, listing0: Listing, pass: RoundPass,
+                       docs: seq<DocId>, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires device0.platform == platform && ListingDistinct(platform, listing0)
+    requires PassNUD(platform, device0, accepted, pass)
+    requires PassKept(platform, d, accepted, rows0, listing0, pass)
+    requires RetriedInPass(platform, d, pass, docs, input, revs, first)
+    ensures PassKept(platform, d, accepted, rows0, listing0, RetryWaiting(platform, pass, docs, input, revs, first))
+    decreases |docs|
+  {
+    if |docs| > 0 {
+      var documents := pass.journal.documents;
+      if docs[0] in documents && documents[docs[0]].ahead.Some? {
+        var row := documents[docs[0]];
+        var cleared := pass.(journal := pass.journal.(documents := documents[docs[0] := row.(ahead := None)]));
+        assert NeverJoinedRows(platform, cleared.journal.documents);
+        assert PassNUD(platform, device0, accepted, cleared);
+        ClearedKeepsKept(platform, d, accepted, rows0, listing0, pass, cleared, docs[0]);
+        var r := row.ahead.value.revision;
+        assert AcceptedAs(accepted, r) && r.doc == docs[0];
+        SettleKeepsKept(platform, device0, d, accepted, rows0, listing0, cleared, docs[0], r, input, revs, first);
+        SettleKeepsNUD(platform, device0, accepted, cleared, docs[0], r, input, revs, first);
+        RetryKeepsKept(platform, device0, d, accepted, rows0, listing0, SettleRevision(platform, cleared, docs[0], r, input, revs, first), docs[1..], input, revs, first);
+      } else {
+        RetryKeepsKept(platform, device0, d, accepted, rows0, listing0, pass, docs[1..], input, revs, first);
+      }
+    }
+  }
+
+  // Clearing a row's ahead keeps every chain (RetryKeepsChain's step).
+  lemma ClearedKeepsKept(platform: Platform, d: DeviceId, accepted: map<RevId, Revision>,
+                         rows0: map<DocId, Document>, listing0: Listing, pass: RoundPass, cleared: RoundPass, f: DocId)
+    requires ListingDistinct(platform, listing0)
+    requires f in pass.journal.documents && pass.journal.documents[f].ahead.Some?
+    requires cleared == pass.(journal := pass.journal.(documents := pass.journal.documents[f := pass.journal.documents[f].(ahead := None)]))
+    requires PassKept(platform, d, accepted, rows0, listing0, pass)
+    ensures PassKept(platform, d, accepted, rows0, listing0, cleared)
+  {
+    forall e: DocId, read0: Option<(Hash, Kind)>, c: Hash, others: bool
+      | e in rows0 && read0.Some? && KeptChain(platform, d, accepted, rows0[e], read0, c, others, e, pass)
+      ensures KeptChain(platform, d, accepted, rows0[e], read0, c, others, e, cleared)
+    {
+      ClearedKeepsChain(platform, d, accepted, rows0[e].base, B0(rows0[e], read0), rows0[e].base.Some? && rows0[e].base.value.deleted,
+                        read0, Some(c), others, e, pass, cleared, f);
+    }
+  }
+
+  lemma ClearedKeepsChain(platform: Platform, d: DeviceId, accepted: map<RevId, Revision>, base0: Option<Base>, b0: Hash, bd0: bool,
+                          read0: Option<(Hash, Kind)>, c0: Option<Hash>, others: bool, e: DocId, pass: RoundPass, cleared: RoundPass, f: DocId)
+    requires f in pass.journal.documents && pass.journal.documents[f].ahead.Some?
+    requires cleared == pass.(journal := pass.journal.(documents := pass.journal.documents[f := pass.journal.documents[f].(ahead := None)]))
+    requires PassChain(platform, d, accepted, base0, b0, bd0, read0, c0, others, e, pass)
+    ensures PassChain(platform, d, accepted, base0, b0, bd0, read0, c0, others, e, cleared)
+  {
+    var documents := pass.journal.documents;
+    if Distinct(platform, pass.listing) {
+      var rs, saved, x :| ChainRows(platform, d, accepted, base0, b0, bd0, read0, c0, e, documents, pass.listing, rs, saved, x)
+                          && (others ==> OthersIn(d, rs));
+      var rows' := cleared.journal.documents;
+      assert forall g | g in rows' :: g in documents && rows'[g].binding == documents[g].binding && rows'[g].base == documents[g].base;
+      assert SavedHeld(platform, accepted, rows', cleared.listing, saved) by {
+        forall h | h in saved && UntrackedHolds(platform, documents, pass.listing, h)
+          ensures UntrackedHolds(platform, rows', cleared.listing, h)
+        {
+          var p := var p :| p in pass.listing && pass.listing[p].0 == h
+            && forall g | g in documents && documents[g].binding.Some? :: !SameF(platform, documents[g].binding.value.spelling, p); p;
+        }
+      }
+      assert ChainRows(platform, d, accepted, base0, b0, bd0, read0, c0, e, rows', cleared.listing, rs, saved, x);
+    }
+  }
+
+  // At the start of the round: no effects, and every chain empty.
+  lemma PassKeptStart(platform: Platform, d: DeviceId, accepted: map<RevId, Revision>, start: RoundPass)
+    requires forall i | 0 <= i < |start.effects| :: !start.effects[i].Write? && !start.effects[i].Remove?
+    requires forall e | e in start.journal.documents :: AheadAboveBase(start.journal.documents[e])
+    requires ListingDistinct(platform, start.listing) && Distinct(platform, start.listing)
+    ensures PassKept(platform, d, accepted, start.journal.documents, start.listing, start)
+  {
+    var rows0 := start.journal.documents;
+    forall e | ReadBefore(platform, rows0, start.listing, e)
+      ensures var read0 := LocalSide(platform, start.listing, rows0[e]);
+        KeptChain(platform, d, accepted, rows0[e], read0, read0.value.0, false, e, start)
+    {
+      var read0 := LocalSide(platform, start.listing, rows0[e]);
+      PassChainStart(platform, d, accepted, e, start, B0(rows0[e], read0), rows0[e].base.Some? && rows0[e].base.value.deleted);
+    }
+  }
 }
