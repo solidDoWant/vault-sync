@@ -86,7 +86,7 @@ A phase is complete when every issue in its milestone — as listed live from Gi
    Each files only confirmed, reproduced findings in its scope. Fix the critical and high ones through the normal flow. List medium and low ones on #51 for the owner to decide; don't schedule them.
 3. **Release.** When those fixes have merged, queue the `release-manager` for `0.N.0`.
 4. **The owner's own use is not a gate.** The owner deploys and uses the build in their own time.
-5. **Close.** Close the milestone, queue the `release-manager` for the phase's release, post a phase summary on #51 (what was built, what was deferred, known risks), and open the next phase: decompose its parent issue into atomic sub-issues (`.claude/commands/start-issue.md`'s decomposition rules) if that has not been done. The scheduler moves to the next phase milestone by itself (lowest open `Phase N` milestone with open issues) unless `.pm/scheduler.json` pins `current_phase`.
+5. **Close and pause.** Close the milestone and post a phase summary on #51: what was built, what was deferred, the release link and known risks. Then create `.pm/PAUSE`. **Never start the next phase on your own.** It begins only after the owner has approved its acceptance checklist and design, and has posted a `/pm` instruction to start it. Otherwise the scheduler would move to the next milestone by itself.
 
 ## Failure handling
 
