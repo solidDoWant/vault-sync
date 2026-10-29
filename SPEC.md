@@ -272,7 +272,7 @@ nix/                     Nix package/image definitions
 Work is tracked as GitHub milestones and parent issues. A phase is done when its owner-approved acceptance checklist passes; a security review runs where a phase touches the attack surface.
 
 1. **Foundations** — protocol schema, server core (store, blobs, revisions, auth, authz), simulation harness skeleton, CI.
-2. **Single-user file sync**: a new plugin engine (`docs/design/engine.md`) plus the adapter for desktop and Android, conflicts, history and restore, Markdown import, and the Helm chart. Done when `docs/acceptance/phase-2.md` passes on `master` and the owner is using the build.
+2. **Single-user file sync**: a new plugin engine (`docs/design/engine.md`) plus the adapter for desktop and Android, conflicts, history and restore, Markdown import, and the Helm chart. Done as defined in `docs/acceptance/phase-2.md`: the checklist passes on `master`, a security review and a narrow bug hunt have run with critical and high findings fixed, and `0.2.0` is released.
 3. **Vault sharing** — membership management, invitations, roles in UI.
 4. **End-to-end encryption** — key hierarchy, escrow, export decryption, crypto vectors, independent crypto review. Until then, creating an E2EE vault is rejected (§9.3).
 5. **Live collaborative editing** — Yjs documents, conversion, editor binding, awareness, compaction.

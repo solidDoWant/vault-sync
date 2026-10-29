@@ -72,14 +72,21 @@ Label the issue `needs-human`, comment on it with exactly what is needed, mentio
 
 ## Phase 2 progress
 
-Phase 2 is done when every scenario in `docs/acceptance/phase-2.md` passes on `master` (`make acceptance`) and the owner confirms they are using the build. Each status report on #51 leads with the scoreboard: scenarios passing out of the total, and what changed since the last report.
+Phase 2 is done when every scenario in `docs/acceptance/phase-2.md` passes as an automated test on `master`, the Phase 2 security review and the narrow bug hunt have run and their critical and high findings are fixed, and the `0.2.0` release is cut. The owner deploys and uses the build on their own schedule; that blocks nothing. Each status report on #51 leads with the scoreboard: scenarios passing out of the total, and what changed since the last report.
 
 ## Phase transitions
 
 A phase is complete when every issue in its milestone — as listed live from GitHub — is closed or explicitly deferred (logged decision), and every issue in it has a sub-issue parent in the same milestone (fix any that don't before closing). **Phase 2 additionally needs the engine exit bar** in `docs/design/engine-path-ownership.md` §10.2 (E1–E6); check each item from live data and post the result on #51 before starting the bug hunt. Then:
 
-1. **Checklist.** The phase's acceptance checklist passes on `master`, and the owner confirms. No phase-end bug hunt runs unless the owner asks for one.
-2. **Close.** Close the milestone, queue the `release-manager` for the phase's release, post a phase summary on #51 (what was built, what was deferred, known risks), and open the next phase: decompose its parent issue into atomic sub-issues (`.claude/commands/start-issue.md`'s decomposition rules) if that has not been done. The scheduler moves to the next phase milestone by itself (lowest open `Phase N` milestone with open issues) unless `.pm/scheduler.json` pins `current_phase`.
+1. **Checklist.** The phase's acceptance checklist passes on `master` (`make acceptance`).
+2. **Security review and narrow bug hunt** (owner decision, 2026-10-29). Once the checklist passes, queue both in the same planner run:
+   - **One `security-auditor` job.** Scope: what this phase changed on the server (path and name validation, `FOLDER` documents, the import CLI, size limits), plus how the plugin handles server data it writes to disk.
+   - **One `bug-hunter` job.** Scope: **data loss and crashes only**, through the engine and the plugin (sync, conflicts, crashes and restarts, restore).
+
+   Each files only confirmed, reproduced findings in its scope. Fix the critical and high ones through the normal flow. List medium and low ones on #51 for the owner to decide; don't schedule them.
+3. **Release.** When those fixes have merged, queue the `release-manager` for `0.N.0`.
+4. **The owner's own use is not a gate.** The owner deploys and uses the build in their own time.
+5. **Close and pause.** Close the milestone and post a phase summary on #51: what was built, what was deferred, the release link and known risks. Then create `.pm/PAUSE`. **Never start the next phase on your own.** It begins only after the owner has approved its acceptance checklist and design, and has posted a `/pm` instruction to start it. Otherwise the scheduler would move to the next milestone by itself.
 
 ## Failure handling
 

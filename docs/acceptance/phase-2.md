@@ -2,7 +2,7 @@
 
 Owner-approved on 2026-10-29. **This list is the definition of done for Phase 2. Only the owner adds to it or changes it.**
 
-Phase 2 is done when every scenario below passes as an automated test on `master` and the owner is using the build. The design is in `docs/design/engine.md`.
+Phase 2 is done when every scenario below passes as an automated test on `master`, the Phase 2 security review and the narrow bug hunt have run and their critical and high findings are fixed, and the `0.2.0` release is cut. The owner deploys and uses the build on their own schedule; that blocks nothing. The design is in `docs/design/engine.md`.
 
 **How scenarios are tested.**
 - Every scenario has at least one test whose name starts with its id, for example `it("[AC-04] a note created on A appears on B", …)`.
