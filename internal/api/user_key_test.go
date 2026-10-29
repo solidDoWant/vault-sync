@@ -59,6 +59,18 @@ func (recorder *userKeyRecorder) ChangePassphrase(_ context.Context, _ uuid.UUID
 	return nil
 }
 
+func (recorder *userKeyRecorder) AnchorList(context.Context, uuid.UUID) (store.AnchorList, error) {
+	recorder.calls++
+
+	return store.AnchorList{}, nil
+}
+
+func (recorder *userKeyRecorder) PutAnchorList(context.Context, uuid.UUID, uint64, []byte) error {
+	recorder.calls++
+
+	return nil
+}
+
 func validParams() *vaultsyncv1.PassphraseParams {
 	return &vaultsyncv1.PassphraseParams{
 		Suite: 2, MemoryKib: 65536, Iterations: 3, Parallelism: 1, Salt: bytes.Repeat([]byte{7}, 16),

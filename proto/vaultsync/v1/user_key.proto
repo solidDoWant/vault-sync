@@ -59,6 +59,23 @@ service UserKeyService {
   // attempt); FAILED_PRECONDITION when public_key is not the stored public
   // key (nothing changes); RESOURCE_EXHAUSTED when too many attempts failed.
   rpc ChangePassphrase(ChangePassphraseRequest) returns (ChangePassphraseResponse) {}
+
+  // GetAnchorList returns the caller's sealed anchor list
+  // (docs/design/encryption.md, "Trust anchors") and its version. A caller
+  // who has never stored one gets version 0 and an empty list. The server
+  // never opens the list.
+  rpc GetAnchorList(GetAnchorListRequest) returns (GetAnchorListResponse) {}
+
+  // PutAnchorList replaces the caller's sealed anchor list. It is a
+  // compare-and-set on the version: the list is stored only when version is
+  // the stored version plus one (1 for a caller without a list), so of
+  // concurrent writers of the same version exactly one succeeds.
+  //
+  // Errors: INVALID_ARGUMENT when version is 0 or above 2^63 - 1, or
+  // sealed_list is empty or longer than 4800045 bytes (checked before
+  // anything is stored); FAILED_PRECONDITION when version is not the stored
+  // version plus one (nothing changes: read the list again and merge).
+  rpc PutAnchorList(PutAnchorListRequest) returns (PutAnchorListResponse) {}
 }
 
 // PassphraseParams are the public parameters of a passphrase wrapping
@@ -139,3 +156,27 @@ message ChangePassphraseRequest {
 
 // ChangePassphraseResponse confirms the change. It has no fields.
 message ChangePassphraseResponse {}
+
+// GetAnchorListRequest has no fields: it names the caller's list.
+message GetAnchorListRequest {}
+
+// GetAnchorListResponse holds the caller's sealed anchor list.
+message GetAnchorListResponse {
+  // The version of the stored list; 0 when the caller has none.
+  uint64 version = 1;
+  // The anchor list sealed at version (docs/design/crypto.md, anchor_list),
+  // opaque to the server; empty when version is 0.
+  bytes sealed_list = 2;
+}
+
+// PutAnchorListRequest holds a new version of the caller's anchor list.
+message PutAnchorListRequest {
+  // The new version: the stored version plus one, 1 to 2^63 - 1.
+  uint64 version = 1;
+  // The anchor list sealed at version: 1 to 4800045 bytes (the sealed size
+  // of 100000 anchors), opaque to the server.
+  bytes sealed_list = 2;
+}
+
+// PutAnchorListResponse confirms the list was stored. It has no fields.
+message PutAnchorListResponse {}
