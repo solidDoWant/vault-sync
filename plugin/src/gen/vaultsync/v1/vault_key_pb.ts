@@ -14,7 +14,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file vaultsync/v1/vault_key.proto.
  */
 export const file_vaultsync_v1_vault_key: GenFile = /*@__PURE__*/
-  fileDesc("Chx2YXVsdHN5bmMvdjEvdmF1bHRfa2V5LnByb3RvEgx2YXVsdHN5bmMudjEixQEKB0tleVNsb3QSDQoFZXBvY2gYASABKA0SNgoOcmVjaXBpZW50X2tpbmQYAiABKA4yHi52YXVsdHN5bmMudjEuS2V5UmVjaXBpZW50S2luZBIUCgxyZWNpcGllbnRfaWQYAyABKAkSEwoLd3JhcHBlZF9rZXkYBCABKAwSFwoPY3JlYXRvcl91c2VyX2lkGAUgASgJEi8KC2NyZWF0ZV90aW1lGAYgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCJ3CghLZXlFcG9jaBINCgVlcG9jaBgBIAEoDRISCgpjb21taXRtZW50GAIgASgMEhcKD2NyZWF0b3JfdXNlcl9pZBgDIAEoCRIvCgtjcmVhdGVfdGltZRgEIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXAiXQoJTmV4dEVwb2NoEhYKDmV4cGVjdGVkX2Vwb2NoGAEgASgNEhIKCmNvbW1pdG1lbnQYAiABKAwSJAoFc2xvdHMYAyADKAsyFS52YXVsdHN5bmMudjEuS2V5U2xvdCJBCgtNaXNzaW5nU2xvdBINCgVlcG9jaBgBIAEoDRIPCgd1c2VyX2lkGAIgASgJEhIKCnB1YmxpY19rZXkYAyABKAwihgEKE0xpc3RLZXlTbG90c1JlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkSEQoJcGFnZV9zaXplGAIgASgNEhIKCnBhZ2VfdG9rZW4YAyABKAkSNgoOcmVjaXBpZW50X2tpbmQYBCABKA4yHi52YXVsdHN5bmMudjEuS2V5UmVjaXBpZW50S2luZCJVChRMaXN0S2V5U2xvdHNSZXNwb25zZRIkCgVzbG90cxgBIAMoCzIVLnZhdWx0c3luYy52MS5LZXlTbG90EhcKD25leHRfcGFnZV90b2tlbhgCIAEoCSJMChFMaXN0RXBvY2hzUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRIRCglwYWdlX3NpemUYAiABKA0SEgoKcGFnZV90b2tlbhgDIAEoCSKGAQoSTGlzdEVwb2Noc1Jlc3BvbnNlEiYKBmVwb2NocxgBIAMoCzIWLnZhdWx0c3luYy52MS5LZXlFcG9jaBIXCg9uZXh0X3BhZ2VfdG9rZW4YAiABKAkSFQoNY3VycmVudF9lcG9jaBgDIAEoDRIYChByb3RhdGlvbl9wZW5kaW5nGAQgASgIIlIKF0xpc3RNaXNzaW5nU2xvdHNSZXF1ZXN0EhAKCHZhdWx0X2lkGAEgASgJEhEKCXBhZ2Vfc2l6ZRgCIAEoDRISCgpwYWdlX3Rva2VuGAMgASgJImUKGExpc3RNaXNzaW5nU2xvdHNSZXNwb25zZRIwCg1taXNzaW5nX3Nsb3RzGAEgAygLMhkudmF1bHRzeW5jLnYxLk1pc3NpbmdTbG90EhcKD25leHRfcGFnZV90b2tlbhgCIAEoCSJTChJSb3RhdGVFcG9jaFJlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkSKwoKbmV4dF9lcG9jaBgCIAEoCzIXLnZhdWx0c3luYy52MS5OZXh0RXBvY2giPAoTUm90YXRlRXBvY2hSZXNwb25zZRIlCgVlcG9jaBgBIAEoCzIWLnZhdWx0c3luYy52MS5LZXlFcG9jaCJMChJBZGRLZXlTbG90c1JlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkSJAoFc2xvdHMYAiADKAsyFS52YXVsdHN5bmMudjEuS2V5U2xvdCIkChNBZGRLZXlTbG90c1Jlc3BvbnNlEg0KBWFkZGVkGAEgASgNIlAKFUxpc3RMb2dFbnRyaWVzUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRIRCglwYWdlX3NpemUYAiABKA0SEgoKcGFnZV90b2tlbhgDIAEoCSJaChZMaXN0TG9nRW50cmllc1Jlc3BvbnNlEicKB2VudHJpZXMYASADKAsyFi52YXVsdHN5bmMudjEuTG9nRW50cnkSFwoPbmV4dF9wYWdlX3Rva2VuGAIgASgJKnIKEEtleVJlY2lwaWVudEtpbmQSIgoeS0VZX1JFQ0lQSUVOVF9LSU5EX1VOU1BFQ0lGSUVEEAASGwoXS0VZX1JFQ0lQSUVOVF9LSU5EX1VTRVIQARIdChlLRVlfUkVDSVBJRU5UX0tJTkRfRVNDUk9XEAIyrQQKD1ZhdWx0S2V5U2VydmljZRJXCgxMaXN0S2V5U2xvdHMSIS52YXVsdHN5bmMudjEuTGlzdEtleVNsb3RzUmVxdWVzdBoiLnZhdWx0c3luYy52MS5MaXN0S2V5U2xvdHNSZXNwb25zZSIAElEKCkxpc3RFcG9jaHMSHy52YXVsdHN5bmMudjEuTGlzdEVwb2Noc1JlcXVlc3QaIC52YXVsdHN5bmMudjEuTGlzdEVwb2Noc1Jlc3BvbnNlIgASYwoQTGlzdE1pc3NpbmdTbG90cxIlLnZhdWx0c3luYy52MS5MaXN0TWlzc2luZ1Nsb3RzUmVxdWVzdBomLnZhdWx0c3luYy52MS5MaXN0TWlzc2luZ1Nsb3RzUmVzcG9uc2UiABJUCgtSb3RhdGVFcG9jaBIgLnZhdWx0c3luYy52MS5Sb3RhdGVFcG9jaFJlcXVlc3QaIS52YXVsdHN5bmMudjEuUm90YXRlRXBvY2hSZXNwb25zZSIAElQKC0FkZEtleVNsb3RzEiAudmF1bHRzeW5jLnYxLkFkZEtleVNsb3RzUmVxdWVzdBohLnZhdWx0c3luYy52MS5BZGRLZXlTbG90c1Jlc3BvbnNlIgASXQoOTGlzdExvZ0VudHJpZXMSIy52YXVsdHN5bmMudjEuTGlzdExvZ0VudHJpZXNSZXF1ZXN0GiQudmF1bHRzeW5jLnYxLkxpc3RMb2dFbnRyaWVzUmVzcG9uc2UiAEJAWj5naXRodWIuY29tL3NvbGlkRG9XYW50L3ZhdWx0LXN5bmMvZ2VuL3ZhdWx0c3luYy92MTt2YXVsdHN5bmN2MWIGcHJvdG8z", [file_google_protobuf_timestamp, file_vaultsync_v1_types]);
+  fileDesc("Chx2YXVsdHN5bmMvdjEvdmF1bHRfa2V5LnByb3RvEgx2YXVsdHN5bmMudjEixQEKB0tleVNsb3QSDQoFZXBvY2gYASABKA0SNgoOcmVjaXBpZW50X2tpbmQYAiABKA4yHi52YXVsdHN5bmMudjEuS2V5UmVjaXBpZW50S2luZBIUCgxyZWNpcGllbnRfaWQYAyABKAkSEwoLd3JhcHBlZF9rZXkYBCABKAwSFwoPY3JlYXRvcl91c2VyX2lkGAUgASgJEi8KC2NyZWF0ZV90aW1lGAYgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCKiAQoIS2V5RXBvY2gSDQoFZXBvY2gYASABKA0SEgoKY29tbWl0bWVudBgCIAEoDBIXCg9jcmVhdG9yX3VzZXJfaWQYAyABKAkSLwoLY3JlYXRlX3RpbWUYBCABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEikKBnJlY29yZBgFIAEoCzIZLnZhdWx0c3luYy52MS5FcG9jaFJlY29yZCJGCg5FcG9jaFJlY2lwaWVudBIMCgRraW5kGAEgASgNEhQKDHJlY2lwaWVudF9pZBgCIAEoDBIQCghrZXlfaGFzaBgDIAEoDCJ1CgtFcG9jaFJlY29yZBIPCgdsb2dfc2VxGAEgASgEEhAKCGxvZ19oYXNoGAIgASgMEjAKCnJlY2lwaWVudHMYAyADKAsyHC52YXVsdHN5bmMudjEuRXBvY2hSZWNpcGllbnQSEQoJc2lnbmF0dXJlGAQgASgMIl0KCU5leHRFcG9jaBIWCg5leHBlY3RlZF9lcG9jaBgBIAEoDRISCgpjb21taXRtZW50GAIgASgMEiQKBXNsb3RzGAMgAygLMhUudmF1bHRzeW5jLnYxLktleVNsb3QiQQoLTWlzc2luZ1Nsb3QSDQoFZXBvY2gYASABKA0SDwoHdXNlcl9pZBgCIAEoCRISCgpwdWJsaWNfa2V5GAMgASgMIoYBChNMaXN0S2V5U2xvdHNSZXF1ZXN0EhAKCHZhdWx0X2lkGAEgASgJEhEKCXBhZ2Vfc2l6ZRgCIAEoDRISCgpwYWdlX3Rva2VuGAMgASgJEjYKDnJlY2lwaWVudF9raW5kGAQgASgOMh4udmF1bHRzeW5jLnYxLktleVJlY2lwaWVudEtpbmQiVQoUTGlzdEtleVNsb3RzUmVzcG9uc2USJAoFc2xvdHMYASADKAsyFS52YXVsdHN5bmMudjEuS2V5U2xvdBIXCg9uZXh0X3BhZ2VfdG9rZW4YAiABKAkiTAoRTGlzdEVwb2Noc1JlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkSEQoJcGFnZV9zaXplGAIgASgNEhIKCnBhZ2VfdG9rZW4YAyABKAkihgEKEkxpc3RFcG9jaHNSZXNwb25zZRImCgZlcG9jaHMYASADKAsyFi52YXVsdHN5bmMudjEuS2V5RXBvY2gSFwoPbmV4dF9wYWdlX3Rva2VuGAIgASgJEhUKDWN1cnJlbnRfZXBvY2gYAyABKA0SGAoQcm90YXRpb25fcGVuZGluZxgEIAEoCCJSChdMaXN0TWlzc2luZ1Nsb3RzUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRIRCglwYWdlX3NpemUYAiABKA0SEgoKcGFnZV90b2tlbhgDIAEoCSJlChhMaXN0TWlzc2luZ1Nsb3RzUmVzcG9uc2USMAoNbWlzc2luZ19zbG90cxgBIAMoCzIZLnZhdWx0c3luYy52MS5NaXNzaW5nU2xvdBIXCg9uZXh0X3BhZ2VfdG9rZW4YAiABKAkirAEKElJvdGF0ZUVwb2NoUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRIrCgpuZXh0X2Vwb2NoGAIgASgLMhcudmF1bHRzeW5jLnYxLk5leHRFcG9jaBIpCgZyZWNvcmQYAyABKAsyGS52YXVsdHN5bmMudjEuRXBvY2hSZWNvcmQSLAoMZXNjcm93X2VudHJ5GAQgASgLMhYudmF1bHRzeW5jLnYxLkxvZ0VudHJ5IjwKE1JvdGF0ZUVwb2NoUmVzcG9uc2USJQoFZXBvY2gYASABKAsyFi52YXVsdHN5bmMudjEuS2V5RXBvY2giTAoSQWRkS2V5U2xvdHNSZXF1ZXN0EhAKCHZhdWx0X2lkGAEgASgJEiQKBXNsb3RzGAIgAygLMhUudmF1bHRzeW5jLnYxLktleVNsb3QiJAoTQWRkS2V5U2xvdHNSZXNwb25zZRINCgVhZGRlZBgBIAEoDSJQChVMaXN0TG9nRW50cmllc1JlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkSEQoJcGFnZV9zaXplGAIgASgNEhIKCnBhZ2VfdG9rZW4YAyABKAkiWgoWTGlzdExvZ0VudHJpZXNSZXNwb25zZRInCgdlbnRyaWVzGAEgAygLMhYudmF1bHRzeW5jLnYxLkxvZ0VudHJ5EhcKD25leHRfcGFnZV90b2tlbhgCIAEoCSpyChBLZXlSZWNpcGllbnRLaW5kEiIKHktFWV9SRUNJUElFTlRfS0lORF9VTlNQRUNJRklFRBAAEhsKF0tFWV9SRUNJUElFTlRfS0lORF9VU0VSEAESHQoZS0VZX1JFQ0lQSUVOVF9LSU5EX0VTQ1JPVxACMq0ECg9WYXVsdEtleVNlcnZpY2USVwoMTGlzdEtleVNsb3RzEiEudmF1bHRzeW5jLnYxLkxpc3RLZXlTbG90c1JlcXVlc3QaIi52YXVsdHN5bmMudjEuTGlzdEtleVNsb3RzUmVzcG9uc2UiABJRCgpMaXN0RXBvY2hzEh8udmF1bHRzeW5jLnYxLkxpc3RFcG9jaHNSZXF1ZXN0GiAudmF1bHRzeW5jLnYxLkxpc3RFcG9jaHNSZXNwb25zZSIAEmMKEExpc3RNaXNzaW5nU2xvdHMSJS52YXVsdHN5bmMudjEuTGlzdE1pc3NpbmdTbG90c1JlcXVlc3QaJi52YXVsdHN5bmMudjEuTGlzdE1pc3NpbmdTbG90c1Jlc3BvbnNlIgASVAoLUm90YXRlRXBvY2gSIC52YXVsdHN5bmMudjEuUm90YXRlRXBvY2hSZXF1ZXN0GiEudmF1bHRzeW5jLnYxLlJvdGF0ZUVwb2NoUmVzcG9uc2UiABJUCgtBZGRLZXlTbG90cxIgLnZhdWx0c3luYy52MS5BZGRLZXlTbG90c1JlcXVlc3QaIS52YXVsdHN5bmMudjEuQWRkS2V5U2xvdHNSZXNwb25zZSIAEl0KDkxpc3RMb2dFbnRyaWVzEiMudmF1bHRzeW5jLnYxLkxpc3RMb2dFbnRyaWVzUmVxdWVzdBokLnZhdWx0c3luYy52MS5MaXN0TG9nRW50cmllc1Jlc3BvbnNlIgBCQFo+Z2l0aHViLmNvbS9zb2xpZERvV2FudC92YXVsdC1zeW5jL2dlbi92YXVsdHN5bmMvdjE7dmF1bHRzeW5jdjFiBnByb3RvMw", [file_google_protobuf_timestamp, file_vaultsync_v1_types]);
 
 /**
  * KeySlot is an epoch key wrapped to one recipient.
@@ -110,6 +110,14 @@ export type KeyEpoch = Message<"vaultsync.v1.KeyEpoch"> & {
    * @generated from field: google.protobuf.Timestamp create_time = 4;
    */
   createTime?: Timestamp | undefined;
+
+  /**
+   * The owner's signed epoch record (docs/design/crypto.md), as RotateEpoch
+   * stored it. Unset for an epoch created without one (a member removal).
+   *
+   * @generated from field: vaultsync.v1.EpochRecord record = 5;
+   */
+  record?: EpochRecord | undefined;
 };
 
 /**
@@ -118,6 +126,90 @@ export type KeyEpoch = Message<"vaultsync.v1.KeyEpoch"> & {
  */
 export const KeyEpochSchema: GenMessage<KeyEpoch> = /*@__PURE__*/
   messageDesc(file_vaultsync_v1_vault_key, 1);
+
+/**
+ * EpochRecipient is one recipient of a signed epoch record.
+ *
+ * @generated from message vaultsync.v1.EpochRecipient
+ */
+export type EpochRecipient = Message<"vaultsync.v1.EpochRecipient"> & {
+  /**
+   * The recipient kind byte: 1 (user), 2 (escrow) or 3 (invitation).
+   *
+   * @generated from field: uint32 kind = 1;
+   */
+  kind: number;
+
+  /**
+   * The encoded recipient id: the 16 bytes of the user or invitation id,
+   * or the escrow key id.
+   *
+   * @generated from field: bytes recipient_id = 2;
+   */
+  recipientId: Uint8Array;
+
+  /**
+   * SHA-256 of the recipient's public key as the membership log records it
+   * (32 bytes).
+   *
+   * @generated from field: bytes key_hash = 3;
+   */
+  keyHash: Uint8Array;
+};
+
+/**
+ * Describes the message vaultsync.v1.EpochRecipient.
+ * Use `create(EpochRecipientSchema)` to create a new message.
+ */
+export const EpochRecipientSchema: GenMessage<EpochRecipient> = /*@__PURE__*/
+  messageDesc(file_vaultsync_v1_vault_key, 2);
+
+/**
+ * EpochRecord is an owner's signature over a new epoch
+ * (docs/design/crypto.md, epoch_body). The vault, the epoch number, its
+ * commitment and the previous epoch's commitment are the epoch's own and
+ * are not repeated here.
+ *
+ * @generated from message vaultsync.v1.EpochRecord
+ */
+export type EpochRecord = Message<"vaultsync.v1.EpochRecord"> & {
+  /**
+   * The membership log position the record names, from 1.
+   *
+   * @generated from field: uint64 log_seq = 1;
+   */
+  logSeq: bigint;
+
+  /**
+   * The hash of the log entry at log_seq (32 bytes).
+   *
+   * @generated from field: bytes log_hash = 2;
+   */
+  logHash: Uint8Array;
+
+  /**
+   * Every recipient of the epoch, sorted by kind, then recipient id: the
+   * members at log_seq, the pending invitations and the escrow key if
+   * escrow is on.
+   *
+   * @generated from field: repeated vaultsync.v1.EpochRecipient recipients = 3;
+   */
+  recipients: EpochRecipient[];
+
+  /**
+   * The Ed25519 signature of epoch_body by an owner at log_seq (64 bytes).
+   *
+   * @generated from field: bytes signature = 4;
+   */
+  signature: Uint8Array;
+};
+
+/**
+ * Describes the message vaultsync.v1.EpochRecord.
+ * Use `create(EpochRecordSchema)` to create a new message.
+ */
+export const EpochRecordSchema: GenMessage<EpochRecord> = /*@__PURE__*/
+  messageDesc(file_vaultsync_v1_vault_key, 3);
 
 /**
  * NextEpoch is the epoch that replaces the vault's current one.
@@ -154,7 +246,7 @@ export type NextEpoch = Message<"vaultsync.v1.NextEpoch"> & {
  * Use `create(NextEpochSchema)` to create a new message.
  */
 export const NextEpochSchema: GenMessage<NextEpoch> = /*@__PURE__*/
-  messageDesc(file_vaultsync_v1_vault_key, 2);
+  messageDesc(file_vaultsync_v1_vault_key, 4);
 
 /**
  * MissingSlot is a member's missing key slot for one epoch.
@@ -190,7 +282,7 @@ export type MissingSlot = Message<"vaultsync.v1.MissingSlot"> & {
  * Use `create(MissingSlotSchema)` to create a new message.
  */
 export const MissingSlotSchema: GenMessage<MissingSlot> = /*@__PURE__*/
-  messageDesc(file_vaultsync_v1_vault_key, 3);
+  messageDesc(file_vaultsync_v1_vault_key, 5);
 
 /**
  * ListKeySlotsRequest pages through the caller's slots.
@@ -236,7 +328,7 @@ export type ListKeySlotsRequest = Message<"vaultsync.v1.ListKeySlotsRequest"> & 
  * Use `create(ListKeySlotsRequestSchema)` to create a new message.
  */
 export const ListKeySlotsRequestSchema: GenMessage<ListKeySlotsRequest> = /*@__PURE__*/
-  messageDesc(file_vaultsync_v1_vault_key, 4);
+  messageDesc(file_vaultsync_v1_vault_key, 6);
 
 /**
  * ListKeySlotsResponse is one page of the requested slots.
@@ -264,7 +356,7 @@ export type ListKeySlotsResponse = Message<"vaultsync.v1.ListKeySlotsResponse"> 
  * Use `create(ListKeySlotsResponseSchema)` to create a new message.
  */
 export const ListKeySlotsResponseSchema: GenMessage<ListKeySlotsResponse> = /*@__PURE__*/
-  messageDesc(file_vaultsync_v1_vault_key, 5);
+  messageDesc(file_vaultsync_v1_vault_key, 7);
 
 /**
  * ListEpochsRequest pages through the vault's epochs.
@@ -300,7 +392,7 @@ export type ListEpochsRequest = Message<"vaultsync.v1.ListEpochsRequest"> & {
  * Use `create(ListEpochsRequestSchema)` to create a new message.
  */
 export const ListEpochsRequestSchema: GenMessage<ListEpochsRequest> = /*@__PURE__*/
-  messageDesc(file_vaultsync_v1_vault_key, 6);
+  messageDesc(file_vaultsync_v1_vault_key, 8);
 
 /**
  * ListEpochsResponse is one page of the vault's epochs.
@@ -343,7 +435,7 @@ export type ListEpochsResponse = Message<"vaultsync.v1.ListEpochsResponse"> & {
  * Use `create(ListEpochsResponseSchema)` to create a new message.
  */
 export const ListEpochsResponseSchema: GenMessage<ListEpochsResponse> = /*@__PURE__*/
-  messageDesc(file_vaultsync_v1_vault_key, 7);
+  messageDesc(file_vaultsync_v1_vault_key, 9);
 
 /**
  * ListMissingSlotsRequest pages through the vault's missing slots.
@@ -379,7 +471,7 @@ export type ListMissingSlotsRequest = Message<"vaultsync.v1.ListMissingSlotsRequ
  * Use `create(ListMissingSlotsRequestSchema)` to create a new message.
  */
 export const ListMissingSlotsRequestSchema: GenMessage<ListMissingSlotsRequest> = /*@__PURE__*/
-  messageDesc(file_vaultsync_v1_vault_key, 8);
+  messageDesc(file_vaultsync_v1_vault_key, 10);
 
 /**
  * ListMissingSlotsResponse is one page of missing slots.
@@ -407,7 +499,7 @@ export type ListMissingSlotsResponse = Message<"vaultsync.v1.ListMissingSlotsRes
  * Use `create(ListMissingSlotsResponseSchema)` to create a new message.
  */
 export const ListMissingSlotsResponseSchema: GenMessage<ListMissingSlotsResponse> = /*@__PURE__*/
-  messageDesc(file_vaultsync_v1_vault_key, 9);
+  messageDesc(file_vaultsync_v1_vault_key, 11);
 
 /**
  * RotateEpochRequest creates the vault's next epoch.
@@ -428,6 +520,25 @@ export type RotateEpochRequest = Message<"vaultsync.v1.RotateEpochRequest"> & {
    * @generated from field: vaultsync.v1.NextEpoch next_epoch = 2;
    */
   nextEpoch?: NextEpoch | undefined;
+
+  /**
+   * The new epoch's signed record. Required for an E2EE vault: it must be
+   * signed by an owner at its log position, and its recipients must be
+   * exactly those the log names there and match next_epoch's slots.
+   *
+   * @generated from field: vaultsync.v1.EpochRecord record = 3;
+   */
+  record?: EpochRecord | undefined;
+
+  /**
+   * The owner's signed escrow on/off entry (type 8), to turn the vault's
+   * escrow on or off with this rotation. It is appended to the membership
+   * log in the same transaction as the epoch, and the record's log
+   * position must be this entry.
+   *
+   * @generated from field: vaultsync.v1.LogEntry escrow_entry = 4;
+   */
+  escrowEntry?: LogEntry | undefined;
 };
 
 /**
@@ -435,7 +546,7 @@ export type RotateEpochRequest = Message<"vaultsync.v1.RotateEpochRequest"> & {
  * Use `create(RotateEpochRequestSchema)` to create a new message.
  */
 export const RotateEpochRequestSchema: GenMessage<RotateEpochRequest> = /*@__PURE__*/
-  messageDesc(file_vaultsync_v1_vault_key, 10);
+  messageDesc(file_vaultsync_v1_vault_key, 12);
 
 /**
  * RotateEpochResponse returns the new epoch.
@@ -456,7 +567,7 @@ export type RotateEpochResponse = Message<"vaultsync.v1.RotateEpochResponse"> & 
  * Use `create(RotateEpochResponseSchema)` to create a new message.
  */
 export const RotateEpochResponseSchema: GenMessage<RotateEpochResponse> = /*@__PURE__*/
-  messageDesc(file_vaultsync_v1_vault_key, 11);
+  messageDesc(file_vaultsync_v1_vault_key, 13);
 
 /**
  * AddKeySlotsRequest grants key slots.
@@ -484,7 +595,7 @@ export type AddKeySlotsRequest = Message<"vaultsync.v1.AddKeySlotsRequest"> & {
  * Use `create(AddKeySlotsRequestSchema)` to create a new message.
  */
 export const AddKeySlotsRequestSchema: GenMessage<AddKeySlotsRequest> = /*@__PURE__*/
-  messageDesc(file_vaultsync_v1_vault_key, 12);
+  messageDesc(file_vaultsync_v1_vault_key, 14);
 
 /**
  * AddKeySlotsResponse counts the slots stored.
@@ -505,7 +616,7 @@ export type AddKeySlotsResponse = Message<"vaultsync.v1.AddKeySlotsResponse"> & 
  * Use `create(AddKeySlotsResponseSchema)` to create a new message.
  */
 export const AddKeySlotsResponseSchema: GenMessage<AddKeySlotsResponse> = /*@__PURE__*/
-  messageDesc(file_vaultsync_v1_vault_key, 13);
+  messageDesc(file_vaultsync_v1_vault_key, 15);
 
 /**
  * ListLogEntriesRequest pages through the vault's membership log.
@@ -541,7 +652,7 @@ export type ListLogEntriesRequest = Message<"vaultsync.v1.ListLogEntriesRequest"
  * Use `create(ListLogEntriesRequestSchema)` to create a new message.
  */
 export const ListLogEntriesRequestSchema: GenMessage<ListLogEntriesRequest> = /*@__PURE__*/
-  messageDesc(file_vaultsync_v1_vault_key, 14);
+  messageDesc(file_vaultsync_v1_vault_key, 16);
 
 /**
  * ListLogEntriesResponse is one page of the vault's membership log.
@@ -569,7 +680,7 @@ export type ListLogEntriesResponse = Message<"vaultsync.v1.ListLogEntriesRespons
  * Use `create(ListLogEntriesResponseSchema)` to create a new message.
  */
 export const ListLogEntriesResponseSchema: GenMessage<ListLogEntriesResponse> = /*@__PURE__*/
-  messageDesc(file_vaultsync_v1_vault_key, 15);
+  messageDesc(file_vaultsync_v1_vault_key, 17);
 
 /**
  * KeyRecipientKind is whom a key slot wraps an epoch key to.
@@ -684,7 +795,8 @@ export const VaultKeyService: GenService<{
    *
    * Errors: INVALID_ARGUMENT for out-of-bounds fields, or slots that are not
    * exactly the epoch's recipients (one per member with a user key, plus at
-   * most one escrow slot in an escrow vault); FAILED_PRECONDITION with an
+   * most one escrow slot in an escrow vault), a missing or unverifiable
+   * epoch record or escrow entry (nothing changes); FAILED_PRECONDITION with an
    * ErrorDetail of reason ERROR_REASON_EPOCH_NOT_CURRENT when expected_epoch
    * is not the vault's current epoch (another rotation won: adopt it), and
    * without that reason for a plaintext vault.

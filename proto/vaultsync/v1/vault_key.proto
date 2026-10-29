@@ -60,7 +60,8 @@ service VaultKeyService {
   //
   // Errors: INVALID_ARGUMENT for out-of-bounds fields, or slots that are not
   // exactly the epoch's recipients (one per member with a user key, plus at
-  // most one escrow slot in an escrow vault); FAILED_PRECONDITION with an
+  // most one escrow slot in an escrow vault), a missing or unverifiable
+  // epoch record or escrow entry (nothing changes); FAILED_PRECONDITION with an
   // ErrorDetail of reason ERROR_REASON_EPOCH_NOT_CURRENT when expected_epoch
   // is not the vault's current epoch (another rotation won: adopt it), and
   // without that reason for a plaintext vault.
@@ -126,6 +127,38 @@ message KeyEpoch {
   string creator_user_id = 3;
   // When the epoch was created.
   google.protobuf.Timestamp create_time = 4;
+  // The owner's signed epoch record (docs/design/crypto.md), as RotateEpoch
+  // stored it. Unset for an epoch created without one (a member removal).
+  EpochRecord record = 5;
+}
+
+// EpochRecipient is one recipient of a signed epoch record.
+message EpochRecipient {
+  // The recipient kind byte: 1 (user), 2 (escrow) or 3 (invitation).
+  uint32 kind = 1;
+  // The encoded recipient id: the 16 bytes of the user or invitation id,
+  // or the escrow key id.
+  bytes recipient_id = 2;
+  // SHA-256 of the recipient's public key as the membership log records it
+  // (32 bytes).
+  bytes key_hash = 3;
+}
+
+// EpochRecord is an owner's signature over a new epoch
+// (docs/design/crypto.md, epoch_body). The vault, the epoch number, its
+// commitment and the previous epoch's commitment are the epoch's own and
+// are not repeated here.
+message EpochRecord {
+  // The membership log position the record names, from 1.
+  uint64 log_seq = 1;
+  // The hash of the log entry at log_seq (32 bytes).
+  bytes log_hash = 2;
+  // Every recipient of the epoch, sorted by kind, then recipient id: the
+  // members at log_seq, the pending invitations and the escrow key if
+  // escrow is on.
+  repeated EpochRecipient recipients = 3;
+  // The Ed25519 signature of epoch_body by an owner at log_seq (64 bytes).
+  bytes signature = 4;
 }
 
 // NextEpoch is the epoch that replaces the vault's current one.
@@ -224,6 +257,15 @@ message RotateEpochRequest {
   string vault_id = 1;
   // The new epoch.
   NextEpoch next_epoch = 2;
+  // The new epoch's signed record. Required for an E2EE vault: it must be
+  // signed by an owner at its log position, and its recipients must be
+  // exactly those the log names there and match next_epoch's slots.
+  EpochRecord record = 3;
+  // The owner's signed escrow on/off entry (type 8), to turn the vault's
+  // escrow on or off with this rotation. It is appended to the membership
+  // log in the same transaction as the epoch, and the record's log
+  // position must be this entry.
+  LogEntry escrow_entry = 4;
 }
 
 // RotateEpochResponse returns the new epoch.

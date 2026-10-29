@@ -115,10 +115,17 @@ func sealedSlot(t *testing.T, vaultID string, epoch uint32, epochKey []byte, rec
 	}
 }
 
+// rotate sends next, with its record signed at the head of a log matching
+// the vault's members (vaultLog).
 func (fixture *syncFixture) rotate(t *testing.T, replica int, caller *keyedMember, next *vaultsyncv1.NextEpoch) (*vaultsyncv1.KeyEpoch, error) {
 	t.Helper()
 
-	response, err := fixture.vaultKeys(replica).RotateEpoch(t.Context(), authorized(&vaultsyncv1.RotateEpochRequest{VaultId: caller.vaultID, NextEpoch: next}, caller.token))
+	log := fixture.vaultLog(t, caller.vaultID)
+	record := fixture.signedRecord(t, log, caller.vaultID, caller.userID, next)
+
+	response, err := fixture.vaultKeys(replica).RotateEpoch(t.Context(), authorized(&vaultsyncv1.RotateEpochRequest{
+		VaultId: caller.vaultID, NextEpoch: next, Record: record,
+	}, caller.token))
 	if err != nil {
 		return nil, err
 	}
