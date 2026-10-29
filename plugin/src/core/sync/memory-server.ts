@@ -79,7 +79,8 @@ const strictDecoder = new TextDecoder("utf-8", { fatal: true });
  * §6.1, §6.2): resumable sequential chunks, hash verification, optimistic
  * concurrency with the head as a Document detail, idempotent retries by
  * revision id, path-key uniqueness among live documents, including the
- * file/folder rule (a live document never at or under another's folder), the
+ * file/folder rule (a live document never at or under another's folder, unless
+ * that folder is a folder document), the
  * new-path rules (no document created or moved into a path with a "\" or a
  * drive-like prefix such as "1:"), and the path text rule (length, control
  * characters).
@@ -496,10 +497,13 @@ export class InMemoryServer {
       ]);
     }
     if (head !== undefined && head.kind !== request.kind) throw new ConnectError("kind differs from the document's kind", Code.InvalidArgument);
+    // A folder has no content; every other kind has a complete blob.
+    const folder = request.kind === DocumentKind.FOLDER;
+    if (folder && request.contentRef !== undefined) throw new ConnectError("a folder has no content", Code.InvalidArgument);
     const blobId = bytesToHex(request.contentRef?.blobId ?? new Uint8Array());
     const blob = this.blobs.get(blobId);
-    if (blob === undefined) throw new ConnectError("content_ref is not a complete blob", Code.FailedPrecondition);
-    if (BigInt(blob.length) !== request.contentRef?.size) throw new ConnectError("size mismatch", Code.InvalidArgument);
+    if (!folder && blob === undefined) throw new ConnectError("content_ref is not a complete blob", Code.FailedPrecondition);
+    if (blob !== undefined && BigInt(blob.length) !== request.contentRef?.size) throw new ConnectError("size mismatch", Code.InvalidArgument);
     let path: string;
     try {
       path = strictDecoder.decode(request.path);
@@ -523,8 +527,12 @@ export class InMemoryServer {
         if (documentId === request.documentId) continue;
         const other = pathKey(new TextDecoder().decode(live.path));
         if (other === key) throw new ConnectError("another live document has this path", Code.AlreadyExists);
-        // File/folder rule (SPEC.md §6.3): no live document at, or under, the folder another one's path names.
-        if (newKey && (other.startsWith(`${key}/`) || key.startsWith(`${other}/`))) {
+        // File/folder rule (SPEC.md §5): no live document at, or under, the
+        // folder another one's path names, unless the document whose path is
+        // the folder is a folder document.
+        const underOther = key.startsWith(`${other}/`) && live.kind !== DocumentKind.FOLDER;
+        const overOther = other.startsWith(`${key}/`) && !folder;
+        if (newKey && (underOther || overOther)) {
           throw new ConnectError("another live document's path is a folder of this one, or this one of it", Code.AlreadyExists);
         }
       }
@@ -537,7 +545,7 @@ export class InMemoryServer {
       seq: this.headSeq,
       parentRevId: request.baseRevId,
       kind: request.kind,
-      contentRef: { blobId: hexToBytes(blobId), size: BigInt(blob.length) },
+      contentRef: blob === undefined ? undefined : { blobId: hexToBytes(blobId), size: BigInt(blob.length) },
       path: request.path,
       deleted: request.deleted,
       deviceId: request.deviceId,

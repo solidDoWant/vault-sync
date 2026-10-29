@@ -349,3 +349,69 @@ func TestPathFolderCheckIgnoresDigestCollisions(t *testing.T) {
 		})
 	}
 }
+
+// A live folder document may be the folder of other live documents, in
+// either commit order; every other kind keeps the file/folder rule, and a
+// folder and a file still never share a path key.
+func TestPathFolderCheckExemptsFolderDocuments(t *testing.T) {
+	type document struct {
+		pathKey string
+		folder  bool
+	}
+
+	tests := []struct {
+		name          string
+		first, second document
+		assertion     require.ErrorAssertionFunc
+	}{
+		{name: "a file under a folder", first: document{"p", true}, second: document{"p/x.md", false}},
+		{name: "a folder under a folder", first: document{"p", true}, second: document{"p/q", true}},
+		{name: "a folder over a file", first: document{"p/x.md", false}, second: document{"p", true}},
+		{name: "a folder over a folder", first: document{"p/q", true}, second: document{"p", true}},
+		{name: "a folder over a deep file", first: document{"p/q/x.md", false}, second: document{"p", true}},
+		{name: "a file under a file", first: document{"p", false}, second: document{"p/x.md", false}, assertion: requireFolderTaken},
+		{name: "a folder under a file", first: document{"p", false}, second: document{"p/q", true}, assertion: requireFolderTaken},
+		{name: "a file over a file", first: document{"p/x.md", false}, second: document{"p", false}, assertion: requireFolderTaken},
+		{name: "a file over a folder", first: document{"p/q", true}, second: document{"p", false}, assertion: requireFolderTaken},
+		{name: "a file at a folder", first: document{"p", true}, second: document{"p", false}, assertion: requirePathKeyTaken},
+		{name: "a folder at a file", first: document{"p", false}, second: document{"p", true}, assertion: requirePathKeyTaken},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newCommitFixture(t)
+
+			revision := func(document document) store.NewRevision {
+				revision := fixture.create(document.pathKey, document.pathKey)
+				if document.folder {
+					revision.Kind = store.KindFolder
+					revision.ContentRef = nil
+					revision.ContentSize = 0
+				}
+
+				return revision
+			}
+
+			_, err := fixture.vault.CommitRevision(t.Context(), revision(test.first))
+			require.NoError(t, err)
+
+			before := fixture.headSeq(t)
+			_, err = fixture.vault.CommitRevision(t.Context(), revision(test.second))
+
+			assertion := test.assertion
+			if assertion == nil {
+				assertion = require.NoError
+			}
+
+			assertion(t, err)
+
+			if err != nil {
+				assert.Equal(t, before, fixture.headSeq(t), "nothing is committed")
+			}
+		})
+	}
+}
+
+func requirePathKeyTaken(t require.TestingT, err error, msgAndArgs ...any) {
+	require.ErrorIs(t, err, store.ErrPathKeyTaken, msgAndArgs...)
+}

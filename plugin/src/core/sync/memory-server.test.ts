@@ -64,6 +64,73 @@ describe("InMemoryServer's file/folder rule (SPEC.md §6.3, #134)", () => {
   });
 });
 
+/** Commits a new folder document at `path` through the protocol; returns the error code, or "ok". */
+async function commitFolder(server: InMemoryServer, documentId: string, path: string): Promise<string> {
+  const api = createProtocolClient({ transport: server.transport });
+  try {
+    await api.sync.commitRevision({
+      vaultId: server.vaultId,
+      documentId,
+      revisionId: `${documentId}-1`,
+      baseRevId: "",
+      kind: DocumentKind.FOLDER,
+      path: encoder.encode(path),
+      deleted: false,
+      deviceId: "device",
+    });
+    return "ok";
+  } catch (error) {
+    return error instanceof ConnectError ? Code[error.code] : String(error);
+  }
+}
+
+describe("InMemoryServer's folder documents", () => {
+  type Kind = "file" | "folder";
+  const cases: { name: string; first: [Kind, string]; second: [Kind, string]; want: string }[] = [
+    { name: "a file under a folder", first: ["folder", "P"], second: ["file", "p/x.md"], want: "ok" },
+    { name: "a folder under a folder", first: ["folder", "P"], second: ["folder", "p/Q"], want: "ok" },
+    { name: "a folder over a file", first: ["file", "P/x.md"], second: ["folder", "p"], want: "ok" },
+    { name: "a folder over a folder", first: ["folder", "P/Q"], second: ["folder", "p"], want: "ok" },
+    { name: "a file under a file", first: ["file", "P"], second: ["file", "p/x.md"], want: "AlreadyExists" },
+    { name: "a folder under a file", first: ["file", "P"], second: ["folder", "p/Q"], want: "AlreadyExists" },
+    { name: "a file over a file", first: ["file", "P/x.md"], second: ["file", "p"], want: "AlreadyExists" },
+    { name: "a file over a folder", first: ["folder", "P/Q"], second: ["file", "p"], want: "AlreadyExists" },
+    { name: "a file at a folder", first: ["folder", "P"], second: ["file", "p"], want: "AlreadyExists" },
+    { name: "a folder at a file", first: ["file", "P"], second: ["folder", "p"], want: "AlreadyExists" },
+  ];
+
+  const commitKind = (server: InMemoryServer, documentId: string, [kind, path]: [Kind, string]) =>
+    kind === "folder" ? commitFolder(server, documentId, path) : commit(server, documentId, `${documentId}-1`, "", path);
+
+  for (const { name, first, second, want } of cases) {
+    it(`${want === "ok" ? "accepts" : "refuses"} ${name}`, async () => {
+      const server = new InMemoryServer();
+      expect(await commitKind(server, "first", first)).toBe("ok");
+      expect(await commitKind(server, "second", second)).toBe(want);
+    });
+  }
+
+  it("refuses a folder with content", async () => {
+    const server = new InMemoryServer();
+    const content = encoder.encode("content");
+    server.commit({ documentId: "blob-holder", path: "blob", content });
+    const api = createProtocolClient({ transport: server.transport });
+    await expect(
+      api.sync.commitRevision({
+        vaultId: server.vaultId,
+        documentId: "folder",
+        revisionId: "folder-1",
+        baseRevId: "",
+        kind: DocumentKind.FOLDER,
+        contentRef: { blobId: hexToBytes(sha256Hex(content)), size: BigInt(content.length) },
+        path: encoder.encode("p"),
+        deleted: false,
+        deviceId: "device",
+      }),
+    ).rejects.toMatchObject({ code: Code.InvalidArgument });
+  });
+});
+
 describe("InMemoryServer's backslash rule (SPEC.md §6.2, #191)", () => {
   it("refuses to create a path with a backslash, beside a live slash twin or file, or anywhere", async () => {
     const server = new InMemoryServer();
