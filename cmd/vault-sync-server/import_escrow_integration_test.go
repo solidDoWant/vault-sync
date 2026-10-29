@@ -26,7 +26,8 @@ import (
 	"github.com/solidDoWant/vault-sync/internal/vaultimport"
 )
 
-// escrowKey is a deployment's escrow key pair.
+// escrowKey is a deployment's escrow key pair and the public half of its
+// escrow signing key.
 type escrowKey struct {
 	privateKey []byte
 	publicKey  []byte
@@ -57,6 +58,14 @@ func newEscrowKey(t *testing.T) escrowKey {
 	require.NoError(t, err)
 
 	return key
+}
+
+// environment is the server configuration for this escrow key.
+func (key escrowKey) environment() []string {
+	return []string{
+		config.EscrowRecipientEnv + "=" + key.recipient,
+		config.EscrowSigningKeyEnv + "=" + base64.StdEncoding.EncodeToString(key.signPub),
+	}
 }
 
 // createEscrowedVault creates an end-to-end encrypted vault with escrow
@@ -143,8 +152,7 @@ func TestImportIntoAnEscrowedVault(t *testing.T) {
 	binary := buildServer(t)
 	escrow := newEscrowKey(t)
 	server := cluster.start(t, "server", binary,
-		config.OIDCClientIDEnv+"="+authtest.DefaultAudience, config.EscrowRecipientEnv+"="+escrow.recipient,
-		config.EscrowSigningKeyEnv+"="+base64.StdEncoding.EncodeToString(escrow.signPub))
+		append([]string{config.OIDCClientIDEnv + "=" + authtest.DefaultAudience}, escrow.environment()...)...)
 	member := newEncryptedMember(t, server, cluster.token(t, "alice"))
 
 	// Distinctive names and contents, so any plaintext copy is found.
