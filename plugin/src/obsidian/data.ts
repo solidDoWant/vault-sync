@@ -1,5 +1,10 @@
 import { requireSecureUrl, type OidcClientConfig } from "../core/auth/oidc";
-import { configCategories, defaultConfigSyncSettings, type ConfigCategory, type ConfigSyncSettings } from "../core/config/policy";
+import {
+  configCategories,
+  defaultConfigSyncSettings,
+  type ConfigCategory,
+  type ConfigSyncSettings,
+} from "../core/config/policy";
 
 /**
  * What the plugin keeps in its plugin data (`data.json` in the plugin's
@@ -73,6 +78,8 @@ export interface CachedVaultKeys {
 export interface CachedUserKey {
   publicKey: string;
   privateKey: string;
+  /** The Ed25519 signing seed that signs membership log entries. */
+  signSeed: string;
   /** The server and account, as in RegisteredDevice. */
   serverUrl: string;
   issuer: string;
@@ -130,7 +137,10 @@ export const defaultPluginData: Readonly<PluginData> = {
 
 /** Reads stored plugin data, keeping each field that has the right type and defaulting the rest. */
 export function parsePluginData(raw: unknown): PluginData {
-  const stored = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
+  const stored =
+    typeof raw === "object" && raw !== null
+      ? (raw as Record<string, unknown>)
+      : {};
   const text = (field: keyof PluginData): string | undefined => {
     const value = stored[field];
     return typeof value === "string" ? value : undefined;
@@ -142,12 +152,31 @@ export function parsePluginData(raw: unknown): PluginData {
     deviceName: text("deviceName") ?? defaultPluginData.deviceName,
   };
   const refreshToken = text("refreshToken");
-  if (refreshToken !== undefined && refreshToken !== "") data.refreshToken = refreshToken;
-  const identityProvider = record(stored.identityProvider, ["issuer", "clientId"]);
+  if (refreshToken !== undefined && refreshToken !== "")
+    data.refreshToken = refreshToken;
+  const identityProvider = record(stored.identityProvider, [
+    "issuer",
+    "clientId",
+  ]);
   if (identityProvider !== undefined) data.identityProvider = identityProvider;
-  const device = record(stored.device, ["id", "serverUrl", "issuer", "subject"]);
-  if (device !== undefined) data.device = (stored.device as Record<string, unknown>).removed === true ? { ...device, removed: true } : device;
-  const pendingDevice = record(stored.pendingDevice, ["registrationId", "name", "serverUrl", "issuer", "subject"]);
+  const device = record(stored.device, [
+    "id",
+    "serverUrl",
+    "issuer",
+    "subject",
+  ]);
+  if (device !== undefined)
+    data.device =
+      (stored.device as Record<string, unknown>).removed === true
+        ? { ...device, removed: true }
+        : device;
+  const pendingDevice = record(stored.pendingDevice, [
+    "registrationId",
+    "name",
+    "serverUrl",
+    "issuer",
+    "subject",
+  ]);
   if (pendingDevice !== undefined) data.pendingDevice = pendingDevice;
   const vault = record(stored.vault, ["id", "name", "serverUrl"]);
   if (vault !== undefined) data.vault = vault;
@@ -175,8 +204,20 @@ const epochNumber = /^[1-9][0-9]{0,9}$/;
 
 /** A stored user key pair, or undefined if it is malformed (the device is then locked). */
 export function parseUserKey(raw: unknown): CachedUserKey | undefined {
-  const userKey = record(raw, ["publicKey", "privateKey", "serverUrl", "issuer", "subject"]);
-  return userKey !== undefined && hexPublicKey.test(userKey.publicKey) && hexKey.test(userKey.privateKey) ? userKey : undefined;
+  const userKey = record(raw, [
+    "publicKey",
+    "privateKey",
+    "signSeed",
+    "serverUrl",
+    "issuer",
+    "subject",
+  ]);
+  return userKey !== undefined &&
+    hexPublicKey.test(userKey.publicKey) &&
+    hexKey.test(userKey.privateKey) &&
+    hexKey.test(userKey.signSeed)
+    ? userKey
+    : undefined;
 }
 
 /** Stored epoch keys; a malformed entry is dropped (the device unwraps that epoch's slot again). */
@@ -186,8 +227,15 @@ export function parseVaultKeys(raw: unknown): CachedVaultKeys | undefined {
   const stored = (raw as Record<string, unknown>).epochs;
   const epochs: Record<string, string> = {};
   if (typeof stored === "object" && stored !== null) {
-    for (const [epoch, key] of Object.entries(stored as Record<string, unknown>)) {
-      if (epochNumber.test(epoch) && typeof key === "string" && hexKey.test(key)) epochs[epoch] = key;
+    for (const [epoch, key] of Object.entries(
+      stored as Record<string, unknown>,
+    )) {
+      if (
+        epochNumber.test(epoch) &&
+        typeof key === "string" &&
+        hexKey.test(key)
+      )
+        epochs[epoch] = key;
     }
   }
   return { ...owner, epochs };
@@ -202,17 +250,26 @@ export function configSyncSettings(data: PluginData): ConfigSyncSettings {
 function parseConfigSync(raw: unknown): ConfigSyncSettings | undefined {
   if (typeof raw !== "object" || raw === null) return undefined;
   const stored = raw as Record<string, unknown>;
-  const categories = typeof stored.categories === "object" && stored.categories !== null ? (stored.categories as Record<string, unknown>) : {};
+  const categories =
+    typeof stored.categories === "object" && stored.categories !== null
+      ? (stored.categories as Record<string, unknown>)
+      : {};
   const parsed = {} as Record<ConfigCategory, boolean>;
   for (const category of configCategories) {
     const value = categories[category];
-    parsed[category] = typeof value === "boolean" ? value : defaultConfigSyncSettings.categories[category];
+    parsed[category] =
+      typeof value === "boolean"
+        ? value
+        : defaultConfigSyncSettings.categories[category];
   }
   return { enabled: stored.enabled === true, categories: parsed };
 }
 
 /** `raw` as a record of the non-empty string `fields`, or undefined if any is missing. */
-function record<Field extends string>(raw: unknown, fields: readonly Field[]): Record<Field, string> | undefined {
+function record<Field extends string>(
+  raw: unknown,
+  fields: readonly Field[],
+): Record<Field, string> | undefined {
   if (typeof raw !== "object" || raw === null) return undefined;
   const result: Partial<Record<Field, string>> = {};
   for (const field of fields) {
@@ -248,22 +305,37 @@ export function serialized(task: () => Promise<void>): () => Promise<void> {
  * as it was, so a failed sign-in leaves no provider (or token) behind;
  * dropping one is never undone, so a later save still removes it.
  */
-export async function persistRefreshToken(data: PluginData, refreshToken: string | undefined, identityProvider: IdentityProvider | undefined, save: () => Promise<void>): Promise<void> {
+export async function persistRefreshToken(
+  data: PluginData,
+  refreshToken: string | undefined,
+  identityProvider: IdentityProvider | undefined,
+  save: () => Promise<void>,
+): Promise<void> {
   if (refreshToken === undefined) {
     delete data.refreshToken;
     delete data.identityProvider;
     await save();
     return;
   }
-  const before = { refreshToken: data.refreshToken, identityProvider: data.identityProvider };
+  const before = {
+    refreshToken: data.refreshToken,
+    identityProvider: data.identityProvider,
+  };
   data.refreshToken = refreshToken;
-  if (identityProvider !== undefined) data.identityProvider = { ...identityProvider };
-  const stored = { refreshToken: data.refreshToken, identityProvider: data.identityProvider };
+  if (identityProvider !== undefined)
+    data.identityProvider = { ...identityProvider };
+  const stored = {
+    refreshToken: data.refreshToken,
+    identityProvider: data.identityProvider,
+  };
   try {
     await save();
   } catch (error) {
     // Rolled back only if no later change replaced these values meanwhile.
-    if (data.refreshToken === stored.refreshToken && data.identityProvider === stored.identityProvider) {
+    if (
+      data.refreshToken === stored.refreshToken &&
+      data.identityProvider === stored.identityProvider
+    ) {
       if (before.refreshToken === undefined) delete data.refreshToken;
       else data.refreshToken = before.refreshToken;
       if (before.identityProvider === undefined) delete data.identityProvider;

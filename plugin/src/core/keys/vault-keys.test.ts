@@ -8,7 +8,13 @@ import { keyCommitment, openKeySlot, sealKeySlot } from "../e2ee/keyslot";
 import { createProtocolClient } from "../protocol/client";
 import { MemoryVaultKeyServer } from "./memory-vault-keys";
 import type { UserKeyPair } from "./user-key";
-import { MemoryEpochKeyStore, VaultKeyManager, vaultKeyStatusMessage, WAITING_FOR_KEY_MESSAGE, type VaultKeyState } from "./vault-keys";
+import {
+  MemoryEpochKeyStore,
+  VaultKeyManager,
+  vaultKeyStatusMessage,
+  WAITING_FOR_KEY_MESSAGE,
+  type VaultKeyState,
+} from "./vault-keys";
 
 const vaultId = "0190a5b4-0000-7000-8000-000000000001";
 
@@ -18,7 +24,10 @@ interface User {
 }
 
 function user(n: number): User {
-  return { id: `0190a5b4-0000-7000-8000-0000000001${String(n).padStart(2, "0")}`, key: generateKeyPair() };
+  return {
+    id: `0190a5b4-0000-7000-8000-0000000001${String(n).padStart(2, "0")}`,
+    key: { ...generateKeyPair(), signSeed: new Uint8Array(32).fill(n) },
+  };
 }
 
 const alice = user(1); // owner
@@ -27,29 +36,67 @@ const carol = user(3); // editor
 const mallory = user(4); // the member who leaves or is removed
 const erin = user(5); // a new member
 
-function join(server: MemoryVaultKeyServer, member: User, role: VaultRole): void {
+function join(
+  server: MemoryVaultKeyServer,
+  member: User,
+  role: VaultRole,
+): void {
   server.addMember(member.id, role, member.key.publicKey);
 }
 
 /** A device of `member` with its own epoch key store. */
-function device(server: MemoryVaultKeyServer, member: User, owner: boolean, store = new MemoryEpochKeyStore()) {
-  const client = createProtocolClient({ transport: server.transport(member.id) });
-  const manager = new VaultKeyManager({ vaultId, userKey: member.key, owner, keys: client.vaultKeys, membership: client.membership, store });
+function device(
+  server: MemoryVaultKeyServer,
+  member: User,
+  owner: boolean,
+  store = new MemoryEpochKeyStore(),
+) {
+  const client = createProtocolClient({
+    transport: server.transport(member.id),
+  });
+  const manager = new VaultKeyManager({
+    vaultId,
+    userKey: member.key,
+    owner,
+    keys: client.vaultKeys,
+    membership: client.membership,
+    store,
+  });
   return { manager, store };
 }
 
 /** The key of `epoch` that `member`'s stored slot holds, if it opens with their key. */
-async function unwrap(server: MemoryVaultKeyServer, member: User, epoch: number): Promise<Uint8Array | undefined> {
-  const slot = server.slotsOf(epoch).find((stored) => stored.recipientId === member.id);
+async function unwrap(
+  server: MemoryVaultKeyServer,
+  member: User,
+  epoch: number,
+): Promise<Uint8Array | undefined> {
+  const slot = server
+    .slotsOf(epoch)
+    .find((stored) => stored.recipientId === member.id);
   if (slot === undefined) return undefined;
-  return openKeySlot(member.key.privateKey, slot.wrappedKey, { vaultId, epoch, recipientKind: "user", recipientId: member.id });
+  return openKeySlot(member.key.privateKey, slot.wrappedKey, {
+    vaultId,
+    epoch,
+    recipientKind: "user",
+    recipientId: member.id,
+  });
 }
 
 /** Whether `member`'s private key opens any slot of `epoch`, whoever it is listed for. */
-async function opensAnySlot(server: MemoryVaultKeyServer, member: User, epoch: number): Promise<boolean> {
+async function opensAnySlot(
+  server: MemoryVaultKeyServer,
+  member: User,
+  epoch: number,
+): Promise<boolean> {
   for (const slot of server.slotsOf(epoch)) {
     try {
-      await openKeySlot(member.key.privateKey, slot.wrappedKey, { vaultId, epoch, recipientKind: "user", recipientId: slot.recipientId });
+      await openKeySlot(member.key.privateKey, slot.wrappedKey, {
+        vaultId,
+        epoch,
+        recipientKind: "user",
+        recipientId: slot.recipientId,
+      });
       return true;
     } catch {
       // Not this member's slot.
@@ -65,7 +112,10 @@ function recipients(server: MemoryVaultKeyServer, epoch: number): string[] {
     .sort();
 }
 
-function commitmentOf(server: MemoryVaultKeyServer, epoch: number): Uint8Array | undefined {
+function commitmentOf(
+  server: MemoryVaultKeyServer,
+  epoch: number,
+): Uint8Array | undefined {
   return server.epochs.find((stored) => stored.epoch === epoch)?.commitment;
 }
 
@@ -83,9 +133,26 @@ async function sharedVault() {
 /** Every console call's arguments, as text. */
 function captureConsole(): string[] {
   const lines: string[] = [];
-  for (const level of ["log", "debug", "info", "warn", "error", "trace"] as const) {
+  for (const level of [
+    "log",
+    "debug",
+    "info",
+    "warn",
+    "error",
+    "trace",
+  ] as const) {
     vi.spyOn(console, level).mockImplementation((...args: unknown[]) => {
-      lines.push(args.map((arg) => (arg instanceof Error ? `${arg.message} ${String(arg.stack)}` : typeof arg === "string" ? arg : JSON.stringify(arg))).join(" "));
+      lines.push(
+        args
+          .map((arg) =>
+            arg instanceof Error
+              ? `${arg.message} ${String(arg.stack)}`
+              : typeof arg === "string"
+                ? arg
+                : JSON.stringify(arg),
+          )
+          .join(" "),
+      );
     });
   }
   return lines;
@@ -104,7 +171,12 @@ describe("rotation on an owner device", () => {
 
     const state = await device(server, alice, true).manager.sync();
 
-    expect(state).toMatchObject({ status: "ready", currentEpoch: 1, epochs: [1], rotated: true });
+    expect(state).toMatchObject({
+      status: "ready",
+      currentEpoch: 1,
+      epochs: [1],
+      rotated: true,
+    });
     expect(server.rotationPending).toBe(false);
     expect(recipients(server, 1)).toEqual([alice.id, carol.id].sort());
   });
@@ -115,7 +187,12 @@ describe("rotation on an owner device", () => {
 
     const state = await owner.manager.sync();
 
-    expect(state).toMatchObject({ status: "ready", currentEpoch: 2, epochs: [1, 2], rotated: true });
+    expect(state).toMatchObject({
+      status: "ready",
+      currentEpoch: 2,
+      epochs: [1, 2],
+      rotated: true,
+    });
     expect(server.rotationPending).toBe(false);
     expect(recipients(server, 2)).toEqual([alice.id, carol.id].sort());
     expect(await opensAnySlot(server, mallory, 2)).toBe(false);
@@ -123,7 +200,9 @@ describe("rotation on an owner device", () => {
     const key = owner.manager.epochKey(2);
     expect(key).toBeDefined();
     expect(await unwrap(server, carol, 2)).toEqual(key);
-    expect(commitmentOf(server, 2)).toEqual(keyCommitment(key ?? new Uint8Array(32), vaultId, 2));
+    expect(commitmentOf(server, 2)).toEqual(
+      keyCommitment(key ?? new Uint8Array(32), vaultId, 2),
+    );
     expect(owner.manager.epochKey(1)).not.toEqual(key);
   });
 
@@ -135,8 +214,16 @@ describe("rotation on an owner device", () => {
     const state = await device(server, carol, false).manager.sync();
 
     expect(server.count("RotateEpoch")).toBe(before);
-    expect(server.requests.filter((request) => request.caller === carol.id).map((request) => request.procedure)).not.toContain("ListMissingSlots");
-    expect(state).toMatchObject({ status: "ready", currentEpoch: 1, rotated: false });
+    expect(
+      server.requests
+        .filter((request) => request.caller === carol.id)
+        .map((request) => request.procedure),
+    ).not.toContain("ListMissingSlots");
+    expect(state).toMatchObject({
+      status: "ready",
+      currentEpoch: 1,
+      rotated: false,
+    });
     expect(server.rotationPending).toBe(true);
   });
 
@@ -149,12 +236,20 @@ describe("rotation on an owner device", () => {
     const second = device(server, bob, true);
     server.holdEpochChanges = 2;
 
-    const states = await Promise.all([first.manager.sync(), second.manager.sync()]);
+    const states = await Promise.all([
+      first.manager.sync(),
+      second.manager.sync(),
+    ]);
 
     expect(server.count("RotateEpoch")).toBe(2);
     expect(server.epochs.map((epoch) => epoch.epoch)).toEqual([1]);
     expect(states.map((state) => state.rotated).sort()).toEqual([false, true]);
-    for (const state of states) expect(state).toMatchObject({ status: "ready", currentEpoch: 1, epochs: [1] });
+    for (const state of states)
+      expect(state).toMatchObject({
+        status: "ready",
+        currentEpoch: 1,
+        epochs: [1],
+      });
     expect(first.manager.epochKey(1)).toEqual(second.manager.epochKey(1));
     expect(await unwrap(server, carol, 1)).toEqual(first.manager.epochKey(1));
 
@@ -188,19 +283,26 @@ describe("removing a member from an E2EE vault", () => {
     const other = device(server, bob, true);
     server.holdEpochChanges = 2;
 
-    await Promise.all([owner.manager.removeMember(mallory.id), other.manager.sync()]);
+    await Promise.all([
+      owner.manager.removeMember(mallory.id),
+      other.manager.sync(),
+    ]);
 
     expect(server.members.has(mallory.id)).toBe(false);
     const current = server.currentEpoch;
     expect(current).toBeGreaterThanOrEqual(2);
-    expect(recipients(server, current)).toEqual([alice.id, bob.id, carol.id].sort());
+    expect(recipients(server, current)).toEqual(
+      [alice.id, bob.id, carol.id].sort(),
+    );
     expect(await opensAnySlot(server, mallory, current)).toBe(false);
   });
 
   it("is refused on a device that does not own the vault", async () => {
     const { server } = await sharedVault();
 
-    await expect(device(server, carol, false).manager.removeMember(mallory.id)).rejects.toThrow(/only an owner/);
+    await expect(
+      device(server, carol, false).manager.removeMember(mallory.id),
+    ).rejects.toThrow(/only an owner/);
 
     expect(server.members.has(mallory.id)).toBe(true);
   });
@@ -219,18 +321,32 @@ describe("a new member", () => {
 
     const waiting = await newcomer.manager.sync();
 
-    expect(waiting).toMatchObject({ status: "waiting", currentEpoch: 3, epochs: [], missing: [1, 2, 3] });
+    expect(waiting).toMatchObject({
+      status: "waiting",
+      currentEpoch: 3,
+      epochs: [],
+      missing: [1, 2, 3],
+    });
     expect(vaultKeyStatusMessage(waiting)).toBe(WAITING_FOR_KEY_MESSAGE);
-    expect(WAITING_FOR_KEY_MESSAGE).toMatch(/waiting for an owner to share the vault key/i);
+    expect(WAITING_FOR_KEY_MESSAGE).toMatch(
+      /waiting for an owner to share the vault key/i,
+    );
     expect(newcomer.manager.epochKey(3)).toBeUndefined();
 
     const granting = await owner.manager.sync();
     const ready = await newcomer.manager.sync();
 
     expect(granting.granted).toBe(3);
-    expect(ready).toMatchObject({ status: "ready", epochs: [1, 2, 3], missing: [] });
+    expect(ready).toMatchObject({
+      status: "ready",
+      epochs: [1, 2, 3],
+      missing: [],
+    });
     expect(vaultKeyStatusMessage(ready)).toBeUndefined();
-    for (const epoch of [1, 2, 3]) expect(newcomer.manager.epochKey(epoch)).toEqual(owner.manager.epochKey(epoch));
+    for (const epoch of [1, 2, 3])
+      expect(newcomer.manager.epochKey(epoch)).toEqual(
+        owner.manager.epochKey(epoch),
+      );
     expect((await owner.manager.sync()).granted).toBe(0);
   });
 
@@ -262,16 +378,25 @@ describe("key commitments", () => {
     const { server } = await sharedVault();
     // The server swaps carol's slot for one sealed to her key with another epoch key.
     const forged = generateKey();
-    const slot = server.slotsOf(1).find((stored) => stored.recipientId === carol.id);
+    const slot = server
+      .slotsOf(1)
+      .find((stored) => stored.recipientId === carol.id);
     if (slot === undefined) throw new Error("no slot for carol");
-    slot.wrappedKey = await sealKeySlot(carol.key.publicKey, forged, { vaultId, epoch: 1, recipientKind: "user", recipientId: carol.id });
+    slot.wrappedKey = await sealKeySlot(carol.key.publicKey, forged, {
+      vaultId,
+      epoch: 1,
+      recipientKind: "user",
+      recipientId: carol.id,
+    });
     const member = device(server, carol, false);
 
     const state = await member.manager.sync();
 
     expect(state.status).toBe("refused");
     expect(state.refused.map((error) => error.epoch)).toEqual([1]);
-    expect(vaultKeyStatusMessage(state)).toMatch(/epoch 1 was refused: the key does not match the epoch's key commitment/);
+    expect(vaultKeyStatusMessage(state)).toMatch(
+      /epoch 1 was refused: the key does not match the epoch's key commitment/,
+    );
     expect(state.epochs).toEqual([]);
     expect(member.manager.epochKey(1)).toBeUndefined();
     expect(member.store.keys.has(1)).toBe(false);
@@ -279,9 +404,15 @@ describe("key commitments", () => {
 
   it("refuses a slot that does not open with the device's key", async () => {
     const { server } = await sharedVault();
-    const slot = server.slotsOf(1).find((stored) => stored.recipientId === carol.id);
+    const slot = server
+      .slotsOf(1)
+      .find((stored) => stored.recipientId === carol.id);
     if (slot === undefined) throw new Error("no slot for carol");
-    slot.wrappedKey = await sealKeySlot(generateKeyPair().publicKey, generateKey(), { vaultId, epoch: 1, recipientKind: "user", recipientId: carol.id });
+    slot.wrappedKey = await sealKeySlot(
+      generateKeyPair().publicKey,
+      generateKey(),
+      { vaultId, epoch: 1, recipientKind: "user", recipientId: carol.id },
+    );
     const member = device(server, carol, false);
 
     const state = await member.manager.sync();
@@ -338,7 +469,8 @@ describe("epoch key storage", () => {
       expect(key).toBeDefined();
       const hex = bytesToHex(key ?? new Uint8Array());
       expect(JSON.stringify(states)).not.toContain(hex);
-      for (const request of server.requests) expect(bytesToHex(request.bytes)).not.toContain(hex);
+      for (const request of server.requests)
+        expect(bytesToHex(request.bytes)).not.toContain(hex);
     }
   });
 });

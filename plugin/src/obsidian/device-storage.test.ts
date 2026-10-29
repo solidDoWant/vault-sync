@@ -2,10 +2,17 @@ import { describe, expect, it } from "vitest";
 
 import { parsePluginData, persistRefreshToken, type PluginData } from "./data";
 import { forgetEncryptionKeys } from "./encryption";
-import { loadDeviceSecrets, refreshTokenLost, savePluginData, type DeviceStorage } from "./device-storage";
+import {
+  loadDeviceSecrets,
+  refreshTokenLost,
+  savePluginData,
+  type DeviceStorage,
+} from "./device-storage";
 
 /** Obsidian's local storage and the plugin's data.json, in memory. */
-function device(initial: { file?: unknown; local?: Record<string, unknown> } = {}) {
+function device(
+  initial: { file?: unknown; local?: Record<string, unknown> } = {},
+) {
   const local = new Map<string, unknown>(Object.entries(initial.local ?? {}));
   const storage: DeviceStorage = {
     loadLocalStorage: (key) => local.get(key) ?? null,
@@ -30,7 +37,12 @@ function device(initial: { file?: unknown; local?: Record<string, unknown> } = {
 }
 
 const provider = { issuer: "https://idp.example/", clientId: "vault-sync" };
-const settings = { serverUrl: "https://sync.example", oidcIssuer: "", oidcClientId: "", deviceName: "" };
+const settings = {
+  serverUrl: "https://sync.example",
+  oidcIssuer: "",
+  oidcClientId: "",
+  deviceName: "",
+};
 const tokenKey = "vault-sync-refresh-token";
 
 describe("the refresh token in device-local storage", () => {
@@ -47,18 +59,28 @@ describe("the refresh token in device-local storage", () => {
   });
 
   it("stores a rotated refresh token in local storage too", async () => {
-    const { local, disk, save, load } = device({ file: { ...settings, identityProvider: provider }, local: { [tokenKey]: "secret" } });
+    const { local, disk, save, load } = device({
+      file: { ...settings, identityProvider: provider },
+      local: { [tokenKey]: "secret" },
+    });
     const data = await load();
 
     await persistRefreshToken(data, "rotated", undefined, () => save(data));
 
     expect(local.get(tokenKey)).toBe("rotated");
     expect(JSON.stringify(disk.file)).not.toContain("rotated");
-    expect(await load()).toEqual({ ...settings, identityProvider: provider, refreshToken: "rotated" });
+    expect(await load()).toEqual({
+      ...settings,
+      identityProvider: provider,
+      refreshToken: "rotated",
+    });
   });
 
   it("clears the token from local storage on sign-out", async () => {
-    const { local, disk, save, load } = device({ file: { ...settings, identityProvider: provider }, local: { [tokenKey]: "secret" } });
+    const { local, disk, save, load } = device({
+      file: { ...settings, identityProvider: provider },
+      local: { [tokenKey]: "secret" },
+    });
     const data = await load();
 
     await persistRefreshToken(data, undefined, undefined, () => save(data));
@@ -68,7 +90,9 @@ describe("the refresh token in device-local storage", () => {
   });
 
   it("moves a token data.json still holds to local storage and removes it from data.json, staying signed in", async () => {
-    const { local, disk, load } = device({ file: { ...settings, refreshToken: "legacy", identityProvider: provider } });
+    const { local, disk, load } = device({
+      file: { ...settings, refreshToken: "legacy", identityProvider: provider },
+    });
 
     const data = await load();
 
@@ -79,14 +103,20 @@ describe("the refresh token in device-local storage", () => {
   });
 
   it("keeps data.json's token over an older one in local storage", async () => {
-    const { local, load } = device({ file: { ...settings, refreshToken: "newer", identityProvider: provider }, local: { [tokenKey]: "older" } });
+    const { local, load } = device({
+      file: { ...settings, refreshToken: "newer", identityProvider: provider },
+      local: { [tokenKey]: "older" },
+    });
 
     expect((await load()).refreshToken).toBe("newer");
     expect(local.get(tokenKey)).toBe("newer");
   });
 
   it("needs a sign-in when local storage was cleared after a sign-in", async () => {
-    const { local, load } = device({ file: { ...settings, identityProvider: provider }, local: { [tokenKey]: "secret" } });
+    const { local, load } = device({
+      file: { ...settings, identityProvider: provider },
+      local: { [tokenKey]: "secret" },
+    });
     local.clear();
 
     const data = await load();
@@ -96,7 +126,10 @@ describe("the refresh token in device-local storage", () => {
   });
 
   it("does not ask for a sign-in again after a sign-out", async () => {
-    const { save, load } = device({ file: { ...settings, identityProvider: provider }, local: { [tokenKey]: "secret" } });
+    const { save, load } = device({
+      file: { ...settings, identityProvider: provider },
+      local: { [tokenKey]: "secret" },
+    });
     const data = await load();
     await persistRefreshToken(data, undefined, undefined, () => save(data));
 
@@ -110,9 +143,22 @@ describe("the refresh token in device-local storage", () => {
   });
 });
 
-const account = { serverUrl: "https://sync.example", issuer: "https://idp.example/", subject: "alice" };
-const userKey = { publicKey: "ab".repeat(1216), privateKey: "cd".repeat(32), ...account };
-const vaultKeys = { ...account, vaultId: "vault-1", epochs: { "1": "ef".repeat(32), "2": "12".repeat(32) } };
+const account = {
+  serverUrl: "https://sync.example",
+  issuer: "https://idp.example/",
+  subject: "alice",
+};
+const userKey = {
+  publicKey: "ab".repeat(1216),
+  privateKey: "cd".repeat(32),
+  signSeed: "ef".repeat(32),
+  ...account,
+};
+const vaultKeys = {
+  ...account,
+  vaultId: "vault-1",
+  epochs: { "1": "ef".repeat(32), "2": "12".repeat(32) },
+};
 const userKeyKey = "vault-sync-user-key";
 const vaultKeysKey = "vault-sync-vault-keys";
 
@@ -130,14 +176,17 @@ describe("the encryption keys in device-local storage", () => {
     expect(disk.file).toEqual(settings);
     const file = JSON.stringify(disk.file);
     expect(file).not.toContain(userKey.privateKey);
-    for (const key of Object.values(vaultKeys.epochs)) expect(file).not.toContain(key);
+    for (const key of Object.values(vaultKeys.epochs))
+      expect(file).not.toContain(key);
     const reloaded = await load();
     expect(reloaded.userKey).toEqual(userKey);
     expect(reloaded.vaultKeys).toEqual(vaultKeys);
   });
 
   it("moves keys data.json still holds to local storage and rewrites data.json without them", async () => {
-    const { local, disk, load } = device({ file: { ...settings, userKey, vaultKeys } });
+    const { local, disk, load } = device({
+      file: { ...settings, userKey, vaultKeys },
+    });
 
     const data = await load();
 
@@ -162,7 +211,10 @@ describe("the encryption keys in device-local storage", () => {
   });
 
   it("clears the keys from local storage when they are forgotten on sign-out", async () => {
-    const { local, save, load } = device({ file: settings, local: { [userKeyKey]: userKey, [vaultKeysKey]: vaultKeys } });
+    const { local, save, load } = device({
+      file: settings,
+      local: { [userKeyKey]: userKey, [vaultKeysKey]: vaultKeys },
+    });
     const data = await load();
 
     forgetEncryptionKeys(data);
@@ -173,7 +225,13 @@ describe("the encryption keys in device-local storage", () => {
   });
 
   it("ignores malformed keys in local storage", async () => {
-    const { load } = device({ file: settings, local: { [userKeyKey]: { ...userKey, privateKey: "zz" }, [vaultKeysKey]: "keys" } });
+    const { load } = device({
+      file: settings,
+      local: {
+        [userKeyKey]: { ...userKey, privateKey: "zz" },
+        [vaultKeysKey]: "keys",
+      },
+    });
 
     const data = await load();
 
