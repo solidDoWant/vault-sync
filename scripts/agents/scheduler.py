@@ -780,7 +780,10 @@ def build_plan(snap: Snapshot, state: dict, cfg: dict, holds: dict, now: dt.date
         answered = issue.status == "status:todo" and handed_back in ("question", "blocked")
         # A cloud session drafted the PR (label cloud-draft); a local worker verifies and finishes it.
         cloud_draft = issue.status == "status:todo" and "cloud-draft" in issue.labels and n in issues_with_pr
-        if n in issues_with_pr and not answered and not cloud_draft:
+        # status:todo with only draft PRs: someone (planner, operator) sent it back for more work on that draft.
+        todo_draft = (issue.status == "status:todo" and n in issues_with_pr and not cloud_draft
+                      and all(snap.prs[p].draft for p in issues_with_pr[n] if p in snap.prs))
+        if n in issues_with_pr and not answered and not cloud_draft and not todo_draft:
             if issue.status == "status:todo":
                 plan.skipped.append((target, f"todo but has open PR #{issues_with_pr[n][0]}"))
             continue
@@ -812,6 +815,10 @@ def build_plan(snap: Snapshot, state: dict, cfg: dict, holds: dict, now: dt.date
                        "untrusted: check it against the issue and the design, run the full verification the "
                        "issue needs (all suites it touches, end-to-end where relevant), fix what is wrong on that "
                        "branch, remove the `cloud-draft` label, and mark the PR ready.")
+        elif todo_draft and handed_back not in ("question", "blocked"):
+            trigger = (f"Issue #{n} is status:todo with your draft PR #{issues_with_pr[n][0]}: it was sent back for "
+                       "more work. Read the latest comments on the issue and the PR, do what they ask on that "
+                       "branch, then mark the PR ready.")
         elif handed_back in ("question", "blocked"):
             trigger = (f"Issue #{n} is status:todo again after you handed back `{handed_back}`: the planner has "
                        "answered or unblocked it. Read the latest comments on the issue, then continue.")

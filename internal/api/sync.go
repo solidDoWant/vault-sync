@@ -31,6 +31,13 @@ const (
 	// MaxPathKeyBytes bounds a derived path_key; case folding can expand
 	// a path.
 	MaxPathKeyBytes = 8192
+	// MaxEncryptedPathBytes bounds a revision's path in an end-to-end
+	// encrypted vault: a sealed MaxPathBytes path, which adds a suite
+	// byte, a 24-byte nonce and a 16-byte tag (docs/design/crypto.md).
+	MaxEncryptedPathBytes = MaxPathBytes + 1 + 24 + 16
+	// EncryptedPathKeyBytes is the size of a path_key in an end-to-end
+	// encrypted vault, an HMAC-SHA256 (docs/design/crypto.md).
+	EncryptedPathKeyBytes = 32
 	// DefaultChangesPageSize is the ListChanges page size when none is
 	// given.
 	DefaultChangesPageSize = 500
@@ -67,12 +74,6 @@ type SyncService struct {
 	Limits SyncLimits
 	// Logger receives internal errors, which are not returned to callers.
 	Logger *slog.Logger
-	// AllowE2EE lets CommitRevision write to end-to-end encrypted vaults,
-	// under the vault's current key epoch, with the plaintext vaults' path
-	// rules. Test-only: until the engine encrypts contents and paths and
-	// E2EE path keys are defined (SPEC.md §9.3), no production server sets
-	// it, so no plaintext reaches an encrypted vault.
-	AllowE2EE bool
 }
 
 var _ vaultsyncv1connect.SyncServiceHandler = SyncService{}
@@ -360,11 +361,14 @@ func (service SyncService) CommitRevision(ctx context.Context, request *connect.
 		return nil, service.internal(ctx, "cannot commit revision", err)
 	}
 
-	// The path keys of end-to-end encrypted vaults are client-computed
-	// HMACs and their paths ciphertext, which this server does not accept
-	// yet (SPEC.md §9.3): refusing the commit keeps plaintext out of them.
-	if encryption != store.EncryptionNone && !service.AllowE2EE {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("end-to-end encrypted vaults are not supported yet"))
+	if encryption == store.EncryptionNone {
+		err = parsePlaintextPath(request.Msg, &revision)
+	} else {
+		err = parseEncryptedPath(request.Msg, &revision)
+	}
+
+	if err != nil {
+		return nil, err
 	}
 
 	// The store checks the epoch against the vault's current one under the
@@ -379,15 +383,6 @@ func (service SyncService) CommitRevision(ctx context.Context, request *connect.
 	}
 
 	revision.Epoch = int32(epoch) //nolint:gosec // checked against MaxInt32 above.
-
-	if len(request.Msg.GetPathKey()) != 0 {
-		return nil, invalidArgument("path_key must be empty for plaintext vaults; the server derives it from path")
-	}
-
-	revision.PathKey = pathkey.Key(revision.Path)
-	if len(revision.PathKey) > MaxPathKeyBytes {
-		return nil, invalidArgument("path is too long once normalized (at most %d bytes)", MaxPathKeyBytes)
-	}
 
 	committed, err := vault.CommitRevision(ctx, revision)
 	if errors.Is(err, store.ErrPathNotCurrent) {
@@ -453,8 +448,8 @@ func (service SyncService) commitError(ctx context.Context, err error) error {
 	}
 }
 
-// parseCommit validates a CommitRevisionRequest's fields, except path_key,
-// which depends on the vault's encryption.
+// parseCommit validates a CommitRevisionRequest's fields, except path and
+// path_key, which depend on the vault's encryption.
 func parseCommit(message *vaultsyncv1.CommitRevisionRequest) (store.NewRevision, error) {
 	var revision store.NewRevision
 
@@ -515,8 +510,18 @@ func parseCommit(message *vaultsyncv1.CommitRevisionRequest) (store.NewRevision,
 		revision.ContentSize = int64(content.GetSize())
 	}
 
+	revision.Deleted = message.GetDeleted()
+
+	return revision, nil
+}
+
+// parsePlaintextPath sets the path of a commit to a plaintext vault, and the
+// path_key the server derives from it: the client sends none.
+func parsePlaintextPath(message *vaultsyncv1.CommitRevisionRequest, revision *store.NewRevision) error {
+	var err error
+
 	if revision.Path, err = checkPath(message.GetPath()); err != nil {
-		return store.NewRevision{}, err
+		return err
 	}
 
 	// A vault-relative path that breaks a new-path rule (a "\", a drive-like
@@ -525,9 +530,37 @@ func parseCommit(message *vaultsyncv1.CommitRevisionRequest) (store.NewRevision,
 	// (SPEC.md §6.2).
 	revision.PathMustBeCurrent = errors.Is(vaultpath.CheckNew(revision.Path), vaultpath.ErrNotNew)
 
-	revision.Deleted = message.GetDeleted()
+	if len(message.GetPathKey()) != 0 {
+		return invalidArgument("path_key must be empty for plaintext vaults; the server derives it from path")
+	}
 
-	return revision, nil
+	revision.PathKey = pathkey.Key(revision.Path)
+	if len(revision.PathKey) > MaxPathKeyBytes {
+		return invalidArgument("path is too long once normalized (at most %d bytes)", MaxPathKeyBytes)
+	}
+
+	return nil
+}
+
+// parseEncryptedPath sets the path and path_key of a commit to an end-to-end
+// encrypted vault. The path is ciphertext and the path_key an HMAC the
+// client computed (SPEC.md §9.3), both opaque bytes: only their sizes are
+// checked, and the path rules are the devices' to enforce.
+func parseEncryptedPath(message *vaultsyncv1.CommitRevisionRequest, revision *store.NewRevision) error {
+	path := message.GetPath()
+	if len(path) == 0 || len(path) > MaxEncryptedPathBytes {
+		return invalidArgument("path must be 1 to %d bytes of ciphertext in an end-to-end encrypted vault", MaxEncryptedPathBytes)
+	}
+
+	pathKey := message.GetPathKey()
+	if len(pathKey) != EncryptedPathKeyBytes {
+		return invalidArgument("path_key must be the %d-byte HMAC of the path in an end-to-end encrypted vault", EncryptedPathKeyBytes)
+	}
+
+	revision.Path = string(path)
+	revision.PathKey = string(pathKey)
+
+	return nil
 }
 
 // parseClientID parses a client-generated id, which must be a canonical

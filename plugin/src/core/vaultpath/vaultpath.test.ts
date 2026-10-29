@@ -120,6 +120,9 @@ describe("pathProblem", () => {
     ["a path of 1025 bytes", `${"a".repeat(254)}/`.repeat(4) + "abcde", "path-too-long"],
     ["a decomposed accent", "Cafe\u0301.md", "not-nfc"],
     ["a decomposed accent in a folder", "Re\u0301sume\u0301/a.md", "not-nfc"],
+    ["a code point assigned in Unicode 15.1", "\u2ffc.md", "unassigned"],
+    ["a code point assigned in Unicode 16.0 in a folder", "\u1c89/a.md", "unassigned"],
+    ["an unassigned code point", "a\u0378.md", "unassigned"],
   ])("names %s", (_, path, problem) => {
     expect(pathProblem(path)).toBe(problem);
   });
@@ -127,6 +130,7 @@ describe("pathProblem", () => {
   it("accepts a valid new path", () => {
     expect(pathProblem("notes/a.md")).toBeUndefined();
     expect(pathProblem("Caf\u00e9.md")).toBeUndefined();
+    expect(pathProblem("\u{1fae8}.md")).toBeUndefined();
     expect(pathProblem("a".repeat(255))).toBeUndefined();
     expect(pathProblem(`${"a".repeat(254)}/`.repeat(4) + "abcd")).toBeUndefined();
   });

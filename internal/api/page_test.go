@@ -26,8 +26,9 @@ import (
 func TestOneRevisionResponsesFitTheMinimumLimit(t *testing.T) {
 	id := strings.Repeat("f", 36)
 	// Every byte of a path may be a multi-byte character; as protobuf
-	// bytes the size only depends on the length.
-	path := bytes.Repeat([]byte{0xff}, api.MaxPathBytes)
+	// bytes the size only depends on the length. A sealed path in an
+	// encrypted vault is the longest.
+	path := bytes.Repeat([]byte{0xff}, max(api.MaxPathBytes, api.MaxEncryptedPathBytes))
 	revision := &vaultsyncv1.Revision{
 		Id:          id,
 		DocumentId:  id,
@@ -41,6 +42,7 @@ func TestOneRevisionResponsesFitTheMinimumLimit(t *testing.T) {
 		DeviceId:    id,
 		UserId:      id,
 		CreateTime:  timestamppb.New(time.Date(9999, 12, 31, 23, 59, 59, 999999999, time.UTC)),
+		Epoch:       math.MaxUint32,
 	}
 
 	responses := map[string]proto.Message{
