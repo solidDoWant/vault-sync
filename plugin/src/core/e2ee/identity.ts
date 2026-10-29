@@ -34,6 +34,7 @@ const BUNDLE_LABEL = "vault-sync/v1/bundle";
 const FINGERPRINT_LABEL = "vault-sync/v1/fingerprint";
 const INVITE_SIGN_LABEL = "vault-sync/v1/invitation-sign";
 const INVITE_ANCHOR_LABEL = "vault-sync/v1/invite-anchor";
+const INVITATION_KEY_LABEL = "vault-sync/v1/invitation-key";
 const ANCHORS_LABEL = "vault-sync/v1/anchors";
 const ESCROW_BUNDLE_LABEL = "vault-sync/v1/escrow";
 const ESCROW_ROTATION_LABEL = "vault-sync/v1/escrow-rotation";
@@ -199,6 +200,18 @@ export function inviteSignSeed(secret: Uint8Array, vaultId: string, invitationId
 /** The key that authenticates an invitation's anchor, from its 16-byte secret. */
 export function inviteMacKey(secret: Uint8Array, vaultId: string, invitationId: string): Uint8Array {
   return inviteKey(secret, vaultId, invitationId, INVITE_ANCHOR_LABEL);
+}
+
+/**
+ * An invitation's hybrid key pair, from its 16-byte secret: the private key
+ * is the seed HKDF-SHA256(secret, salt = uuid(vault_id), info =
+ * "vault-sync/v1/invitation-key" || uuid(invitation_id)), and the public key
+ * the one the library derives from it. Epoch keys are sealed to the public
+ * key in invitation key slots until the invitation is redeemed.
+ */
+export function invitationKeyPair(secret: Uint8Array, vaultId: string, invitationId: string): { privateKey: Uint8Array; publicKey: Uint8Array } {
+  const privateKey = inviteKey(secret, vaultId, invitationId, INVITATION_KEY_LABEL);
+  return { privateKey, publicKey: publicKey(privateKey) };
 }
 
 /** The size of an invite anchor: genesis hash, inviter fingerprint and their MAC. */

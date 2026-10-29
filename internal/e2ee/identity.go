@@ -36,6 +36,7 @@ const (
 	fingerprintLabel    = "vault-sync/v1/fingerprint"
 	inviteSignLabel     = "vault-sync/v1/invitation-sign"
 	inviteAnchorLabel   = "vault-sync/v1/invite-anchor"
+	invitationKeyLabel  = "vault-sync/v1/invitation-key"
 	anchorsLabel        = "vault-sync/v1/anchors"
 	escrowBundleLabel   = "vault-sync/v1/escrow"
 	escrowRotationLabel = "vault-sync/v1/escrow-rotation"
@@ -207,6 +208,26 @@ func InviteSignSeed(secret []byte, vaultID, invitationID string) ([]byte, error)
 // from the 16-byte invitation secret.
 func InviteMACKey(secret []byte, vaultID, invitationID string) ([]byte, error) {
 	return inviteKey(secret, vaultID, invitationID, inviteAnchorLabel)
+}
+
+// InvitationKeyPair derives an invitation's hybrid key pair from the
+// 16-byte invitation secret: the private key is the seed
+// HKDF-SHA256(secret, salt = uuid(vault_id), info =
+// "vault-sync/v1/invitation-key" || uuid(invitation_id)), and the public key
+// is the one the library derives from that seed. Epoch keys are sealed to the
+// public key in invitation key slots until the invitation is redeemed.
+func InvitationKeyPair(secret []byte, vaultID, invitationID string) (privateKey, publicKey []byte, err error) {
+	privateKey, err = inviteKey(secret, vaultID, invitationID, invitationKeyLabel)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	publicKey, err = PublicKey(privateKey)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return privateKey, publicKey, nil
 }
 
 // InviteAnchorSize is the size of an invite anchor: genesis hash, inviter

@@ -1,9 +1,11 @@
+import { hkdf } from "@noble/hashes/hkdf.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import { describe, expect, it } from "vitest";
 
 import shared from "../../../../testdata/crypto/vectors.json";
 import { DecryptError } from "./e2ee";
+import { ageIdentity, ageRecipient } from "./hybrid";
 import {
   anchorKey,
   bundleOf,
@@ -12,6 +14,7 @@ import {
   type EscrowRotation,
   fingerprint,
   formatFingerprint,
+  invitationKeyPair,
   inviteMacKey,
   inviteSignSeed,
   makeInviteAnchor,
@@ -117,6 +120,22 @@ describe("identity keys match the shared vectors", () => {
       const seed = inviteSignSeed(hexToBytes(vector.secret), vector.vault_id, vector.invitation_id);
       expect(bytesToHex(seed)).toBe(vector.seed);
       expect(bytesToHex(signPublicKey(seed))).toBe(vector.sign_pub);
+    }
+  });
+
+  it("derives invitation key pairs from the invitation secret", () => {
+    expect(vectors.invitation_key).toHaveLength(3);
+    for (const vector of vectors.invitation_key) {
+      const secret = hexToBytes(vector.secret);
+      // The seed follows docs/design/crypto.md, derived here with HKDF
+      // directly, not by the code under test.
+      const info = new Uint8Array([...new TextEncoder().encode("vault-sync/v1/invitation-key"), ...hexToBytes(vector.invitation_id.replaceAll("-", ""))]);
+      expect(bytesToHex(hkdf(sha256, secret, hexToBytes(vector.vault_id.replaceAll("-", "")), info, 32))).toBe(vector.private_key);
+      const pair = invitationKeyPair(secret, vector.vault_id, vector.invitation_id);
+      expect(bytesToHex(pair.privateKey)).toBe(vector.private_key);
+      expect(bytesToHex(pair.publicKey)).toBe(vector.public_key);
+      expect(ageIdentity(pair.privateKey)).toBe(vector.age_identity);
+      expect(ageRecipient(pair.publicKey)).toBe(vector.age_recipient);
     }
   });
 

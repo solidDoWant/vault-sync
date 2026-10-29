@@ -17,8 +17,9 @@ type RecipientKind string
 
 // The recipients of a key slot.
 const (
-	RecipientUser   RecipientKind = "user"
-	RecipientEscrow RecipientKind = "escrow"
+	RecipientUser       RecipientKind = "user"
+	RecipientEscrow     RecipientKind = "escrow"
+	RecipientInvitation RecipientKind = "invitation"
 )
 
 const (
@@ -26,9 +27,7 @@ const (
 	keyCommitmentLabel = "vault-sync/v1/key-commitment"
 
 	recipientKindUserByte   byte = 0x01
-	recipientKindEscrowByte byte = 0x02
-	// recipientKindInvitationByte is the recipient kind of a pending
-	// invitation in an epoch record.
+	recipientKindEscrowByte     byte = 0x02
 	recipientKindInvitationByte byte = 0x03
 
 	// MaxRecipientIDSize bounds the encoded recipient id of a key slot, whose
@@ -42,8 +41,9 @@ var ErrKeyCommitment = errors.New("e2ee: epoch key does not match the key commit
 
 // KeySlot identifies a key slot: the epoch key of vault VaultID at Epoch,
 // wrapped to a recipient. VaultID is a canonical lowercase UUID; RecipientID
-// is the user's id (a canonical lowercase UUID) for RecipientUser and the
-// escrow key's id (1 to 255 bytes) for RecipientEscrow.
+// is the user's id (a canonical lowercase UUID) for RecipientUser, the
+// invitation's id (a canonical lowercase UUID) for RecipientInvitation and
+// the escrow key's id (1 to 255 bytes) for RecipientEscrow.
 type KeySlot struct {
 	VaultID       string
 	Epoch         uint64
@@ -54,9 +54,10 @@ type KeySlot struct {
 // AD returns the associated data a key slot binds:
 //
 //	"vault-sync/v1/key-slot" || vault_id (16) || epoch (u64 BE) ||
-//	recipient_kind (u8: 0x01 user, 0x02 escrow) || len(recipient_id) (u8) || recipient_id
+//	recipient_kind (u8: 0x01 user, 0x02 escrow, 0x03 invitation) || len(recipient_id) (u8) || recipient_id
 //
-// with vault_id and a user's recipient_id as their 16 UUID bytes and an
+// with vault_id and a user's or invitation's recipient_id as their 16 UUID
+// bytes and an
 // escrow recipient_id as its UTF-8 bytes. It refuses ids that are not in
 // canonical form, so one slot has exactly one encoding.
 func (slot KeySlot) AD() ([]byte, error) {
@@ -80,6 +81,15 @@ func (slot KeySlot) AD() ([]byte, error) {
 		}
 
 		recipientID = userID
+	case RecipientInvitation:
+		kind = recipientKindInvitationByte
+
+		invitationID, err := canonicalUUID(slot.RecipientID)
+		if err != nil {
+			return nil, fmt.Errorf("e2ee: recipient id: %w", err)
+		}
+
+		recipientID = invitationID
 	case RecipientEscrow:
 		kind = recipientKindEscrowByte
 		recipientID = []byte(slot.RecipientID)

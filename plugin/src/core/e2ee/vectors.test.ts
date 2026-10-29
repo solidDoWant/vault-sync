@@ -41,8 +41,10 @@ const utf8Hex = (value: string): string => bytesToHex(new TextEncoder().encode(v
 // The associated data of a slot built from the layout in
 // docs/design/crypto.md, not by the code under test.
 function documentedSlotAd(vector: SlotFields): string {
-  const recipientId = vector.recipient_kind === "user" ? uuidHex(vector.recipient_id) : utf8Hex(vector.recipient_id);
-  const kind = vector.recipient_kind === "user" ? "01" : "02";
+  const byUuid = vector.recipient_kind === "user" || vector.recipient_kind === "invitation";
+  const recipientId = byUuid ? uuidHex(vector.recipient_id) : utf8Hex(vector.recipient_id);
+  const kind = { user: "01", escrow: "02", invitation: "03" }[vector.recipient_kind];
+  if (kind === undefined) throw new Error(`unknown recipient kind ${vector.recipient_kind}`);
   const length = (recipientId.length / 2).toString(16).padStart(2, "0");
   return utf8Hex("vault-sync/v1/key-slot") + uuidHex(vector.vault_id) + u64Hex(vector.epoch) + kind + length + recipientId;
 }
