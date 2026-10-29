@@ -29,6 +29,7 @@ import (
 	"github.com/solidDoWant/vault-sync/internal/auth/authtest"
 	"github.com/solidDoWant/vault-sync/internal/blobstore"
 	"github.com/solidDoWant/vault-sync/internal/config"
+	"github.com/solidDoWant/vault-sync/internal/e2ee"
 	"github.com/solidDoWant/vault-sync/internal/pathkey"
 	"github.com/solidDoWant/vault-sync/internal/realtime"
 	"github.com/solidDoWant/vault-sync/internal/server"
@@ -46,6 +47,9 @@ type syncFixture struct {
 	replicas []*runningServer
 	// hubs are the replicas' realtime hubs, by replica.
 	hubs []*realtime.Hub
+	// escrowPublic is the replicas' escrow public key, which escrow slots
+	// must name.
+	escrowPublic []byte
 }
 
 // newSyncFixture starts two server replicas on one database; configure
@@ -62,7 +66,14 @@ func newSyncFixture(t *testing.T, limits api.SyncLimits, configure ...func(*api.
 	fixture := &authFixture{issuer: issuer, key: issuer.AddKey(t, jose.RS256), logs: &syncBuffer{}}
 	logger := slog.New(slog.NewJSONHandler(fixture.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	syncFix := &syncFixture{}
+	_, escrowPublic, err := e2ee.GenerateKeyPair()
+	require.NoError(t, err)
+
+	escrowID, err := e2ee.EscrowKeyID(escrowPublic)
+	require.NoError(t, err)
+
+	escrow := api.Escrow{PublicKey: escrowPublic, KeyID: escrowID}
+	syncFix := &syncFixture{escrowPublic: escrowPublic}
 
 	for replica := range 2 {
 		replicaPool := pool
@@ -112,9 +123,9 @@ func newSyncFixture(t *testing.T, limits api.SyncLimits, configure ...func(*api.
 			Devices:         queries,
 			Vaults:          queries,
 			Memberships:     queries,
-			Membership:      &api.MembershipService{Store: queries},
+			Membership:      &api.MembershipService{Store: queries, Escrow: escrow},
 			UserKeys:        &api.UserKeyService{Store: queries},
-			VaultKeys:       &api.VaultKeyService{Keys: api.KeysOf(queries)},
+			VaultKeys:       &api.VaultKeyService{Keys: api.KeysOf(queries), Escrow: escrow},
 			Sync:            syncService,
 			Blobs:           &api.BlobService{Store: queries, Objects: objects, Limits: defaultBlobLimits},
 			Realtime:        hub,

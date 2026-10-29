@@ -271,8 +271,7 @@ func TestRotateEpochVerifiesTheSignedRecordAgainstPostgres(t *testing.T) {
 	assert.True(t, proto.Equal(valid.GetRecord(), listed.GetEpochs()[0].GetRecord()), "ListEpochs returns the stored record")
 
 	// Turning escrow on: the owner's escrow entry and the record at it.
-	_, escrowPublic, err := e2ee.GenerateKeyPair()
-	require.NoError(t, err)
+	escrowPublic := fixture.escrowPublic
 
 	escrowID, err := e2ee.EscrowKeyID(escrowPublic)
 	require.NoError(t, err)
