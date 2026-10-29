@@ -462,9 +462,11 @@ func documentErrors(summary export.Summary) map[uuid.UUID]string {
 }
 
 type pathVector struct {
-	Name  string `json:"name"`
-	Path  string `json:"path"`
-	Valid bool   `json:"valid"`
+	Name   string `json:"name"`
+	Path   string `json:"path"`
+	Repeat int    `json:"repeat"`
+	Suffix string `json:"suffix"`
+	Valid  bool   `json:"valid"`
 }
 
 // loadPathVectors reads the shared path validity vectors (SPEC.md §6.2).
@@ -480,6 +482,12 @@ func loadPathVectors(t *testing.T) []pathVector {
 
 	require.NoError(t, json.Unmarshal(data, &file))
 	require.NotEmpty(t, file.Vectors)
+
+	// A vector's path is "path" repeated "repeat" times, then "suffix".
+	for index := range file.Vectors {
+		vector := &file.Vectors[index]
+		vector.Path = strings.Repeat(vector.Path, max(vector.Repeat, 1)) + vector.Suffix
+	}
 
 	return file.Vectors
 }

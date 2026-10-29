@@ -152,7 +152,7 @@ describe("SyncEngine merge (SPEC.md §7)", () => {
     });
 
     it("leaves the local version in place, logged, when no conflict-copy name fits the path limits", async () => {
-      const folder = `${Array.from({ length: 16 }, () => "f".repeat(250)).join("/")}/${"g".repeat(60)}`;
+      const folder = Array.from({ length: 4 }, () => "f".repeat(250)).join("/");
       const path = `${folder}/a.md`;
       const h = harness({ merge: "default" });
       h.server.commit({ documentId: "a", path, content: lines("x") });
@@ -692,7 +692,7 @@ describe("SyncEngine merge (SPEC.md §7)", () => {
     });
 
     it("keeps a refused create pending and reports it when no conflict-copy name fits", async () => {
-      const folder = `${Array.from({ length: 16 }, () => "f".repeat(250)).join("/")}/${"g".repeat(60)}`;
+      const folder = Array.from({ length: 4 }, () => "f".repeat(250)).join("/");
       const h = harness({ merge: "default" });
       await h.vault.write(`${folder}/new.md`, bytes("mine"));
       moveHeadBeforeCommit(h, () => h.server.commit({ documentId: "theirs", path: `${folder}/NEW.md`, content: "theirs" }));

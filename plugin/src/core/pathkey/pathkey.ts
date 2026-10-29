@@ -15,7 +15,7 @@ function getFoldTable(): Map<number, string> {
   return foldTable;
 }
 
-/** Applies full, locale-independent case folding (CaseFolding.txt C + F). */
+/** Applies full, locale-independent case folding (CaseFolding.txt C + F) with the NTFS upcase merges. */
 function fold(text: string): string {
   const table = getFoldTable();
   let out = "";
@@ -29,7 +29,10 @@ function fold(text: string): string {
 /**
  * Returns the path_key for a vault path (SPEC.md §5): NFC(toCasefold(NFD(path))),
  * i.e. Unicode canonical caseless matching with full, locale-independent case
- * folding, emitted in NFC. Separators, whitespace and dots are preserved.
+ * folding, emitted in NFC, with the NTFS upcase mapping on top
+ * (docs/design/engine.md §6): a code point whose simple uppercase folds
+ * differently from it folds as that uppercase does, so `ı.md` and `I.md`
+ * share a key. Separators, whitespace and dots are preserved.
  *
  * Must match internal/pathkey (Go) exactly; testdata/paths/vectors.json is the
  * shared conformance suite. The folding and normalization tables are

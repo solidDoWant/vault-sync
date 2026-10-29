@@ -20,10 +20,48 @@ export function isVaultRelativePath(path: string): boolean {
   return path.split(/[/\\]/).every((segment) => !/^[. ]*$/.test(segment));
 }
 
+/** The most UTF-8 bytes of each part of a new path (MaxNameBytes in internal/vaultpath). */
+export const maxNameBytes = 255;
+
+/** The most UTF-8 bytes of a new path (MaxNewBytes in internal/vaultpath). */
+export const maxNewPathBytes = 1024;
+
+/** The first portable-name rule (docs/design/engine.md §6) a part of a new path breaks, or undefined. */
+function nameProblem(name: string): PathProblem | undefined {
+  if (/[<>:"|?*]/.test(name)) return "forbidden-character";
+  if (name.startsWith(" ") || name.endsWith(" ")) return "edge-space";
+  if (name.endsWith(".")) return "trailing-dot";
+  if (/^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\.|$)/i.test(name)) return "reserved-name";
+  if (encoder.encode(name).length > maxNameBytes) return "name-too-long";
+  return undefined;
+}
+
+/**
+ * The first new-path rule a vault-relative `path` breaks, or undefined: a
+ * `backslash`, a `drive-prefix` (one code point and a colon), then the
+ * portable-name rules of docs/design/engine.md §6 on each part (`<>:"|?*`, a
+ * leading or trailing space, a trailing dot, a Windows reserved name in any
+ * case with or without an extension, more than {@link maxNameBytes} bytes),
+ * then more than {@link maxNewPathBytes} bytes in all. The order is
+ * `CheckNew`'s in internal/vaultpath (Go).
+ */
+function newPathProblem(path: string): PathProblem | undefined {
+  if (path.includes("\\")) return "backslash";
+  // With the u flag, [^] is one code point, including a surrogate pair.
+  if (/^[^]:/u.test(path)) return "drive-prefix";
+  for (const name of path.split("/")) {
+    const problem = nameProblem(name);
+    if (problem !== undefined) return problem;
+  }
+  if (encoder.encode(path).length > maxNewPathBytes) return "path-too-long";
+  return undefined;
+}
+
 /**
  * Reports whether a commit may create or rename a document into `path`
- * (SPEC.md §6.2): it is vault-relative, contains no "\" (decision #191) and
- * does not start with one code point and a colon (decision #148). Windows
+ * (SPEC.md §6.2): it is vault-relative, contains no "\" (decision #191),
+ * does not start with one code point and a colon (decision #148), and is
+ * portable (docs/design/engine.md §6; see {@link newPathProblem}). Windows
  * reads "\" as a separator and other platforms as part of a name, so `a/b`
  * and `a\b` would otherwise be two live documents naming one file on
  * Windows; and Win32 reads any first character followed by ":" (`1:x.md`,
@@ -36,8 +74,7 @@ export function isVaultRelativePath(path: string): boolean {
  * field of testdata/paths/validity.json.
  */
 export function isNewVaultPath(path: string): boolean {
-  // With the u flag, [^] is one code point, including a surrogate pair.
-  return isVaultRelativePath(path) && !path.includes("\\") && !/^[^]:/u.test(path);
+  return isVaultRelativePath(path) && newPathProblem(path) === undefined;
 }
 
 /** The most UTF-8 bytes a plaintext path may have (SPEC.md §6.2; MaxBytes in internal/vaultpath). */
@@ -87,17 +124,32 @@ export function fitsPathKeyLimit(path: string): boolean {
  * a time: `empty` and `too-long` (more than {@link maxPathBytes} bytes) and
  * `invalid-character` (a control character, or no UTF-8 form) are
  * {@link isPathText}; `not-vault-relative` is {@link isVaultRelativePath};
- * `too-long-normalized` is {@link fitsPathKeyLimit}; `backslash` and
- * `drive-prefix` are {@link isNewVaultPath}'s further rules.
+ * `too-long-normalized` is {@link fitsPathKeyLimit}; `backslash`,
+ * `drive-prefix`, `forbidden-character`, `edge-space`, `trailing-dot`,
+ * `reserved-name`, `name-too-long` and `path-too-long` are
+ * {@link isNewVaultPath}'s further rules.
  */
-export type PathProblem = "empty" | "too-long" | "invalid-character" | "not-vault-relative" | "too-long-normalized" | "backslash" | "drive-prefix";
+export type PathProblem =
+  | "empty"
+  | "too-long"
+  | "invalid-character"
+  | "not-vault-relative"
+  | "too-long-normalized"
+  | "backslash"
+  | "drive-prefix"
+  | "forbidden-character"
+  | "edge-space"
+  | "trailing-dot"
+  | "reserved-name"
+  | "name-too-long"
+  | "path-too-long";
 
 /**
  * The first rule of the server's (SPEC.md §6.2) that a commit giving a
  * document `path` breaks, or undefined if it would accept the path. With
  * `kept`, the path is the document's unchanged live path, which only the
- * new-path rules (`backslash`, `drive-prefix`) spare: a document committed
- * before them stays editable and deletable in place.
+ * new-path rules ({@link isNewVaultPath}) spare: a document committed before
+ * them stays editable and deletable in place.
  */
 export function pathProblem(path: string, kept = false): PathProblem | undefined {
   if (path === "") return "empty";
@@ -106,7 +158,5 @@ export function pathProblem(path: string, kept = false): PathProblem | undefined
   if (!isVaultRelativePath(path)) return "not-vault-relative";
   if (!fitsPathKeyLimit(path)) return "too-long-normalized";
   if (kept) return undefined;
-  if (path.includes("\\")) return "backslash";
-  if (!isNewVaultPath(path)) return "drive-prefix";
-  return undefined;
+  return newPathProblem(path);
 }

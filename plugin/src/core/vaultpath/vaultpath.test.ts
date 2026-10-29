@@ -20,8 +20,8 @@ describe("isPathText", () => {
     it(`${vector.valid ? "accepts" : "rejects"} the shared vector: ${vector.name}`, () => {
       const path = textPath(vector);
       expect(isPathText(path)).toBe(vector.valid);
-      // Every non-empty vector is otherwise a new path, so only the text rule decides it.
-      if (path !== "") expect(isNewVaultPath(path)).toBe(true);
+      // Every non-empty vector is otherwise vault-relative, and new unless it breaks the new-path length limits.
+      if (path !== "" && vector.valid) expect(isNewVaultPath(path)).toBe(vector.new);
     });
   }
 
@@ -37,6 +37,9 @@ describe("isPathText", () => {
   });
 });
 
+/** A validity vector's path: `path` repeated `repeat` times (once if absent), then `suffix`. */
+const validityPath = (vector: { path: string; repeat?: number; suffix?: string }) => vector.path.repeat(vector.repeat ?? 1) + (vector.suffix ?? "");
+
 describe("isVaultRelativePath", () => {
   it("has shared vectors with both outcomes to check", () => {
     expect(shared.vectors.some((vector) => vector.valid)).toBe(true);
@@ -47,7 +50,7 @@ describe("isVaultRelativePath", () => {
   // Go, so passing here means the client accepts exactly what the server does.
   for (const vector of shared.vectors) {
     it(`${vector.valid ? "accepts" : "rejects"} the shared vector: ${vector.name}`, () => {
-      expect(isVaultRelativePath(vector.path)).toBe(vector.valid);
+      expect(isVaultRelativePath(validityPath(vector))).toBe(vector.valid);
     });
   }
 });
@@ -63,7 +66,7 @@ describe("isNewVaultPath", () => {
   // creates in Go.
   for (const vector of shared.vectors) {
     it(`${vector.new ? "accepts" : "rejects"} the shared vector as a new path: ${vector.name}`, () => {
-      expect(isNewVaultPath(vector.path)).toBe(vector.new);
+      expect(isNewVaultPath(validityPath(vector))).toBe(vector.new);
     });
   }
 });
@@ -84,10 +87,11 @@ describe("fitsPathKeyLimit", () => {
     it(`${vector.valid ? "accepts" : "rejects"} the shared vector: ${vector.name}`, () => {
       const path = keyPath(vector);
       expect(fitsPathKeyLimit(path)).toBe(vector.valid);
-      // Every vector is otherwise a valid new path, so only the normalized length decides it.
+      // Every vector is otherwise a valid path, so only the normalized length decides it for a kept path.
       expect(isPathText(path)).toBe(true);
-      expect(isNewVaultPath(path)).toBe(true);
-      expect(pathProblem(path)).toBe(vector.valid ? undefined : "too-long-normalized");
+      expect(isVaultRelativePath(path)).toBe(true);
+      expect(pathProblem(path, true)).toBe(vector.valid ? undefined : "too-long-normalized");
+      expect(pathProblem(path) === undefined).toBe(vector.new);
     });
   }
 });
@@ -105,26 +109,38 @@ describe("pathProblem", () => {
     ["a drive letter", "C:a.md", "not-vault-relative"],
     ["a backslash", "a\\b.md", "backslash"],
     ["one character and a colon", "1:x.md", "drive-prefix"],
+    ["a forbidden character", "notes/a?.md", "forbidden-character"],
+    ["a colon after the first character", "ab:c.md", "forbidden-character"],
+    ["a leading space", " a.md", "edge-space"],
+    ["a trailing space in a folder", "notes /a.md", "edge-space"],
+    ["a trailing dot", "notes./a.md", "trailing-dot"],
+    ["a reserved name", "com1.md", "reserved-name"],
+    ["a reserved name without an extension", "notes/NUL", "reserved-name"],
+    ["a name of 256 bytes", "a".repeat(256), "name-too-long"],
+    ["a path of 1025 bytes", `${"a".repeat(254)}/`.repeat(4) + "abcde", "path-too-long"],
   ])("names %s", (_, path, problem) => {
     expect(pathProblem(path)).toBe(problem);
   });
 
   it("accepts a valid new path", () => {
     expect(pathProblem("notes/a.md")).toBeUndefined();
-    expect(pathProblem("a".repeat(4096))).toBeUndefined();
+    expect(pathProblem("a".repeat(255))).toBeUndefined();
+    expect(pathProblem(`${"a".repeat(254)}/`.repeat(4) + "abcd")).toBeUndefined();
   });
 
   it("lets a live document keep a vault-relative path the new-path rule refuses", () => {
     expect(pathProblem("old\\note.md", true)).toBeUndefined();
     expect(pathProblem("1:x.md", true)).toBeUndefined();
+    expect(pathProblem("CON.md", true)).toBeUndefined();
+    expect(pathProblem("a".repeat(4096), true)).toBeUndefined();
     expect(pathProblem("a\u0001b.md", true)).toBe("invalid-character");
     expect(pathProblem("../a.md", true)).toBe("not-vault-relative");
   });
 
   // Every shared vector: no problem exactly when the server's every rule passes.
   it("finds no problem exactly for the shared vectors every rule accepts", () => {
-    for (const vector of shared.vectors) expect(pathProblem(vector.path) === undefined).toBe(vector.new);
-    for (const vector of text.vectors) expect(pathProblem(textPath(vector)) === undefined).toBe(vector.valid);
-    for (const vector of key.vectors) expect(pathProblem(keyPath(vector)) === undefined).toBe(vector.valid);
+    for (const vector of shared.vectors) expect(pathProblem(validityPath(vector)) === undefined).toBe(vector.new);
+    for (const vector of text.vectors) expect(pathProblem(textPath(vector)) === undefined).toBe(vector.new);
+    for (const vector of key.vectors) expect(pathProblem(keyPath(vector)) === undefined).toBe(vector.new);
   });
 });

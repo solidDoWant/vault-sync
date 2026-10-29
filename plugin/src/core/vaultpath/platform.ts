@@ -40,8 +40,8 @@ export type UnmaterializableReason = "reserved-name" | "forbidden-character" | "
  * found, `refused-by-vault` when the rules allow the path but the vault
  * refused it anyway (VaultError "unmaterializable"), or `alias` when another
  * live document's file holds the path's one filesystem name although the
- * server keeps the two paths apart (`ı.md` and `I.md` on Windows; design
- * docs/design/engine-path-ownership.md §4.5 step 3, decision #52).
+ * server keeps the two paths apart. Since the path key takes `ı` for `I`
+ * (docs/design/engine.md §6), no pair of paths is known to do so.
  */
 export type UnmaterializableCause = UnmaterializableReason | "refused-by-vault" | "alias";
 
@@ -58,8 +58,7 @@ export const posixPathRules: PathRules = { platform: "posix" };
  * and HFS+ ignore case and Unicode normalization. It is not ordered with the
  * path key (§5): it folds neither `ß`/`SS` nor, on Windows and Android,
  * NFC/NFD, so two spellings with one path key can be two files on the
- * device (decision #52); and it takes `ı` for `I`, which the path key keeps
- * apart. Compare paths through the engine's PathSpace, not with this
+ * device (decision #52). Compare paths through the engine's PathSpace, not with this
  * directly.
  */
 export function filesystemKey(path: string, platform: PathPlatform): string {

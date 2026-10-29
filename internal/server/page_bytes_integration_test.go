@@ -5,7 +5,6 @@ package server_test
 import (
 	"fmt"
 	"net/http"
-	"strings"
 	"sync"
 	"testing"
 
@@ -18,12 +17,23 @@ import (
 	"github.com/solidDoWant/vault-sync/internal/api"
 )
 
-// longPath returns a valid path of exactly api.MaxPathBytes bytes, unique
-// per name.
-func longPath(name string) string {
-	suffix := "/" + name + ".md"
+// shortPath returns the path a long-path vault commits for name, before
+// lengthenPaths makes it maximum-length.
+func shortPath(name string) string {
+	return name + ".md"
+}
 
-	return strings.Repeat("a", api.MaxPathBytes-len(suffix)) + suffix
+// lengthenPaths rewrites every revision path of a vault to exactly
+// api.MaxPathBytes bytes, by prefixing a folder of "a"s. A commit may create
+// a path of at most 1024 bytes, but a document committed before that limit
+// keeps its path of up to api.MaxPathBytes, which the feeds still serve.
+func lengthenPaths(t *testing.T, fixture *syncFixture, vaultID string) {
+	t.Helper()
+
+	_, err := fixture.pool.Exec(t.Context(),
+		`UPDATE revisions SET path = repeat('a', $2 - octet_length(path) - 1) || '/' || path WHERE vault_id = $1`,
+		vaultID, api.MaxPathBytes)
+	require.NoError(t, err)
 }
 
 // pageCodecs are the ways a client may encode its calls. Without gzip, the
@@ -56,12 +66,12 @@ func newLongPathVault(t *testing.T, fixture *syncFixture, historyLength, documen
 	content := alice.content(t, "content")
 	vault := &longPathVault{client: alice}
 
-	head := alice.mustCommit(t, alice.create(t, longPath("history-0"), content))
+	head := alice.mustCommit(t, alice.create(t, shortPath("history-0"), content))
 	vault.document = head.GetDocumentId()
 	vault.history = []string{head.GetId()}
 
 	for index := 1; index < historyLength; index++ {
-		head = alice.mustCommit(t, alice.next(t, head, longPath(fmt.Sprintf("history-%d", index)), content, false))
+		head = alice.mustCommit(t, alice.next(t, head, shortPath(fmt.Sprintf("history-%d", index)), content, false))
 		vault.history = append([]string{head.GetId()}, vault.history...)
 	}
 
@@ -73,7 +83,7 @@ func newLongPathVault(t *testing.T, fixture *syncFixture, historyLength, documen
 	for worker := range workers {
 		wait.Go(func() {
 			for index := worker; index < documents; index += workers {
-				_, err := alice.commitOn(t, index, alice.create(t, longPath(fmt.Sprintf("document-%d", index)), content))
+				_, err := alice.commitOn(t, index, alice.create(t, shortPath(fmt.Sprintf("document-%d", index)), content))
 				assert.NoError(t, err)
 			}
 		})
@@ -81,6 +91,8 @@ func newLongPathVault(t *testing.T, fixture *syncFixture, historyLength, documen
 
 	wait.Wait()
 	require.False(t, t.Failed())
+
+	lengthenPaths(t, fixture, alice.vaultID)
 
 	vault.changes = revisionIDs(alice.allChanges(t, 0, 1))
 	require.Len(t, vault.changes, historyLength+documents)

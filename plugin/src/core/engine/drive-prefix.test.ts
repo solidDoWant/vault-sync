@@ -45,20 +45,18 @@ describe("SyncEngine with drive-like paths (#148)", () => {
     expect(await files(h.vault)).toEqual(new Map([[path, "mine\n"]]));
   });
 
-  it("commits a file with two characters before the colon, or a drive-like name in a later segment", async () => {
+  it("never commits a file with a colon after the first character, which is not a portable name (engine.md §6)", async () => {
     const h = harness({ merge: "default" });
     await h.vault.write("12:x.md", bytes("two\n"));
     await h.vault.write("notes/1:x.md", bytes("nested\n"));
+    const calls = recordCalls(h);
 
     const summary = await h.engine.push();
 
-    expect(summary).toMatchObject({ committed: 2, rejected: [] });
-    expect(h.server.liveFiles()).toEqual(
-      new Map([
-        ["12:x.md", "two\n"],
-        ["notes/1:x.md", "nested\n"],
-      ]),
-    );
+    expect(uploadsOrCommits(calls)).toEqual([]);
+    expect(summary.committed).toBe(0);
+    expect(summary.rejected.map(({ operation }) => operation.path).sort()).toEqual(["12:x.md", "notes/1:x.md"]);
+    expect(h.server.liveFiles()).toEqual(new Map());
   });
 
   it("never moves a synced document to a drive-like path, and syncs it once renamed to a valid one", async () => {

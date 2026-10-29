@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { InMemoryVault } from "../vault/memory";
 import type { SyncEngine } from "./engine";
 import { harness } from "./testing";
 
@@ -33,22 +32,4 @@ describe("SyncEngine's pull and the alias claims scan (#862)", () => {
     expect(scans).not.toHaveBeenCalled();
   });
 
-  it("still scans, and applies the alias deferral, once the server moves the holder away", async () => {
-    const pathRules = { platform: "windows" } as const;
-    const h = harness({ merge: "default", pathRules, vault: new InMemoryVault({ pathRules }) });
-    h.server.commit({ documentId: "upper", path: "I.md", content: "upper\n" });
-    await h.engine.pull();
-    h.server.commit({ documentId: "dotless", path: "ı.md", content: "dotless\n" });
-    await h.engine.pull();
-    expect((await h.journal.listDeferred()).map((deferred) => deferred.unmaterializable)).toEqual(["alias"]);
-
-    const scans = aliasScans(h.engine);
-    await h.engine.pull();
-    expect(scans).toHaveBeenCalled();
-
-    h.server.commit({ documentId: "upper", path: "J.md", content: "upper\n" });
-    await h.engine.pull();
-    expect(await h.journal.listDeferred()).toEqual([]);
-    expect([...(await h.vault.list())].sort()).toEqual(["J.md", "ı.md"]);
-  });
 });

@@ -48,8 +48,8 @@ var (
 	// ErrPathNotCurrent: the revision's path may only be kept, not given
 	// (NewRevision.PathMustBeCurrent), and the document is new, a
 	// tombstone, or at another path.
-	ErrPathNotCurrent = errors.New(`a new path must not contain "\" or start with one character and ":"; ` +
-		`only a live document already at such a path may keep it (edit or delete it in place, or rename it to a path without either)`)
+	ErrPathNotCurrent = errors.New(`the path breaks a rule for new paths; ` +
+		`only a live document already at such a path may keep it (edit or delete it in place, or rename it to a path that keeps the rules)`)
 	// ErrEpochNotCurrent: the revision's epoch is not the vault's current
 	// key epoch (SPEC.md §9.3). Also returned by an epoch change whose
 	// expected epoch is not the current one.

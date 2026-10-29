@@ -148,7 +148,7 @@ describe("filesystemKey", () => {
     { name: "ß and ss", a: "Straße.md", b: "strasse.md", expected: { posix: false, macos: false, windows: false, android: false } },
     // NTFS's upcase table maps k to K, never to the Kelvin sign; on macOS the sign's canonical decomposition is K.
     { name: "the Kelvin sign and k", a: "K.md", b: "k.md", expected: { posix: false, macos: true, windows: false, android: false } },
-    // The upper case of the dotless ı is I: NTFS, APFS and Android's shared storage take them for one name, which the path key does not (§6.4 item 4).
+    // The upper case of the dotless ı is I: NTFS, APFS and Android's shared storage take them for one name, as the path key does (engine.md §6).
     { name: "the dotless ı and I", a: "ı.md", b: "I.md", expected: { posix: false, macos: true, windows: true, android: true } },
     { name: "different names", a: "Foo.md", b: "Bar.md", expected: { posix: false, macos: false, windows: false, android: false } },
   ];

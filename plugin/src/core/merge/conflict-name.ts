@@ -1,5 +1,5 @@
 import { unmaterializableReason, type PathRules } from "../vaultpath/platform";
-import { fitsPathKeyLimit, isVaultRelativePath, maxPathBytes } from "../vaultpath/vaultpath";
+import { fitsPathKeyLimit, isVaultRelativePath, maxNewPathBytes } from "../vaultpath/vaultpath";
 import { graphemes } from "../graphemes";
 
 /** Most UTF-8 bytes of one path segment: the file-name limit of every supported platform's filesystems. */
@@ -19,8 +19,8 @@ const utf8Length = (text: string) => encoder.encode(text).length;
  * platform.
  *
  * The copy must be committable, so the name is shortened, from the end of
- * `<name>`, until the path fits the server's limits (4096 bytes, 8192 bytes
- * normalized) and its file name fits 255 bytes. Returns null if no name fits
+ * `<name>`, until the path fits the server's limits for a new path (1024 bytes,
+ * 8192 bytes normalized) and its file name fits 255 bytes. Returns null if no name fits
  * (the folder part or extension alone is too long); the caller must then keep
  * the local version where it is rather than drop it. With `rules`, the copy
  * must also be one the local platform can hold (SPEC.md §8), e.g. within
@@ -97,7 +97,7 @@ function conflictName(path: string, device: string, date: Date, attempt: number,
     const segment = copy.slice(folder.length, copy.length - tail.length);
     return (
       utf8Length(segment) <= maxSegmentBytes &&
-      utf8Length(copy) <= maxPathBytes &&
+      utf8Length(copy) <= maxNewPathBytes &&
       fitsPathKeyLimit(copy) &&
       isVaultRelativePath(copy) &&
       (rules === undefined || unmaterializableReason(copy, rules) === undefined)
