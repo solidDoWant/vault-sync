@@ -61,6 +61,12 @@
   ],
 
   packageRules: [
+    {
+      description: "~90k per-module tags: GitHub's GraphQL tags query 502s on every run, and releases are daily roll-ups, not per-module notes",
+      matchDatasources: ["go"],
+      matchPackageNames: ["github.com/aws/aws-sdk-go-v2", "github.com/aws/aws-sdk-go-v2/**"],
+      fetchChangeLogs: "off",
+    },
     // Last so it overrides any preset rule: every merge needs a reviewer.
     {
       description: "Automerge disabled for everything",
