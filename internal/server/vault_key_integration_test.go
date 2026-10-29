@@ -329,7 +329,7 @@ func TestRemoveMemberCommitsTheNextEpochAtomicallyAgainstPostgres(t *testing.T) 
 // the current epoch go on until an owner rotates, and then only the new
 // epoch is accepted.
 func TestLeavingMarksARotationPendingAndCommitsFollowTheEpochAgainstPostgres(t *testing.T) {
-	fixture := newSyncFixture(t, api.SyncLimits{}, func(service *api.SyncService) { service.AllowE2EE = true })
+	fixture := newSyncFixture(t, api.SyncLimits{})
 	alice := fixture.keyedMember(t, "alice")
 	bob := fixture.keyedMember(t, "bob")
 	carol := fixture.keyedMember(t, "carol")
@@ -340,8 +340,7 @@ func TestLeavingMarksARotationPendingAndCommitsFollowTheEpochAgainstPostgres(t *
 
 	content := carol.content(t, "ciphertext")
 	commit := func(replica int, epoch uint32) (*vaultsyncv1.Revision, error) {
-		request := carol.create(t, "note-"+newV7(t), content)
-		request.Epoch = epoch
+		request := carol.encryptedCreate(t, epoch, opaqueBytes(t, 60), opaqueBytes(t, 32), content)
 
 		return carol.commitOn(t, replica, request)
 	}

@@ -42,6 +42,8 @@ type Document struct {
 	VaultID   uuid.UUID
 	Kind      string
 	HeadRevID uuid.UUID
+	// PathKey is the column value: for a head revision at a later epoch
+	// than 0, the encoding storedText gives the client's HMAC.
 	PathKey   string
 	Deleted   bool
 	CreatedAt time.Time
@@ -123,6 +125,11 @@ func scanRevision(row pgx.Row) (Revision, error) {
 	err := row.Scan(&revision.ID, &revision.DocumentID, &revision.VaultID, &revision.Seq, &revision.ParentRevID,
 		&revision.Kind, &revision.ContentRef, &revision.ContentSize, &revision.Path, &revision.Deleted,
 		&revision.DeviceID, &revision.UserID, &revision.CreatedAt, &revision.Anchor, &revision.Epoch)
+	if err != nil {
+		return revision, err
+	}
+
+	revision.Path, err = loadedText(revision.Epoch, revision.Path)
 
 	return revision, err
 }

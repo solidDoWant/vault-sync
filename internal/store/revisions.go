@@ -3,6 +3,7 @@ package store
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"math"
@@ -83,9 +84,12 @@ type NewRevision struct {
 	// claimed by the client, which must equal the stored blob's size.
 	ContentRef  []byte
 	ContentSize int64
-	Path        string
-	PathKey     string
-	Deleted     bool
+	// Path is the revision's path and PathKey its document's path key: a
+	// plaintext path and its normalized form at epoch 0, ciphertext and a
+	// client-computed HMAC (any bytes) at a later epoch (SPEC.md §9.3).
+	Path    string
+	PathKey string
+	Deleted bool
 	// PathMustBeCurrent accepts Path only as the unchanged path of the
 	// document's live head (an edit or a delete in place), never for a new
 	// document, a rename or a resurrection: ErrPathNotCurrent otherwise.
@@ -308,6 +312,8 @@ func (vault *VaultStore) commitRevision(ctx context.Context, tx pgx.Tx, revision
 		return Revision{}, fmt.Errorf("advance head_seq: %w", err)
 	}
 
+	storedPath, storedPathKey := storedText(revision.Epoch, revision.Path), storedText(revision.Epoch, revision.PathKey)
+
 	// documents mirrors the head revision (head_rev_id, path_key, deleted)
 	// and is written in the same transaction as the revision: the live
 	// path_key index relies on deleted being accurate.
@@ -315,12 +321,12 @@ func (vault *VaultStore) commitRevision(ctx context.Context, tx pgx.Tx, revision
 		_, err = tx.Exec(ctx, `
 			INSERT INTO documents (id, vault_id, kind, head_rev_id, path_key, deleted)
 			VALUES ($1, $2, $3, $4, $5, $6)`,
-			revision.DocumentID, vault.vaultID, revision.Kind, revision.ID, revision.PathKey, revision.Deleted)
+			revision.DocumentID, vault.vaultID, revision.Kind, revision.ID, storedPathKey, revision.Deleted)
 	} else {
 		_, err = tx.Exec(ctx, `
 			UPDATE documents SET head_rev_id = $3, path_key = $4, deleted = $5
 			WHERE vault_id = $1 AND id = $2`,
-			vault.vaultID, revision.DocumentID, revision.ID, revision.PathKey, revision.Deleted)
+			vault.vaultID, revision.DocumentID, revision.ID, storedPathKey, revision.Deleted)
 	}
 
 	if err != nil {
@@ -336,7 +342,7 @@ func (vault *VaultStore) commitRevision(ctx context.Context, tx pgx.Tx, revision
 	// commits. An E2EE path_key is an HMAC, not a path, so it has no
 	// folders to compare. A revision that keeps its live path key is not
 	// checked again, so this never refuses an edit or a delete.
-	pathKeyChanged := isNew || document.Deleted || document.PathKey != revision.PathKey
+	pathKeyChanged := isNew || document.Deleted || document.PathKey != storedPathKey
 	if !revision.Deleted && pathKeyChanged && encryption == EncryptionNone {
 		if err := vault.checkPathFolders(ctx, tx, revision); err != nil {
 			return Revision{}, err
@@ -347,7 +353,7 @@ func (vault *VaultStore) commitRevision(ctx context.Context, tx pgx.Tx, revision
 		INSERT INTO revisions (id, document_id, vault_id, seq, parent_rev_id, content_ref, path, deleted, device_id, epoch)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
 		revision.ID, revision.DocumentID, vault.vaultID, seq, revision.BaseRevID, revision.ContentRef,
-		revision.Path, revision.Deleted, revision.DeviceID, revision.Epoch)
+		storedPath, revision.Deleted, revision.DeviceID, revision.Epoch)
 	if err != nil {
 		return Revision{}, fmt.Errorf("insert revision: %w", err)
 	}
@@ -359,6 +365,38 @@ func (vault *VaultStore) commitRevision(ctx context.Context, tx pgx.Tx, revision
 	}
 
 	return vault.revision(ctx, tx, revision.ID)
+}
+
+// encryptedTextEncoding keeps the ciphertext paths and HMAC path keys of
+// encrypted revisions in the text columns revisions.path and
+// documents.path_key, which cannot hold NUL or invalid UTF-8 (SPEC.md §5).
+// Its alphabet has no "/", so an encoded path key has no folders for the
+// plaintext folder index (migration 0004) to find.
+var encryptedTextEncoding = base64.RawURLEncoding
+
+// storedText returns the column value of a revision's path or path key: the
+// value itself at epoch 0 (plaintext), its encryptedTextEncoding at a later
+// epoch.
+func storedText(epoch int32, value string) string {
+	if epoch == 0 {
+		return value
+	}
+
+	return encryptedTextEncoding.EncodeToString([]byte(value))
+}
+
+// loadedText reverses storedText.
+func loadedText(epoch int32, stored string) (string, error) {
+	if epoch == 0 {
+		return stored, nil
+	}
+
+	value, err := encryptedTextEncoding.DecodeString(stored)
+	if err != nil {
+		return "", fmt.Errorf("decode encrypted path: %w", err)
+	}
+
+	return string(value), nil
 }
 
 // checkPathCurrent returns ErrPathNotCurrent unless document exists, is
