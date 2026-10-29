@@ -9,7 +9,7 @@ import type { HistoryEntry } from "../../../src/core/sync/history";
 import { IndexedDbSyncJournal } from "../../../src/core/sync/indexeddb";
 import type { JournalState } from "../../../src/core/sync/journal";
 import { InMemoryServer } from "../../../src/core/sync/memory-server";
-import { uuidv7 } from "../../../src/core/uuid";
+import { v7 as uuidv7 } from "uuid";
 import { VaultError, type FileStat, type VaultEvent } from "../../../src/core/vault/adapter";
 import { isVaultRelativePath } from "../../../src/core/vaultpath/vaultpath";
 import { runConformanceCase, vaultAdapterConformance, type VaultAdapterFactory } from "../../../src/core/vault/conformance";

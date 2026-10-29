@@ -77,6 +77,5 @@ export {
   type VaultAdapterHarness,
 } from "./vault/conformance";
 export { InMemoryVault, type InMemoryVaultOptions } from "./vault/memory";
-export { uuidv7 } from "./uuid";
 export { posixPathRules, unmaterializableReason, type PathPlatform, type PathRules, type UnmaterializableCause, type UnmaterializableReason } from "./vaultpath/platform";
 export { isVaultRelativePath } from "./vaultpath/vaultpath";
