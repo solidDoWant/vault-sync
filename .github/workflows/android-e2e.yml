@@ -46,8 +46,9 @@ env:
   # looks in ~/.android/avd: point the emulator at avdmanager's.
   ANDROID_AVD_HOME: /home/runner/.config/.android/avd
   ANDROID_SERIAL: emulator-5554
-  # The emulator's renderer: Mesa's lavapipe, software. The deprecated
-  # swiftshader_indirect segfaulted the emulator in most runs (#852).
+  # The emulator's renderer mode: lavapipe, software. The deprecated
+  # swiftshader_indirect segfaulted the emulator in most runs
+  # (docs/testing/e2e.md, "Emulator").
   EMULATOR_GPU: ${{ inputs.gpu || 'lavapipe' }}
 
 jobs:
@@ -90,7 +91,7 @@ jobs:
           # otherwise): the deprecated swiftshader_indirect segfaulted (in
           # its JIT-compiled code) as soon as chromedriver attached to
           # Obsidian's WebView, on the runners' AMD EPYC hosts, in five of
-          # six nightly runs (#852). Guest Vulkan stays off, which made
+          # six nightly runs. Guest Vulkan stays off, which made
           # that crash rarer (docs/testing/e2e.md, "Emulator").
           # The subshell records how the emulator ended, should it end.
           nohup bash -c '"$ANDROID_HOME/emulator/emulator" -avd obsidian_test -no-window -no-audio -no-boot-anim \
@@ -140,7 +141,7 @@ jobs:
           adb="$ANDROID_HOME/platform-tools/adb"
           mkdir -p "$RUNNER_TEMP/e2e-logs"
           # An emulator that died mid-run fails every later spec; say so
-          # once, rather than leaving 20 spec failures to read (#852).
+          # once, rather than leaving 20 spec failures to read.
           if crash="$(grep -m1 'emulator exited with status' "$RUNNER_TEMP/emulator.log")"; then
             echo "::error::the emulator crashed during the run ($crash, -gpu $EMULATOR_GPU); the spec failures that follow are this, not a plugin regression (docs/testing/e2e.md, \"Emulator\")"
           fi
