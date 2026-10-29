@@ -88,6 +88,9 @@ func TestPluginE2E(t *testing.T) {
 		config.OIDCIssuerURLEnv + "=" + issuer.URL,
 		config.OIDCAudienceEnv + "=" + authtest.DefaultAudience,
 		config.LogLevelEnv + "=warn",
+		// A file limit the specs can go over with a few MB (AC-09); the
+		// largest file a spec syncs is 4 MiB.
+		config.BlobMaxSizeBytesEnv + "=8388608",
 		// Stop at once when the test ends.
 		config.ShutdownDelayEnv + "=0s",
 	}
