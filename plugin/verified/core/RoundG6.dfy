@@ -4569,4 +4569,109 @@ abstract module RoundG6 refines RoundGuarantees {
     if UnsavedCollides(platform, input.unsaved, r.path) { return; }
     ClearWayCondClass(platform, accepted, documents, doc, r, input, revs, first, d);
   }
+
+  // Every write of the apply for its document writes a live revision of it
+  // the server accepted, or settles another device's revision with what
+  // the row then sees (a merge).
+  lemma ApplyWriteClass(platform: Platform, accepted: map<RevId, Revision>, doc: DocId, document: Document, r: Revision,
+                        input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId, d: DeviceId)
+    requires ListingDistinct(platform, input.listing) && AcceptedAs(accepted, r) && r.doc == doc
+    requires Newer(document, r) ==> PulledBy(document, r, d)
+    ensures var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, rev);
+      forall effect | effect in applied.effects && effect.Write? && effect.target == Some(doc) ::
+        AcceptedContent(accepted, doc, effect.content)
+        || (r.device != d && applied.document.base != document.base
+            && applied.document.binding.Some? && applied.document.binding.value.seen == effect.content)
+  {
+    var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, rev);
+    forall effect | effect in applied.effects && effect.Write? && effect.target == Some(doc)
+      ensures AcceptedContent(accepted, doc, effect.content)
+              || (r.device != d && applied.document.base != document.base
+                  && applied.document.binding.Some? && applied.document.binding.value.seen == effect.content)
+    {
+      if !r.deleted && effect.content == r.content {
+        assert r.id in accepted && accepted[r.id] == r;
+      }
+    }
+  }
+
+  // ClearWay's writes for the arriving document write the head as it
+  // arrives, which its row then sees.
+  lemma ClearWayWriteClass(platform: Platform, accepted: map<RevId, Revision>, documents: map<DocId, Document>, doc: DocId,
+                           r: Revision, input: RoundInput, revs: FreshRevs, first: Claims, d: DeviceId)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing) && AcceptedAs(accepted, r) && r.doc == doc
+    requires var document := documents[doc];
+      var applied := ApplyRevision(platform, doc, document, r, input, BoundNames(documents), ApplyClaims(documents, first), revs[doc]);
+      HeldForName(document, applied, r)
+    requires Newer(documents[doc], r) ==> PulledBy(documents[doc], r, d)
+    ensures var ruled := ClearWay(platform, documents, doc, r, input, revs);
+      forall effect | effect in ruled.effects && effect.Write? && effect.target == Some(doc) ::
+        AcceptedContent(accepted, doc, effect.content)
+        || (r.device != d && doc in ruled.documents && ruled.documents[doc].base != documents[doc].base
+            && ruled.documents[doc].binding.Some? && ruled.documents[doc].binding.value.seen == effect.content)
+  {
+    var document := documents[doc];
+    var ruled := ClearWay(platform, documents, doc, r, input, revs);
+    var applied := ApplyRevision(platform, doc, document, r, input, BoundNames(documents), ApplyClaims(documents, first), revs[doc]);
+    assert !Acknowledges(document, r);
+    assert r.device != d;
+    var keep := Keeps(platform, document, r, input);
+    var way := InTheWay(platform, input.listing, r.path, keep);
+    var avoid := BoundNames(documents) + input.unsaved;
+    var aside := Aside(platform, input.listing, avoid, AllClaims(documents), way, r.path);
+    if aside.None? || !ClearsWith(platform, documents, doc, r, input, keep, aside.value) {
+      assert |ruled.effects| == 1 && ruled.effects[0].Report?;
+      return;
+    }
+    assert ruled.documents == ClearRows(platform, documents, doc, r, input, aside.value, revs);
+    var head := HeadRow(platform, document, r, input, revs[doc]);
+    assert doc in ruled.documents && ruled.documents[doc] == head;
+    var front := MoveEffects(platform, documents, doc, aside.value);
+    var arrive := ArriveOf(platform, doc, document, r, input);
+    MoveEffectsShape(platform, documents, doc, aside.value);
+    assert ruled.effects == front + arrive;
+    var arriving := Arriving(platform, document, r, input);
+    reveal Arriving();
+    reveal HeadRow();
+    var read := MoveRead(platform, document, r, input);
+    forall effect | effect in ruled.effects && effect.Write? && effect.target == Some(doc)
+      ensures AcceptedContent(accepted, doc, effect.content)
+              || (head.base != document.base && head.binding.value.seen == effect.content)
+    {
+      assert effect in arrive;
+      assert effect.content == arriving.content;
+      if effect.content == r.content {
+        assert r.id in accepted && accepted[r.id] == r && !r.deleted;
+      } else {
+        assert read.Some? && MovedContent(document, read.value, r).Some?;
+        assert MovedAgainstChange(document, read, r);
+        assert head.binding.value.seen == arriving.content;
+      }
+    }
+  }
+
+  // Every write of the rule for the settled document writes a live
+  // revision of it the server accepted, or links another device's
+  // revision into its chain, with what its row then sees.
+  lemma RuleWriteClass(platform: Platform, accepted: map<RevId, Revision>, documents: map<DocId, Document>, doc: DocId,
+                       r: Revision, input: RoundInput, revs: FreshRevs, first: Claims, d: DeviceId)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing) && AcceptedAs(accepted, r) && r.doc == doc
+    requires Newer(documents[doc], r) ==> PulledBy(documents[doc], r, d)
+    ensures var ruled := PathRule(platform, documents, doc, r, input, revs, first);
+      forall effect | effect in ruled.effects && effect.Write? && effect.target == Some(doc) ::
+        AcceptedContent(accepted, doc, effect.content)
+        || (r.device != d && doc in ruled.documents && ruled.documents[doc].base != documents[doc].base
+            && ruled.documents[doc].binding.Some? && ruled.documents[doc].binding.value.seen == effect.content)
+  {
+    var document := documents[doc];
+    var applied := ApplyRevision(platform, doc, document, r, input, BoundNames(documents), ApplyClaims(documents, first), revs[doc]);
+    if !HeldForName(document, applied, r) {
+      ApplyWriteClass(platform, accepted, doc, document, r, input, BoundNames(documents), ApplyClaims(documents, first), revs[doc], d);
+      return;
+    }
+    if UnsavedCollides(platform, input.unsaved, r.path) { return; }
+    ClearWayWriteClass(platform, accepted, documents, doc, r, input, revs, first, d);
+  }
 }
