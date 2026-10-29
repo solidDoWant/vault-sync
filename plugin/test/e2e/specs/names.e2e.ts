@@ -190,7 +190,15 @@ describe("file names across devices", function () {
       const entry = refused.find((candidate) => candidate.path === name.path);
       expect(entry?.reason).toMatch(name.reason);
     }
-    const status = await syncStatus();
+    // A pass may still be running (the portable note's upload, or one the
+    // watcher started), so wait for it to end; once it has, the refusals
+    // must leave the status in error.
+    let status = await syncStatus();
+    await browser
+      .waitUntil(async () => (status = await syncStatus()).state !== "syncing", { timeout: 60_000, interval: 500 })
+      .catch(() => {
+        throw new Error(`sync never settled after the refusals; last: ${JSON.stringify(status)}`);
+      });
     expect(status.state).toBe("error");
     expect(status.message).toContain("refused");
 
