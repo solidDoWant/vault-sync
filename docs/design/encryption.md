@@ -86,6 +86,8 @@ The rule: **a device wraps an epoch key only to recipients, and uses an epoch ke
   - A user's other devices read the user's **anchor list**: vault id to genesis hash, sealed under a key derived from the user's private key and stored on the server with a version number. Writes are compare-and-set on the version, and a device refuses a lower version than it has seen.
 - **Escrow key.** The escrow key has its own Ed25519 signing key, held with the escrow identity. A device pins the deployment's escrow bundle when it first sees it and records it in genesis. A new escrow key is accepted only with an **escrow rotation statement** signed by the previous escrow signing key. The server publishes the chain of statements, and the export job writes the next one when the escrow key rotates. Any other change is a hard stop at vault creation and at rotation. The operator also publishes the escrow fingerprint, so an owner can compare it when creating a vault.
 - **Converting a plaintext vault.** The converting owner writes genesis listing every member's bundle as the server reports it then. That moment trusts the server, like any first meeting. The plugin therefore shows every member's fingerprint and asks the owner to compare them before converting.
+- **Escrow on/off entry.** Turning escrow on or off is an owner's rotation. `RotateEpoch` carries the signed *escrow* entry together with the epoch record. The record's log position is that entry, and the server appends the entry and creates the epoch in one transaction.
+- **Where the escrow chain lives.** The escrow rotation statements are stored in PostgreSQL. The export job writes the next one through its job-only endpoint (bearer token) when it rotates the escrow key, and `GetServerInfo` publishes the root bundle and every statement. At startup the configured escrow recipient and signing key must equal the chain's head. With no chain yet, the configured bundle becomes its root. Any other mismatch stops the server with an error. The operator's order is: rotate with the job, then update the configuration.
 - **Passphrase parameters.** A device remembers the Argon2id parameters it has seen for an account and refuses lower ones at unlock.
 - **Hard stop.** On any verification failure the plugin stops syncing that vault, keeps the local files, and shows what failed: "the server sent key or membership data that doesn't verify". It never falls back to trusting the server.
 - **Lost passphrase without escrow.** The user's identity is gone. An owner removes them and invites them again with a new key. There is no "replace a member's key" entry.
@@ -120,6 +122,12 @@ Operator decisions of 2026-10-29, from the questions on #1206, #1207, #1210 and 
 ## Import
 
 `#1199`: a client-side tool. It encrypts with the vault's current key, unwrapped through the escrow identity or the user's passphrase.
+
+- **It needs two keys:** the current epoch's key and epoch 1's key, for `path_key_secret`. It signs in as a member with the `editor` or owner role.
+- **Escrow slots:** `ListKeySlots` takes an optional recipient kind, and returns the vault's escrow slots to editors and owners only. An escrow slot is useless without the escrow identity.
+- **Verification (active server):** the import verifies the log and the signed epoch records the way a device does, before it uses a key.
+  - With the user's passphrase, it anchors through the user's anchor list.
+  - With the escrow identity, it has no anchor list. The operator passes the vault's genesis hash (`--genesis`), which the plugin shows as the **vault fingerprint** in the vault's settings, and the import refuses to run without it.
 
 ## No hand-written cryptography
 
