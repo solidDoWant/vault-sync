@@ -4,7 +4,7 @@ import { posixPathRules, unmaterializableReason, type PathRules } from "../vault
 import { VaultError, type DeletePrecondition, type FileStat, type VaultAdapter, type VaultEvent, type VaultListener, type WritePrecondition } from "./adapter";
 
 export interface InMemoryVaultOptions {
-  /** Clock for mtimes; inject a deterministic one in the simulation. Defaults to Date.now. */
+  /** Clock for mtimes; inject a deterministic one in tests. Defaults to Date.now. */
   now?: () => number;
   /**
    * The file-name rules of the platform the vault models (SPEC.md §8).
@@ -22,7 +22,7 @@ export interface InMemoryVaultOptions {
   pathRules?: PathRules;
 }
 
-/** Who made a change, as the simulation harness tells them apart (InMemoryVault.handle). */
+/** Who made a change, as tests tell them apart (InMemoryVault.handle). */
 export type VaultActor = "user" | "engine";
 
 /**
@@ -48,7 +48,7 @@ interface StoredFile {
 }
 
 /**
- * A VaultAdapter backed by a Map, for unit tests and the simulation harness.
+ * A VaultAdapter backed by a Map, for unit tests.
  * Events are delivered synchronously, in order, after each change is applied.
  * Preconditions are checked synchronously with the change, so atomically.
  */

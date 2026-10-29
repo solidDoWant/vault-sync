@@ -34,7 +34,7 @@ export interface EpochKeyStore {
   save(keys: ReadonlyMap<number, Uint8Array>): Promise<void>;
 }
 
-/** An {@link EpochKeyStore} in memory, for tests and the simulation. */
+/** An {@link EpochKeyStore} in memory, for tests. */
 export class MemoryEpochKeyStore implements EpochKeyStore {
   keys = new Map<number, Uint8Array>();
 

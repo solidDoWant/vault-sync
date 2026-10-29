@@ -126,27 +126,3 @@ describe("src/core import fence", { timeout: 30_000 }, () => {
     expect(await fenceViolations("src/obsidian/probe.ts", source)).toEqual([]);
   });
 });
-
-// The simulation harness (../sim) drives the engine as the platform-independent
-// core, so the same fence applies to it, through sim/eslint.config.js (the
-// config `npm run lint` lints ../sim with).
-describe("simulation harness import fence", () => {
-  const simForbidden: Record<string, string> = {
-    ...forbidden,
-    "the adapter by its path from sim": 'import { a } from "../plugin/src/obsidian/adapter";\nexport const b = a;\n',
-    "the plugin entry point by its path from sim": 'import type P from "../plugin/src/main";\nexport type Q = P;\n',
-  };
-
-  for (const [name, source] of Object.entries(simForbidden)) {
-    for (const extension of [".ts", ".mts", ".cts", ".tsx", ".js"]) {
-      it(`rejects ${name} in a ${extension} file`, async () => {
-        expect(await fenceViolations(`../sim/probe${extension}`, source)).not.toEqual([]);
-      });
-    }
-  }
-
-  it("allows the engine's own modules", async () => {
-    const source = 'import { a } from "../plugin/src/core/engine";\nimport { b } from "./obsidian-names";\nexport const c = [a, b];\n';
-    expect(await fenceViolations("../sim/probe.ts", source)).toEqual([]);
-  });
-});

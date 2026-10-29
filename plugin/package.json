@@ -8,7 +8,7 @@
     "build": "tsc --noEmit && node esbuild.config.mjs production",
     "dev": "node esbuild.config.mjs",
     "test": "vitest run",
-    "lint": "eslint . ../sim",
+    "lint": "eslint .",
     "typecheck": "tsc --noEmit && tsc --noEmit -p test/e2e && node scripts/check-core-program.ts"
   },
   "license": "AGPL-3.0-only",

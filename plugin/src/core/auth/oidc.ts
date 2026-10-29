@@ -1,8 +1,8 @@
 // The OAuth 2.0 calls the plugin makes to the identity provider (SPEC.md
 // §9.1): OpenID discovery, the Device Authorization Grant (RFC 8628) and the
 // refresh-token grant. HTTP goes through an injected client so the same code
-// runs on Obsidian's requestUrl (desktop and Android alike, no CORS), in unit
-// tests and in the simulation.
+// runs on Obsidian's requestUrl (desktop and Android alike, no CORS) and in
+// unit tests.
 
 /** One HTTP request to the identity provider. */
 export interface HttpRequest {

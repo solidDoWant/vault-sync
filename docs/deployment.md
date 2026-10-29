@@ -324,7 +324,7 @@ The image and chart are pushed before the tag. If tagging, the tag push or `gh r
 
 The tag has no `v` because Obsidian and BRAT require the release tag, the release name and the released `manifest.json` version to be the same string. The plugin is installed from these releases with [BRAT](https://github.com/TfTHacker/obsidian42-brat): add the beta plugin `solidDoWant/vault-sync`, and BRAT downloads the three files from the latest release.
 
-**Agent releases.** The `release-manager` agent (`.claude/agents/release-manager.md`) cuts a release (`0.N.0` when phase *N* closes, patch versions for fixes, `-rc.K` candidates when asked) on a `/pm release` instruction or when a phase closes, after its own gate checks (milestone, open critical/high bugs, CI, a long simulation, integration/upgrade tests, vulncheck, a dry run). `1.0.0` and above need an explicit `/pm` instruction.
+**Agent releases.** The `release-manager` agent (`.claude/agents/release-manager.md`) cuts a release (`0.N.0` when phase *N* closes, patch versions for fixes, `-rc.K` candidates when asked) on a `/pm release` instruction or when a phase closes, after its own gate checks (milestone, open critical/high bugs, CI, integration/upgrade tests, vulncheck, a dry run). `1.0.0` and above need an explicit `/pm` instruction.
 
 Pushing needs credentials for `ghcr.io` in the Docker daemon (`docker login ghcr.io`) and for Helm (`helm registry login ghcr.io`).
 

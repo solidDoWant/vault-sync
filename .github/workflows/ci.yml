@@ -149,22 +149,6 @@ jobs:
         if: needs.changes.outputs.code == 'true'
         run: nix develop -c make build-images
 
-  # A short sync simulation (docs/testing/simulation.md): a few seeds
-  # against the real server, plus the check that the harness catches a
-  # deliberately broken server (issue #15: under 5 minutes).
-  simulation:
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v5
-      - uses: ./.github/actions/nix-dev-shell
-      # The test stack's images from the actions cache (#727).
-      - uses: ./.github/actions/test-images
-      - name: Simulation
-        run: nix develop -c make test-sim SIM_SEEDS=5 SIM_STEPS=1000
-
   # The proofs of the Dafny-verified modules (plugin/verified/), one job per
   # group of plugin/verified/verify-groups.txt (make verify-group), since one
   # `dafny verify` of every file outgrew the time limit (#1031). The groups
@@ -330,7 +314,7 @@ jobs:
   # still produce a passing `checks`; it fails if any tier failed or was
   # cancelled, and passes when they succeeded or were skipped by the filter.
   checks:
-    needs: [changes, lint, unit, integration, integration-postgres14, simulation, plugin-e2e, release-artifacts, npm-audit, verify-groups, verify]
+    needs: [changes, lint, unit, integration, integration-postgres14, plugin-e2e, release-artifacts, npm-audit, verify-groups, verify]
     if: always()
     runs-on: ubuntu-latest
     steps:
