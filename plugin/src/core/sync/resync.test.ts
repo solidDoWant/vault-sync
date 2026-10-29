@@ -193,3 +193,65 @@ describe("the resync after a server restore", () => {
     expect((await a.journal.load()).pending).toEqual([]);
   });
 });
+
+describe("the resync after a server restore, on a device that cannot hold every path", () => {
+  const windows = { platform: "windows", root: "C:\\vault" } as const;
+  const longFolder = `${"f".repeat(100)}/${"g".repeat(100)}/${"h".repeat(100)}`;
+  const longFile = `${"d".repeat(200)}/${"n".repeat(60)}.md`;
+
+  /** Device B (Windows) synced past a backup that holds `create`'s documents, then the server is restored and A writes one more file. */
+  async function restoredOn(b: (server: InMemoryServer) => Device, create: (a: Device) => Promise<void>): Promise<{ a: Device; b: Device }> {
+    const server = new InMemoryServer();
+    const a = new Device(server, "device-a");
+    const device = b(server);
+    await create(a);
+    await a.write("kept.md", "kept");
+    await a.sync();
+    await device.sync();
+    const backupSeq = server.currentHeadSeq;
+    await a.write("new.md", "after the backup");
+    await a.sync();
+    await device.sync();
+    server.restoreTo(backupSeq);
+    await a.write("after-restore.md", "after the restore");
+    await a.sync();
+    return { a, b: device };
+  }
+
+  it("skips and lists a folder document too long for the device, and finishes the resync", async () => {
+    const { b } = await restoredOn(
+      (server) => new Device(server, "device-b", { pathRules: windows }, { pathRules: windows }),
+      (a) => a.vault.createFolder(longFolder),
+    );
+    await b.sync();
+    expect(await b.files()).toMatchObject({ "kept.md": "kept", "after-restore.md": "after the restore" });
+    expect((await b.engine.problems()).skipped).toEqual([expect.objectContaining({ path: longFolder, reason: "path-too-long" })]);
+    // The cursor moved: the next sync is a normal one.
+    await b.sync();
+    expect(b.engine.status).toBe("idle");
+  });
+
+  it("skips and lists a folder document the vault refuses to create, and finishes the resync", async () => {
+    const { b } = await restoredOn(
+      (server) => new Device(server, "device-b", {}, { pathRules: windows }),
+      (a) => a.vault.createFolder(longFolder),
+    );
+    await b.sync();
+    expect(await b.files()).toMatchObject({ "kept.md": "kept", "after-restore.md": "after the restore" });
+    expect((await b.engine.problems()).skipped).toEqual([expect.objectContaining({ path: longFolder, reason: "refused-by-vault" })]);
+    await b.sync();
+    expect(b.engine.status).toBe("idle");
+  });
+
+  it("skips and lists a file the vault refuses to write, and finishes the resync", async () => {
+    const { b } = await restoredOn(
+      (server) => new Device(server, "device-b", {}, { pathRules: windows }),
+      (a) => a.write(longFile, "too long for Windows"),
+    );
+    await b.sync();
+    expect(await b.files()).toMatchObject({ "kept.md": "kept", "after-restore.md": "after the restore" });
+    expect((await b.engine.problems()).skipped).toEqual([expect.objectContaining({ path: longFile, reason: "refused-by-vault" })]);
+    await b.sync();
+    expect(b.engine.status).toBe("idle");
+  });
+});

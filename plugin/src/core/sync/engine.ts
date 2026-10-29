@@ -421,6 +421,16 @@ export class SyncEngine {
       }
       return this.write(path, content, null);
     };
+    /** Runs a file change at a head's path; a path the vault refuses to hold (§6) skips the document and lists it, and the resync goes on. */
+    const orSkip = async (remote: { documentId: string; path: string; size: bigint }, change: () => Promise<boolean>): Promise<boolean> => {
+      try {
+        return await change();
+      } catch (error) {
+        if (!isVaultError(error, "unmaterializable") && !isVaultError(error, "path-conflict")) throw error;
+        skipped.push({ documentId: remote.documentId, path: remote.path, reason: "refused-by-vault", size: Number(remote.size) });
+        return false;
+      }
+    };
 
     // Step 2: every document on the server.
     for (const [id, head] of heads) {
@@ -434,8 +444,20 @@ export class SyncEngine {
       const entry: DocEntry = { documentId: id, path: remote.path, kind: projection?.kind ?? syncKind(head.kind), baseRevId: remote.revisionId, baseHash: remote.contentHash, baseSize: Number(remote.size) };
       if (entry.kind === "folder") {
         // A folder has no content: it is there or it is created, unless a pending delete is re-applied (step 4). At another path, the next detection records the rename.
+        // A folder this device cannot hold is skipped and listed, as a pull does (§6).
         const pendingDelete = projection?.deleted === true && projection.base !== undefined;
-        if (!pendingDelete && (localPath === null || !(await this.folderExists(localPath)))) await this.createFolder(remote.path);
+        if (!pendingDelete && (localPath === null || !(await this.folderExists(localPath)))) {
+          const skip = this.skipReason(remote.path, remote.size);
+          if (skip !== undefined) {
+            skipped.push({ documentId: id, path: remote.path, reason: skip, size: Number(remote.size) });
+            continue;
+          }
+          const created = await orSkip(remote, async () => {
+            await this.createFolder(remote.path);
+            return true;
+          });
+          if (!created) continue;
+        }
         docs.push(entry);
         continue;
       }
@@ -460,7 +482,7 @@ export class SyncEngine {
             if (!(await this.write(localPath, outcome.content, local.hash))) continue;
           } else if (outcome.content === content) {
             await moveToCopy(localPath, id, local.hash, local.size);
-            if (!(await placeHead(remote.path, content, id))) continue;
+            if (!(await orSkip(remote, () => placeHead(remote.path, content, id)))) continue;
           } else {
             // The newer local file stays (a pending edit on top of the head, found by the next detection); the head is the copy.
             const copy = copyName(localPath);
@@ -485,7 +507,7 @@ export class SyncEngine {
         continue;
       }
       const content = await downloadContent(this.api, this.vaultId, remote.contentHash, remote.size);
-      if (await placeHead(remote.path, content, id)) docs.push(entry);
+      if (await orSkip(remote, () => placeHead(remote.path, content, id))) docs.push(entry);
     }
 
     // Step 3: what the server doesn't know is created again, with its document id and an empty base.
