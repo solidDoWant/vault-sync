@@ -36,6 +36,9 @@ const (
 	// Yjs CRDT document (Phase 5, SPEC.md §10). Rejected with INVALID_ARGUMENT
 	// until live editing is implemented.
 	DocumentKind_DOCUMENT_KIND_YJS DocumentKind = 3
+	// A folder: a path with no content, so empty folders sync. Commits carry
+	// no content_ref; the path rules apply as to any document.
+	DocumentKind_DOCUMENT_KIND_FOLDER DocumentKind = 4
 )
 
 // Enum value maps for DocumentKind.
@@ -45,12 +48,14 @@ var (
 		1: "DOCUMENT_KIND_BLOB",
 		2: "DOCUMENT_KIND_TEXT",
 		3: "DOCUMENT_KIND_YJS",
+		4: "DOCUMENT_KIND_FOLDER",
 	}
 	DocumentKind_value = map[string]int32{
 		"DOCUMENT_KIND_UNSPECIFIED": 0,
 		"DOCUMENT_KIND_BLOB":        1,
 		"DOCUMENT_KIND_TEXT":        2,
 		"DOCUMENT_KIND_YJS":         3,
+		"DOCUMENT_KIND_FOLDER":      4,
 	}
 )
 
@@ -523,6 +528,7 @@ type Revision struct {
 	Kind DocumentKind `protobuf:"varint,6,opt,name=kind,proto3,enum=vaultsync.v1.DocumentKind" json:"kind,omitempty"`
 	// Content of the document at this revision. For tombstones (deleted = true)
 	// this is the content at the time of deletion, kept reachable in history.
+	// Absent for DOCUMENT_KIND_FOLDER.
 	ContentRef *ContentRef `protobuf:"bytes,7,opt,name=content_ref,json=contentRef,proto3" json:"content_ref,omitempty"`
 	// Vault-relative path using "/" separators. UTF-8 bytes for plaintext
 	// vaults; suite-versioned ciphertext for E2EE vaults (SPEC.md §9.3).
@@ -726,12 +732,13 @@ const file_vaultsync_v1_types_proto_rawDesc = "" +
 	"\vcreate_time\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"createTime\x12\x16\n" +
 	"\x06anchor\x18\r \x01(\fR\x06anchor\x12\x14\n" +
-	"\x05epoch\x18\x0e \x01(\rR\x05epoch*t\n" +
+	"\x05epoch\x18\x0e \x01(\rR\x05epoch*\x8e\x01\n" +
 	"\fDocumentKind\x12\x1d\n" +
 	"\x19DOCUMENT_KIND_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12DOCUMENT_KIND_BLOB\x10\x01\x12\x16\n" +
 	"\x12DOCUMENT_KIND_TEXT\x10\x02\x12\x15\n" +
-	"\x11DOCUMENT_KIND_YJS\x10\x03*i\n" +
+	"\x11DOCUMENT_KIND_YJS\x10\x03\x12\x18\n" +
+	"\x14DOCUMENT_KIND_FOLDER\x10\x04*i\n" +
 	"\x0fVaultEncryption\x12 \n" +
 	"\x1cVAULT_ENCRYPTION_UNSPECIFIED\x10\x00\x12\x19\n" +
 	"\x15VAULT_ENCRYPTION_NONE\x10\x01\x12\x19\n" +

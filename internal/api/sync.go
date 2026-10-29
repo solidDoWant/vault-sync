@@ -414,6 +414,7 @@ func (service SyncService) commitError(ctx context.Context, err error) error {
 		errors.Is(err, store.ErrIDInUse),
 		errors.Is(err, store.ErrKindMismatch),
 		errors.Is(err, store.ErrBlobSizeMismatch),
+		errors.Is(err, store.ErrContentKind),
 		errors.Is(err, store.ErrInvalidPath),
 		errors.Is(err, store.ErrPathNotCurrent):
 		return connect.NewError(connect.CodeInvalidArgument, err)
@@ -455,27 +456,34 @@ func parseCommit(message *vaultsyncv1.CommitRevisionRequest) (store.NewRevision,
 		revision.Kind = kindBlob
 	case vaultsyncv1.DocumentKind_DOCUMENT_KIND_TEXT:
 		revision.Kind = kindText
+	case vaultsyncv1.DocumentKind_DOCUMENT_KIND_FOLDER:
+		revision.Kind = store.KindFolder
 	case vaultsyncv1.DocumentKind_DOCUMENT_KIND_YJS:
 		return store.NewRevision{}, invalidArgument("kind DOCUMENT_KIND_YJS is not supported yet")
 	default:
-		return store.NewRevision{}, invalidArgument("kind must be DOCUMENT_KIND_BLOB or DOCUMENT_KIND_TEXT")
+		return store.NewRevision{}, invalidArgument("kind must be DOCUMENT_KIND_BLOB, DOCUMENT_KIND_TEXT or DOCUMENT_KIND_FOLDER")
 	}
 
 	content := message.GetContentRef()
-	if content == nil {
+
+	switch {
+	case revision.Kind == store.KindFolder && content != nil:
+		return store.NewRevision{}, invalidArgument("content_ref must be absent for DOCUMENT_KIND_FOLDER")
+	case revision.Kind == store.KindFolder:
+	case content == nil:
 		return store.NewRevision{}, invalidArgument("content_ref is required")
-	}
+	default:
+		if err := checkBlobID(content.GetBlobId()); err != nil {
+			return store.NewRevision{}, err
+		}
 
-	if err := checkBlobID(content.GetBlobId()); err != nil {
-		return store.NewRevision{}, err
-	}
+		if content.GetSize() > math.MaxInt64 {
+			return store.NewRevision{}, invalidArgument("content_ref.size is out of range")
+		}
 
-	if content.GetSize() > math.MaxInt64 {
-		return store.NewRevision{}, invalidArgument("content_ref.size is out of range")
+		revision.ContentRef = content.GetBlobId()
+		revision.ContentSize = int64(content.GetSize())
 	}
-
-	revision.ContentRef = content.GetBlobId()
-	revision.ContentSize = int64(content.GetSize())
 
 	if revision.Path, err = checkPath(message.GetPath()); err != nil {
 		return store.NewRevision{}, err
@@ -573,6 +581,8 @@ func kindMessage(kind string) vaultsyncv1.DocumentKind {
 		return vaultsyncv1.DocumentKind_DOCUMENT_KIND_TEXT
 	case kindYjs:
 		return vaultsyncv1.DocumentKind_DOCUMENT_KIND_YJS
+	case store.KindFolder:
+		return vaultsyncv1.DocumentKind_DOCUMENT_KIND_FOLDER
 	default:
 		return vaultsyncv1.DocumentKind_DOCUMENT_KIND_UNSPECIFIED
 	}

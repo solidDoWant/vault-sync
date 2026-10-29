@@ -166,7 +166,8 @@ message CommitRevisionRequest {
   DocumentKind kind = 5;
   // Content of the document at this revision. Must name a complete blob in
   // this vault (see BlobService). Required, including for tombstones, where
-  // it is the content being deleted.
+  // it is the content being deleted; absent for DOCUMENT_KIND_FOLDER, which
+  // has no content.
   ContentRef content_ref = 6;
   // Vault-relative path using "/" separators. UTF-8 bytes for plaintext
   // vaults; suite-versioned ciphertext for E2EE vaults. The server bounds its
