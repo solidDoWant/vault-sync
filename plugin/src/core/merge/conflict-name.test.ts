@@ -68,7 +68,7 @@ describe("conflictCopyPath", () => {
   });
 });
 
-describe("copyCandidate (the verified core's CopyCandidate)", () => {
+describe("copyCandidate", () => {
   const naming = { deviceName: "Pixel 7", date };
 
   it("names the copy `<name> (conflict <device> <date>).<ext>` in the same folder, with the UTC date as YYYY-MM-DD HHmmss", () => {

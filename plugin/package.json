@@ -39,8 +39,7 @@
     "@connectrpc/connect-web": "^2.2.0",
     "@noble/ciphers": "^2.4.0",
     "@noble/curves": "^2.4.0",
-    "@noble/hashes": "^2.4.0",
-    "bignumber.js": "^9.3.1"
+    "@noble/hashes": "^2.4.0"
   },
   "allowScripts": {
     "esbuild@0.28.2": true

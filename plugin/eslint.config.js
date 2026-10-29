@@ -60,7 +60,7 @@ export const coreFenceRules = {
 };
 
 export default tseslint.config(
-  { ignores: ["dist/", "node_modules/", "src/gen/", "src/verified/gen/", "*.config.*js", "vitest.config.ts", "vitest.integration.config.ts", "wdio.conf.mts", "wdio.android.conf.mts", "test/e2e/harness/dist/"] },
+  { ignores: ["dist/", "node_modules/", "src/gen/", "*.config.*js", "vitest.config.ts", "vitest.integration.config.ts", "wdio.conf.mts", "wdio.android.conf.mts", "test/e2e/harness/dist/"] },
   js.configs.recommended,
   ...tseslint.configs.strictTypeChecked,
   {
