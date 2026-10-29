@@ -37,7 +37,7 @@ lint-fix: ## Run golangci-lint and perform fixes.
 	golangci-lint run --fix ./...
 
 .PHONY: test
-test: fmt vet plugin-test ## Run unit tests: Go (race detector) + plugin vitest + buf breaking check tests + flake source check + acceptance scoreboard tests + release script tests + test-image pull/cache script tests + agent wait-ci script and scheduler tests + native versitygw pin check.
+test: fmt vet plugin-test ## Run unit tests: Go (race detector) + plugin vitest + buf breaking check tests + flake source check + acceptance scoreboard tests + release script tests + test-image pull/cache script tests + agent wait-ci script and scheduler tests + native versitygw pin check + test-guard tests.
 	go test -race -count=1 ./...
 	./scripts/buf-breaking_test.sh
 	./scripts/flake-source_test.sh
@@ -49,6 +49,11 @@ test: fmt vet plugin-test ## Run unit tests: Go (race detector) + plugin vitest 
 	./scripts/agents/wait-ci_test.sh
 	./scripts/agents/scheduler_test.py
 	./scripts/with-native-s3.sh --check-pin
+	./scripts/ci/test-guard_test.py
+
+.PHONY: test-guard
+test-guard: ## Fail if HEAD deletes or skips an [AC-nn]/[Pn-nn] scenario test or removes a crypto/path vector since its merge base with BASE (default origin/master; CI passes the PR body and labels).
+	./scripts/ci/test-guard.py --base $(or $(BASE),origin/master)
 
 .PHONY: test-integration
 test-integration: $(PLUGIN_DIR)/node_modules/.package-lock.json ## Run integration tests against PostgreSQL + S3 (docker compose; skipped without Docker), incl. the plugin protocol client vs the real server.
