@@ -1,7 +1,7 @@
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 
 import type { Argon2Params } from "../core/e2ee/e2ee";
-import { enableEncryption, PassphraseAttemptsExhaustedError, storedPublicKey, unlockUserKey, WrongPassphraseError, type UserKeyClient, type UserKeyPair } from "../core/keys/user-key";
+import { changePassphrase, enableEncryption, PassphraseAttemptsExhaustedError, storedPublicKey, unlockUserKey, WrongPassphraseError, type UserKeyClient, type UserKeyPair } from "../core/keys/user-key";
 import type { EpochKeyStore } from "../core/keys/vault-keys";
 import { currentAccount, sameAccount, type Account } from "./controller";
 import type { PluginData } from "./data";
@@ -70,6 +70,16 @@ export async function unlockedUserKey(options: EncryptionOptions): Promise<UserK
 export async function unlockOnDevice(options: EncryptionOptions, passphrase: string): Promise<void> {
   const account = await currentAccount(options.data, options.accessToken);
   await cache(options, account, await unlockUserKey(options.client, passphrase));
+}
+
+/**
+ * Changes the signed-in account's recovery passphrase from `current` to
+ * `next` and caches the (unchanged) key pair on this device. Devices that
+ * already unlocked the key keep using it; a new device needs `next`.
+ */
+export async function changePassphraseOnDevice(options: EncryptionOptions, current: string, next: string): Promise<void> {
+  const account = await currentAccount(options.data, options.accessToken);
+  await cache(options, account, await changePassphrase(options.client, current, next, options.params));
 }
 
 async function cache(options: EncryptionOptions, account: Awaited<ReturnType<typeof currentAccount>>, key: UserKeyPair): Promise<void> {

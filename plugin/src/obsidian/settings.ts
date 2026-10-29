@@ -57,6 +57,8 @@ export interface SettingsHost extends Plugin {
   enableEncryption(passphrase: string): Promise<boolean>;
   /** Unlocks the account's key on this device. */
   unlockEncryption(passphrase: string): Promise<void>;
+  /** Changes the account's recovery passphrase; the key pair stays the same. */
+  changePassphrase(current: string, next: string): Promise<void>;
 }
 
 const accountDescriptions: Record<AuthState, string> = {
@@ -273,8 +275,11 @@ export class VaultSyncSettingTab extends PluginSettingTab {
     new Setting(containerEl).setName("End-to-end encryption").setHeading();
     const setting = new Setting(containerEl).setName("Encryption key").setDesc("Checking…");
     const open = (mode: PassphraseMode) => {
-      new PassphraseModal(this.app, mode, async (passphrase) => {
-        if (mode === "unlock") {
+      new PassphraseModal(this.app, mode, async (passphrase, newPassphrase) => {
+        if (mode === "change") {
+          await host.changePassphrase(passphrase, newPassphrase);
+          new Notice("Vault Sync: the recovery passphrase is changed. Use the new one on other devices.");
+        } else if (mode === "unlock") {
           await host.unlockEncryption(passphrase);
           new Notice("Vault Sync: your encryption key is unlocked on this device.");
         } else if (await host.enableEncryption(passphrase)) {
@@ -289,6 +294,11 @@ export class VaultSyncSettingTab extends PluginSettingTab {
       (state) => {
         if (state === "unlocked") {
           setting.setDesc("Enabled for your account and unlocked on this device. The key is kept only in this device's Vault Sync data, which never syncs.");
+          setting.addButton((button) =>
+            button.setButtonText("Change passphrase").onClick(() => {
+              open("change");
+            }),
+          );
         } else if (state === "locked" || state === "key-changed") {
           setting.setDesc(
             state === "locked"
