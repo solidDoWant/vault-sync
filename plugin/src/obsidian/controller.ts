@@ -235,7 +235,8 @@ export interface SyncControllerOptions {
   onStatus: (status: SyncStatus) => void;
   /**
    * Hears whether the device is read-only in the connected vault (the user
-   * is a `viewer`, docs/design/sharing.md), when that changes. Read from
+   * is a `viewer`, docs/design/sharing.md), when that changes: also when the
+   * vault is disconnected or another vault is connected. Read from
    * ListVaults at the start of every sync cycle.
    */
   onReadOnly?: (readOnly: boolean) => void;
@@ -273,6 +274,8 @@ export class SyncController {
   private retry: ReturnType<typeof setTimeout> | undefined;
   /** The connected vault the device last read its role in, and whether it is read-only there. */
   private role: { key: string; readOnly: boolean } | undefined;
+  /** What onReadOnly last heard. */
+  private reportedReadOnly = false;
 
   constructor(private readonly options: SyncControllerOptions) {}
 
@@ -379,6 +382,8 @@ export class SyncController {
     const data = this.options.data();
     const authState = this.options.authState();
     const vault = connectedVault(data);
+    // Disconnected: no vault, so not read-only (the readOnly getter).
+    if (vault === undefined) this.reportReadOnly();
     const wanted = authState === "signed-in" && vault !== undefined ? { vault, key: `${serverBaseUrl(data)}\n${vault.id}` } : undefined;
     if (this.running !== undefined && this.running.key === wanted?.key) return;
     await this.stopRunning();
@@ -477,12 +482,22 @@ export class SyncController {
   private async readRole(client: ProtocolClient, key: string, vaultId: string, live: () => boolean): Promise<boolean> {
     const member = (await listRemoteVaults(client)).find((candidate) => candidate.id === vaultId);
     const readOnly = member?.role === VaultRole.VIEWER;
-    if (live() && (this.role?.key !== key || this.role.readOnly !== readOnly)) {
-      const changed = this.readOnly !== readOnly;
+    if (live()) {
       this.role = { key, readOnly };
-      if (changed) this.options.onReadOnly?.(readOnly);
+      this.reportReadOnly();
     }
     return readOnly;
+  }
+
+  /**
+   * Tells onReadOnly the readOnly getter's value if it differs from what it
+   * last heard, which may be another vault's role.
+   */
+  private reportReadOnly(): void {
+    const readOnly = this.readOnly;
+    if (readOnly === this.reportedReadOnly) return;
+    this.reportedReadOnly = readOnly;
+    this.options.onReadOnly?.(readOnly);
   }
 
   /**

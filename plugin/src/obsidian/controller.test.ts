@@ -857,6 +857,46 @@ describe("a viewer device", () => {
     expect(server.sync.liveFiles().get("a.md")).toBe("an editor's edit");
     await f.controller.stop();
   });
+  it("leaves viewer mode when the vault is disconnected", async () => {
+    const server = fakeServer({ role: VaultRole.VIEWER });
+    const readOnly: boolean[] = [];
+    const f = fixture(server, connected({ ...settings }, server.sync.vaultId), {
+      onReadOnly: (value) => readOnly.push(value),
+    });
+    await f.controller.update();
+    await statusBecomes(f.statuses, "idle");
+    expect(readOnly).toEqual([true]);
+
+    delete f.data.vault;
+    await f.controller.update();
+
+    expect(f.controller.readOnly).toBe(false);
+    expect(readOnly).toEqual([true, false]);
+  });
+
+  it("leaves viewer mode when another vault, where the user is an editor, is connected", async () => {
+    const server = fakeServer({ role: VaultRole.VIEWER });
+    const work = server.vaults[1];
+    if (work === undefined) throw new Error("no vault");
+    work.role = VaultRole.EDITOR;
+    const readOnly: boolean[] = [];
+    const f = fixture(server, connected({ ...settings }, server.sync.vaultId), {
+      onReadOnly: (value) => readOnly.push(value),
+    });
+    await f.controller.update();
+    await statusBecomes(f.statuses, "idle");
+    expect(readOnly).toEqual([true]);
+
+    connected(f.data, "vault-2");
+    await f.controller.update();
+    // The in-memory server syncs only the first vault, so the session for
+    // vault-2 fails its pull; the role is read before that, at the start of the cycle.
+    await vi.waitFor(() => {
+      expect(readOnly).toEqual([true, false]);
+    });
+    expect(f.controller.readOnly).toBe(false);
+    await f.controller.stop();
+  });
 });
 
 describe("a device removed from another device (#590)", () => {
