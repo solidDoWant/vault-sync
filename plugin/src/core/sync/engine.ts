@@ -47,6 +47,19 @@ export interface SyncEngineOptions {
   pathRules?: PathRules;
   /** Called when the status changes and after every sync. */
   onChange?: () => void;
+  /**
+   * Whether this device may only pull: the signed-in user is a `viewer` of
+   * the vault (docs/design/sharing.md, Viewer devices). Read at the start of
+   * every cycle, so a role change takes effect within one cycle. Defaults to
+   * false.
+   */
+  readOnly?: () => Promise<boolean>;
+  /**
+   * Keeps `content`, a local version of the file at `path` that a read-only
+   * device does not push, outside the synced vault (`.vault-sync/local-copies/`
+   * in Obsidian). Must be given with `readOnly`.
+   */
+  keepLocalCopy?: (path: string, content: Uint8Array) => Promise<void>;
 }
 
 /** A local file that is not uploaded because it is larger than the size limit (§7). */
@@ -130,6 +143,8 @@ export class SyncEngine {
   private readonly maxFileBytes: number;
   private readonly pathRules: PathRules;
   private readonly onChange: () => void;
+  private readonly readOnly: () => Promise<boolean>;
+  private readonly keepLocalCopy: (path: string, content: Uint8Array) => Promise<void>;
   /** Pending operations whose upload the server refused as too large, by op id, with the content hash then. */
   private readonly uploadRefused = new Map<string, string>();
 
@@ -172,6 +187,12 @@ export class SyncEngine {
     this.maxFileBytes = options.maxFileBytes ?? Number.POSITIVE_INFINITY;
     this.pathRules = options.pathRules ?? posixPathRules;
     this.onChange = options.onChange ?? (() => undefined);
+    this.readOnly = options.readOnly ?? (() => Promise.resolve(false));
+    this.keepLocalCopy =
+      options.keepLocalCopy ??
+      (() => {
+        throw new Error("no place to keep local copies on a read-only device");
+      });
   }
 
   /** idle, syncing, or error (the last sync failed; `lastError` says why). */
@@ -275,6 +296,11 @@ export class SyncEngine {
       now: this.now,
     });
     await this.record(detected);
+    // A viewer device never pushes: its local differences are kept aside and the shared version restored.
+    if (await this.readOnly()) {
+      await this.restoreShared();
+      return this.pull();
+    }
     const pulled = await this.pull();
     const pushed = await this.push();
     // P1, P2: a refused commit is resolved by what the server holds, so pull it now.
@@ -964,6 +990,57 @@ export class SyncEngine {
       baseSize: contentRef === undefined ? op.contentSize : Number(contentRef.size),
     };
     return revision.deleted ? { deleteDocs: [op.documentId], deletePending: [op.opId] } : { putDocs: [entry], deletePending: [op.opId] };
+  }
+
+  // Read-only devices -------------------------------------------------------
+
+  /**
+   * Undoes every pending local change of a read-only device
+   * (docs/design/sharing.md, Viewer devices): a file that differs from
+   * `base` (edited, new, or renamed with other content) is kept with
+   * keepLocalCopy and removed or overwritten, every document is restored
+   * from `base` at its base path (undoing deletes and renames), new folders
+   * are removed once empty, and the pending operations are dropped. A file
+   * changed meanwhile stays on disk, and the next cycle's detection records
+   * it again.
+   */
+  private async restoreShared(): Promise<void> {
+    const state = await this.loadState();
+    if (state.pending.length === 0) return;
+    const changed = [...project(state).values()].filter((projection) => projection.lastOp !== undefined);
+    const shared = (projection: Projection): DocEntry | undefined => (projection.base?.deleted === true ? undefined : projection.base);
+    // The shared folders first, so that files can be restored into them.
+    for (const projection of changed) {
+      const base = shared(projection);
+      if (projection.kind === "folder" && base !== undefined && !(await this.folderExists(base.path))) await this.createFolder(base.path);
+    }
+    // Every file that is not the shared version at its shared path is kept aside.
+    for (const projection of changed) {
+      if (projection.kind === "folder" || projection.deleted) continue;
+      const file = await this.cache.read(this.vault, projection.path);
+      if (file === null) continue;
+      const base = shared(projection);
+      const atBase = base !== undefined && base.path === projection.path;
+      if (atBase && file.hash === base.baseHash) continue;
+      if (file.hash !== base?.baseHash) {
+        const content = await this.readFile(projection.path);
+        if (content === null || sha256Hex(content) !== file.hash) continue;
+        await this.keepLocalCopy(projection.path, content);
+      }
+      if (atBase) await this.write(base.path, await downloadContent(this.api, this.vaultId, base.baseHash, BigInt(base.baseSize)), file.hash);
+      else await this.delete(projection.path, file.hash);
+    }
+    // The shared version of every document whose file is missing at its shared path.
+    for (const projection of changed) {
+      const base = shared(projection);
+      if (projection.kind === "folder" || base === undefined) continue;
+      if ((await this.cache.read(this.vault, base.path)) !== null) continue;
+      await this.write(base.path, await downloadContent(this.api, this.vaultId, base.baseHash, BigInt(base.baseSize)), null);
+    }
+    // Folders that are not shared ones, deepest first, where they are empty now.
+    const added = changed.filter((projection) => projection.kind === "folder" && !projection.deleted && shared(projection)?.path !== projection.path).map((projection) => projection.path);
+    for (const path of added.sort((left, right) => right.length - left.length)) if (await this.folderExists(path)) await this.deleteFolder(path);
+    await this.record({ deletePending: state.pending.map((op) => op.opId) });
   }
 
   // Push ----------------------------------------------------------------

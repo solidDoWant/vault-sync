@@ -25,6 +25,8 @@ import { createInvitation, joinVault, leaveVault, loadSharing, removeMember, rev
 import { SignInCancelledError, SignInModal } from "./obsidian/sign-in-modal";
 import { initialStatus, statusDescription, statusIcon, statusText, type SyncStatus } from "./obsidian/status";
 import { ObsidianVaultAdapter } from "./obsidian/vault-adapter";
+import { keepLocalCopy } from "./obsidian/local-copies";
+import { ViewerMode } from "./obsidian/viewer-mode";
 
 /** How long after the last local change of a burst the engine pushes (#167 item 5: chosen here, not left to the engine's default). */
 const pushDebounceMs = 2000;
@@ -58,6 +60,7 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
     console.debug(`vault-sync loaded (protocol v${String(PROTOCOL_VERSION)})`);
     this.data = parsePluginData(await this.loadData());
     this.tokens = this.createTokenManager();
+    const viewerMode = new ViewerMode(this);
     this.controller = new SyncController({
       data: () => this.data,
       save: () => this.saveSettings(),
@@ -81,6 +84,13 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
       }),
       onStatus: (status) => {
         this.showStatus(status);
+      },
+      onReadOnly: (readOnly) => {
+        viewerMode.set(readOnly);
+      },
+      keepLocalCopy: async (path, content) => {
+        const copy = await keepLocalCopy(this.app.vault.adapter, path, content);
+        new Notice(`Vault Sync: this vault is shared with you as a viewer, so ${path} was not synced. The shared version is restored, and your version is kept in ${copy}.`, 0);
       },
     });
     this.statusBar = this.addStatusBarItem();
