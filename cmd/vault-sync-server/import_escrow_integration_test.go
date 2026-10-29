@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,13 +26,15 @@ import (
 	"github.com/solidDoWant/vault-sync/internal/vaultimport"
 )
 
-// escrowKey is a deployment's escrow key pair.
+// escrowKey is a deployment's escrow key pair and the public half of its
+// escrow signing key.
 type escrowKey struct {
 	privateKey []byte
 	publicKey  []byte
 	keyID      string
 	identity   string
 	recipient  string
+	signPub    ed25519.PublicKey
 }
 
 func newEscrowKey(t *testing.T) escrowKey {
@@ -51,7 +54,18 @@ func newEscrowKey(t *testing.T) escrowKey {
 	key.recipient, err = e2ee.AgeRecipient(publicKey)
 	require.NoError(t, err)
 
+	key.signPub, _, err = ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+
 	return key
+}
+
+// environment is the server configuration for this escrow key.
+func (key escrowKey) environment() []string {
+	return []string{
+		config.EscrowRecipientEnv + "=" + key.recipient,
+		config.EscrowSigningKeyEnv + "=" + base64.StdEncoding.EncodeToString(key.signPub),
+	}
 }
 
 // createEscrowedVault creates an end-to-end encrypted vault with escrow
@@ -71,11 +85,8 @@ func createEscrowedVault(t *testing.T, server *instance, member *encryptedMember
 	require.NoError(t, connection.Close(t.Context()))
 	require.NoError(t, err)
 
-	escrowSignPub, _, err := ed25519.GenerateKey(rand.Reader)
-	require.NoError(t, err)
-
 	vaultID := uuid.Must(uuid.NewV7())
-	log := logtest.New(t, vaultID, userID, &e2ee.EscrowBundle{SignPub: escrowSignPub, Recipient: escrow.recipient})
+	log := logtest.New(t, vaultID, userID, &e2ee.EscrowBundle{SignPub: escrow.signPub, Recipient: escrow.recipient})
 
 	response, err := server.vaults().CreateVault(t.Context(), authorized(&vaultsyncv1.CreateVaultRequest{
 		Name: name, Encryption: vaultsyncv1.VaultEncryption_VAULT_ENCRYPTION_E2EE, Escrow: true,
@@ -141,7 +152,7 @@ func TestImportIntoAnEscrowedVault(t *testing.T) {
 	binary := buildServer(t)
 	escrow := newEscrowKey(t)
 	server := cluster.start(t, "server", binary,
-		config.OIDCClientIDEnv+"="+authtest.DefaultAudience, config.EscrowRecipientEnv+"="+escrow.recipient)
+		append([]string{config.OIDCClientIDEnv + "=" + authtest.DefaultAudience}, escrow.environment()...)...)
 	member := newEncryptedMember(t, server, cluster.token(t, "alice"))
 
 	// Distinctive names and contents, so any plaintext copy is found.
