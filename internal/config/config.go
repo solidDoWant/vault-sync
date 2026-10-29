@@ -50,6 +50,7 @@ const (
 	EscrowIdentityFileEnv       = "VAULT_SYNC_ESCROW_IDENTITY_FILE"
 	EscrowJobTokenFileEnv       = "VAULT_SYNC_ESCROW_JOB_TOKEN_FILE"
 	EscrowRetiringKeyIDsEnv     = "VAULT_SYNC_ESCROW_RETIRING_KEY_IDS"
+	EscrowSigningKeyFileEnv     = "VAULT_SYNC_ESCROW_SIGNING_KEY_FILE"
 
 	S3EndpointEnv            = "VAULT_SYNC_S3_ENDPOINT"
 	S3RegionEnv              = "VAULT_SYNC_S3_REGION"

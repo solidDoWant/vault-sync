@@ -156,6 +156,13 @@ check "the server Deployment never names the escrow Secret" \
 	"[$deployment | .. | strings | select(contains(\"$escrow_secret\"))] | length == 0"
 check "nothing but the export CronJob names the escrow Secret" \
 	"[\$docs[] | select(.kind != \"CronJob\") | .. | strings | select(contains(\"$escrow_secret\"))] | length == 0"
+check "without signingKeysKey the export job has no escrow signing key file" \
+	"([$export_pod | .containers[0].env[] | select(.name == \"VAULT_SYNC_ESCROW_SIGNING_KEY_FILE\")] | length) == 0"
+
+render --set config.export.escrow.signingKeysKey=signing.keys
+check "the export job reads the escrow signing keys from the escrow Secret, and the server does not" \
+	"$(env_value "$export_pod" VAULT_SYNC_ESCROW_SIGNING_KEY_FILE) == \"/etc/vault-sync/escrow/signing.keys\" and ([$export_pod | .volumes[] | select(.secret.secretName == \"$escrow_secret\") | .secret.items[].key] | sort) == [\"escrow.key\", \"signing.keys\"] and ([$server | .containers[0].env[] | select(.name == \"VAULT_SYNC_ESCROW_SIGNING_KEY_FILE\")] | length) == 0 and ([$deployment | .. | strings | select(contains(\"$escrow_secret\"))] | length) == 0"
+render
 
 check "the server and the export job read the escrow job token from the mounted Secret" \
 	"$(env_value "$server" VAULT_SYNC_ESCROW_JOB_TOKEN_FILE) == \"/etc/vault-sync/escrow-job-token/token\" and $(env_value "$export_pod" VAULT_SYNC_ESCROW_JOB_TOKEN_FILE) == \"/etc/vault-sync/escrow-job-token/token\" and $(mounted_secret "$server" /etc/vault-sync/escrow-job-token) == \"vault-sync-escrow-job-token\" and $(mounted_secret "$export_pod" /etc/vault-sync/escrow-job-token) == \"vault-sync-escrow-job-token\""

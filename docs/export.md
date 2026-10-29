@@ -198,6 +198,61 @@ When the run does not fail, its last log line (`"msg": "export finished"`) repea
 
 The exit status is `0` only for `ok`. It is `1` for `partial` or `failed`, and `2` for invalid flags. Alert on a non-zero exit (for example a failed Kubernetes Job), and use the summary to tell a `partial` export (in place, with gaps) from a `failed` one (not in place). The job has no metrics endpoint.
 
+## Rotating the escrow key
+
+`vault-sync-server export rotate-escrow` moves every escrow slot to a new escrow key (`docs/design/encryption.md`, *Escrow*). The operator runs it on purpose and names the new escrow bundle: its age recipient and its Ed25519 signing public key.
+
+```sh
+vault-sync-server export rotate-escrow -server https://sync.example.com \
+  -recipient age1pq1… -signing-public-key BASE64
+```
+
+| Flag | Description |
+|---|---|
+| `-server URL` | Required. The server's URL. The rotation writes only through its job-only `EscrowJobService`. |
+| `-recipient` | Required. The new escrow key's age recipient (`age1pq1…`, from `age-keygen -y`). |
+| `-signing-public-key` | Required. The new escrow signing public key: standard base64 of the 32-byte Ed25519 public key. |
+
+It reads `VAULT_SYNC_DATABASE_URL` and the database TLS variables (read-only, like the export), `VAULT_SYNC_LOG_LEVEL`, and three files, all required:
+
+| Variable | Description |
+|---|---|
+| `VAULT_SYNC_ESCROW_IDENTITY_FILE` | The escrow identities: the new one and every old one whose slots are still to be moved. |
+| `VAULT_SYNC_ESCROW_SIGNING_KEY_FILE` | The escrow signing keys, one standard base64 Ed25519 seed (32 bytes) per line, blank lines and `#` comments ignored. Keys are matched to bundles by their public keys, not by line order. It must hold the new bundle's key and the key of the escrow chain's current head. |
+| `VAULT_SYNC_ESCROW_JOB_TOKEN_FILE` | The job token the server checks on `EscrowJobService` (see [configuration.md](configuration.md)). |
+
+A run does this:
+
+1. It refuses to start unless the identity file holds the new identity and the signing key file holds the new signing key and the chain head's. It reads the escrow chain from PostgreSQL and verifies it.
+2. If the chain's head is not the new bundle yet, it appends the escrow rotation statement to it, signed by the head's signing key. A repeat run finds the new bundle at the head and appends nothing.
+3. For every vault, including deleted vaults that are not purged yet (deleted within the last 30 days), it opens every escrow slot not on the new key with its identity and checks the key against its epoch's key commitment. It then wraps the key to the new escrow key and replaces the slot, only if the old slot is still there. A slot that does not open, has no identity in the file or fails its commitment is reported and left in place.
+4. It counts the escrow slots still not on the new key, which catches a slot a device wrapped to the old key while the run went.
+
+It prints one JSON line and exits `0` only when no slot failed and no slot is left on an old key. Otherwise it exits `1`, and `2` for invalid flags. Logs and the summary never hold keys or note content.
+
+```json
+{"status": "ok", "target_key_id": "sha256:…", "appended_statement": true, "vaults": 12,
+ "rewrapped": 340, "old_key_slots": 0, "failed_slots": 0, "failures": []}
+```
+
+`failures` lists up to 100 of the `failed_slots`, each with `vault_id`, `epoch`, `recipient_id` and `reason`.
+
+**The operator's order of steps:**
+
+1. Generate the new escrow key and a new escrow signing key, and add the new identity to the identity file and the new seed to the signing key file, keeping the old ones:
+
+   ```sh
+   age-keygen -pq -o new-escrow.key && age-keygen -y new-escrow.key              # -recipient
+   openssl genpkey -algorithm ed25519 -out new-signing.pem
+   openssl pkey -in new-signing.pem -outform DER | tail -c 32 | base64           # the seed, for the signing key file
+   openssl pkey -in new-signing.pem -pubout -outform DER | tail -c 32 | base64   # -signing-public-key
+   ```
+
+2. Run `export rotate-escrow` with the new bundle. It appends the rotation statement and re-wraps the existing slots.
+3. Update the server: `VAULT_SYNC_ESCROW_RECIPIENT` and `VAULT_SYNC_ESCROW_SIGNING_KEY` to the new bundle (the server refuses to start with a bundle that is not the chain's head), and the old key's id in `VAULT_SYNC_ESCROW_RETIRING_KEY_IDS`, so that slots that devices still wrap to the old key during the switch are accepted.
+4. Re-run `export rotate-escrow` until it reports `"old_key_slots": 0` and exits `0`. Look into any slot listed in `failures`: it stays on the old key.
+5. Unset `VAULT_SYNC_ESCROW_RETIRING_KEY_IDS`, then remove the old identity and the old seed from the files and destroy them, offline copies included. An escrow slot now opens with the new identity and `age --decrypt` ([encryption.md](encryption.md#recovery-with-age)).
+
 ## Signals
 
 `SIGTERM` or `SIGINT` stops the export at the next document. The staging directory is removed, the summary reports `failed`, and the previous export stays in place.
