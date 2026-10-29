@@ -402,7 +402,7 @@ func TestEveryVaultScopedProcedureIsClassified(t *testing.T) {
 	for _, procedure := range scoped {
 		access, ok := server.VaultProcedures[procedure]
 		if assert.True(t, ok, "%s carries vault_id and must be classified in server.VaultProcedures", procedure) {
-			assert.Contains(t, []authz.Access{authz.Read, authz.Write, authz.Manage}, access, procedure)
+			assert.Contains(t, []authz.Access{authz.Read, authz.Write, authz.Manage, authz.ReadOrInvitation}, access, procedure)
 		}
 	}
 
