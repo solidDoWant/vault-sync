@@ -113,6 +113,14 @@ type Options struct {
 	// unimplemented. Its Logger defaults to Logger; its response limit is
 	// the send limit.
 	VaultKeys *api.VaultKeyService
+	// EscrowJobs serves EscrowJobService, the export job's escrow rotation
+	// writes, to callers presenting EscrowJobToken only. Without a token
+	// every call is refused as unauthenticated; when nil, the service is
+	// unimplemented behind the token check. Its Logger defaults to Logger.
+	EscrowJobs *api.EscrowJobService
+	// EscrowJobToken is the static bearer token of EscrowJobService
+	// (VAULT_SYNC_ESCROW_JOB_TOKEN_FILE).
+	EscrowJobToken []byte
 	// Sync serves SyncService. When nil, SyncService is unimplemented. Its
 	// Logger defaults to Logger.
 	Sync *api.SyncService
@@ -364,6 +372,26 @@ func newAPIHandler(options Options, metrics *rpcMetrics, limiter *userLimiter) h
 	mux.Handle(vaultsyncv1connect.NewVaultKeyServiceHandler(vaultKeys, handlerOptions...))
 	mux.Handle(vaultsyncv1connect.NewSyncServiceHandler(syncHandler, handlerOptions...))
 	mux.Handle(vaultsyncv1connect.NewBlobServiceHandler(blobs, handlerOptions...))
+
+	// The escrow job service authenticates by its job token alone: neither
+	// the OIDC authenticator nor vault authorization is in its chain, so a
+	// user's token never reaches it. Without a token it refuses every call.
+	var escrowJobs vaultsyncv1connect.EscrowJobServiceHandler = vaultsyncv1connect.UnimplementedEscrowJobServiceHandler{}
+
+	if options.EscrowJobs != nil && len(options.EscrowJobToken) > 0 {
+		service := *options.EscrowJobs
+		if service.Logger == nil {
+			service.Logger = options.Logger
+		}
+
+		escrowJobs = service
+	}
+
+	mux.Handle(vaultsyncv1connect.NewEscrowJobServiceHandler(escrowJobs,
+		connect.WithInterceptors(metrics.interceptor(), auth.NewJobTokenInterceptor(options.EscrowJobToken)),
+		connect.WithReadMaxBytes(int(options.MaxRequestBytes)),
+		connect.WithSendMaxBytes(int(options.MaxRequestBytes)),
+	))
 
 	corsHandler := cors.New(cors.Options{
 		AllowedOrigins: AllowedOrigins,

@@ -205,6 +205,15 @@
   {{- $_ := set $exportEnv "VAULT_SYNC_ESCROW_IDENTITY_FILE" (printf "%s/escrow/%s" $mountRoot $escrowKey) -}}
 {{- end -}}
 
+{{/* Escrow job token: the server checks it, the export job presents it. */}}
+{{- with $config.escrowJobToken.secretName -}}
+  {{- $tokenKey := $config.escrowJobToken.key | default "token" -}}
+  {{- $path := printf "%s/escrow-job-token" $mountRoot -}}
+  {{- $_ := set $secretMounts "escrow-job-token" (dict "secretName" . "path" $path "controllers" $controllers "keys" (list $tokenKey)) -}}
+  {{- $_ := set $serverEnv "VAULT_SYNC_ESCROW_JOB_TOKEN_FILE" (printf "%s/%s" $path $tokenKey) -}}
+  {{- $_ := set $exportEnv "VAULT_SYNC_ESCROW_JOB_TOKEN_FILE" (printf "%s/%s" $path $tokenKey) -}}
+{{- end -}}
+
 {{/* ============================================================ */}}
 {{/* Environment                                                  */}}
 {{/* ============================================================ */}}

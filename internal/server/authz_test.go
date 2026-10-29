@@ -299,6 +299,13 @@ func vaultScopedProcedures(t *testing.T) []string {
 	protoregistry.GlobalFiles.RangeFilesByPackage("vaultsync.v1", func(file protoreflect.FileDescriptor) bool {
 		for serviceIndex := range file.Services().Len() {
 			service := file.Services().Get(serviceIndex)
+			// The escrow job service takes no user at all: it refuses every
+			// user token before any vault is looked at
+			// (TestEscrowJobServiceRefusesEveryoneButTheJob).
+			if string(service.FullName()) == vaultsyncv1connect.EscrowJobServiceName {
+				continue
+			}
+
 			for methodIndex := range service.Methods().Len() {
 				method := service.Methods().Get(methodIndex)
 				if method.Input().Fields().ByName("vault_id") != nil {

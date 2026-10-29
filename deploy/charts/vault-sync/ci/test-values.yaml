@@ -33,3 +33,5 @@ config:
         existingClaim: vault-sync-export
     escrow:
       secretName: vault-sync-escrow-key
+  escrowJobToken:
+    secretName: vault-sync-escrow-job-token

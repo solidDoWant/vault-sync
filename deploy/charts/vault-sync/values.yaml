@@ -230,6 +230,15 @@ config:
     escrow:
       secretName: ""
       key: escrow.key
+  # escrowJobToken names the Secret holding the static bearer token of the
+  # export job's escrow rotation endpoint under key (one line, at least 32
+  # characters, e.g. openssl rand -base64 32). It is mounted read-only at
+  # /etc/vault-sync/escrow-job-token into the server, which checks it, and
+  # the export job, which presents it, and nowhere else; both read it as
+  # VAULT_SYNC_ESCROW_JOB_TOKEN_FILE. Empty turns the endpoint off.
+  escrowJobToken:
+    secretName: ""
+    key: token
 
 # resources follows the bjw-s common library schema
 # (https://github.com/bjw-s-labs/helm-charts/tree/main/charts/library/common)

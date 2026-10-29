@@ -1,0 +1,66 @@
+syntax = "proto3";
+
+package vaultsync.v1;
+
+import "vaultsync/v1/server_info.proto";
+
+option go_package = "github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyncv1";
+
+// EscrowJobService holds the writes of an escrow key rotation, made by the
+// export job (docs/design/encryption.md, "Escrow"). It is authenticated
+// only by the static bearer token in VAULT_SYNC_ESCROW_JOB_TOKEN_FILE; user
+// (OIDC) tokens are refused. Without a configured token the service is off:
+// every call fails with UNAUTHENTICATED.
+//
+// Errors on every RPC: UNAUTHENTICATED without the job token.
+service EscrowJobService {
+  // ReplaceEscrowSlot replaces one escrow key slot: it deletes the slot of
+  // the vault's epoch wrapped to old_recipient_id and inserts the slot
+  // wrapped to new_recipient_id, only if the old slot is still there, so
+  // the epoch keeps exactly one escrow slot. It works for vaults deleted
+  // within the last 30 days. new_recipient_id must be the key id of the
+  // escrow chain's head.
+  //
+  // Errors: INVALID_ARGUMENT for a malformed request or a new recipient
+  // that is not the chain head's key; NOT_FOUND when the vault's epoch has
+  // no escrow slot wrapped to old_recipient_id (already replaced, or no
+  // such vault or epoch).
+  rpc ReplaceEscrowSlot(ReplaceEscrowSlotRequest) returns (ReplaceEscrowSlotResponse) {}
+
+  // AppendEscrowRotation appends the next escrow rotation statement to the
+  // stored escrow chain. The statement must name the hash of the chain
+  // head's bundle and be signed by the head's escrow signing key.
+  //
+  // Errors: INVALID_ARGUMENT for a malformed statement or one that does
+  // not verify against the chain head; FAILED_PRECONDITION when the
+  // deployment has no escrow chain; ABORTED when another statement was
+  // appended concurrently (read the chain and try again).
+  rpc AppendEscrowRotation(AppendEscrowRotationRequest) returns (AppendEscrowRotationResponse) {}
+}
+
+// ReplaceEscrowSlotRequest names the escrow slot to replace and its
+// replacement.
+message ReplaceEscrowSlotRequest {
+  // The vault, live or deleted within the last 30 days.
+  string vault_id = 1;
+  // The epoch whose escrow slot is replaced.
+  uint32 epoch = 2;
+  // The escrow key id the current slot is wrapped to.
+  string old_recipient_id = 3;
+  // The escrow key id of the new slot: the escrow chain head's key id.
+  string new_recipient_id = 4;
+  // The epoch key wrapped to the new escrow key: 1 to 2048 bytes.
+  bytes wrapped_key = 5;
+}
+
+// ReplaceEscrowSlotResponse has no fields.
+message ReplaceEscrowSlotResponse {}
+
+// AppendEscrowRotationRequest carries the next escrow rotation statement.
+message AppendEscrowRotationRequest {
+  // The statement, as published by GetServerInfo.
+  EscrowRotationStatement statement = 1;
+}
+
+// AppendEscrowRotationResponse has no fields.
+message AppendEscrowRotationResponse {}

@@ -136,7 +136,7 @@ check "server reads the S3 credentials from their Secret" \
 check "server reads the S3 CA from its Secret" \
 	"$(env_value "$server" VAULT_SYNC_S3_TLS_CA_FILE) == \"/etc/vault-sync/s3-ca/ca.crt\" and $(mounted_secret "$server" /etc/vault-sync/s3-ca) == \"rgw-ca\""
 check "Secret mounts project only the keys the server reads (a CA Secret's private key stays out)" \
-	"[$server | .volumes[] | {(.name): [.secret.items[].key]}] | add == {\"database-ca\": [\"ca.crt\"], \"database-client-cert\": [\"tls.crt\", \"tls.key\"], \"s3-ca\": [\"ca.crt\"], \"s3-credentials\": [\"AWS_ACCESS_KEY_ID\", \"AWS_SECRET_ACCESS_KEY\"]}"
+	"[$server | .volumes[] | {(.name): [.secret.items[].key]}] | add == {\"database-ca\": [\"ca.crt\"], \"database-client-cert\": [\"tls.crt\", \"tls.key\"], \"escrow-job-token\": [\"token\"], \"s3-ca\": [\"ca.crt\"], \"s3-credentials\": [\"AWS_ACCESS_KEY_ID\", \"AWS_SECRET_ACCESS_KEY\"]}"
 check "server sets the OIDC issuer and audience" \
 	"$(env_value "$server" VAULT_SYNC_OIDC_ISSUER_URL) == \"https://auth.example.com/application/o/vault-sync/\" and $(env_value "$server" VAULT_SYNC_OIDC_AUDIENCE) == \"vault-sync\""
 check "server listens where its ports and probes point" \
@@ -156,6 +156,11 @@ check "the server Deployment never names the escrow Secret" \
 	"[$deployment | .. | strings | select(contains(\"$escrow_secret\"))] | length == 0"
 check "nothing but the export CronJob names the escrow Secret" \
 	"[\$docs[] | select(.kind != \"CronJob\") | .. | strings | select(contains(\"$escrow_secret\"))] | length == 0"
+
+check "the server and the export job read the escrow job token from the mounted Secret" \
+	"$(env_value "$server" VAULT_SYNC_ESCROW_JOB_TOKEN_FILE) == \"/etc/vault-sync/escrow-job-token/token\" and $(env_value "$export_pod" VAULT_SYNC_ESCROW_JOB_TOKEN_FILE) == \"/etc/vault-sync/escrow-job-token/token\" and $(mounted_secret "$server" /etc/vault-sync/escrow-job-token) == \"vault-sync-escrow-job-token\" and $(mounted_secret "$export_pod" /etc/vault-sync/escrow-job-token) == \"vault-sync-escrow-job-token\""
+check "nothing but the server and the export job names the escrow job token Secret" \
+	"[\$docs[] | select(.kind != \"CronJob\" and .kind != \"Deployment\") | .. | strings | select(contains(\"vault-sync-escrow-job-token\"))] | length == 0"
 
 rejects "rejects mounting the escrow Secret into every controller (globalMounts)" "escrow Secret" \
 	--set resources.persistence.leak.type=secret --set resources.persistence.leak.name="$escrow_secret" \
