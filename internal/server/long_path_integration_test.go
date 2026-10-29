@@ -13,6 +13,7 @@ import (
 	"golang.org/x/text/unicode/norm"
 
 	"github.com/solidDoWant/vault-sync/internal/api"
+	"github.com/solidDoWant/vault-sync/internal/vaultpath"
 )
 
 // randomLetters returns length random lower-case ASCII letters. PostgreSQL
@@ -42,6 +43,29 @@ func incompressiblePath(t *testing.T, length int) string {
 	return randomLetters(t, length-len(".md")) + ".md"
 }
 
+// maxNewPathBytes is the longest path a commit may create (SPEC.md §6.2).
+const maxNewPathBytes = vaultpath.MaxNewBytes
+
+// portableLetters returns random letters of exactly length bytes in names
+// of 250 letters, separated by "/", so every name fits the 255-byte limit.
+func portableLetters(t *testing.T, length int) string {
+	t.Helper()
+
+	letters := []byte(randomLetters(t, length))
+	for index := 250; index < len(letters)-1; index += 251 {
+		letters[index] = '/'
+	}
+
+	return string(letters)
+}
+
+// portablePath returns a random portable path of exactly length bytes.
+func portablePath(t *testing.T, length int) string {
+	t.Helper()
+
+	return portableLetters(t, length-len(".md")) + ".md"
+}
+
 // Issue #121, criterion 1: a maximum-length path that does not compress is
 // committed, listed and fetched like any other.
 func TestMaximumLengthIncompressiblePathSyncs(t *testing.T) {
@@ -50,7 +74,7 @@ func TestMaximumLengthIncompressiblePathSyncs(t *testing.T) {
 	alice.vaultID = fixture.createVault(t, alice.token, "Notes").GetId()
 	content := alice.content(t, "content")
 
-	paths := []string{incompressiblePath(t, api.MaxPathBytes), incompressiblePath(t, api.MaxPathBytes)}
+	paths := []string{portablePath(t, maxNewPathBytes), portablePath(t, maxNewPathBytes)}
 
 	committed := make(map[string]string, len(paths))
 
@@ -64,7 +88,7 @@ func TestMaximumLengthIncompressiblePathSyncs(t *testing.T) {
 	// Renaming a document to another maximum-length path rewrites its
 	// path key, so the index must take it too.
 	first := alice.mustCommit(t, alice.create(t, "first.md", content))
-	renamedPath := incompressiblePath(t, api.MaxPathBytes)
+	renamedPath := portablePath(t, maxNewPathBytes)
 	renamed := alice.mustCommit(t, alice.next(t, first, renamedPath, content, false))
 	fixture.requireDocumentMirrorsHead(t, first.GetDocumentId(), renamed)
 
@@ -103,8 +127,8 @@ func TestMaximumLengthPathKeyCollisions(t *testing.T) {
 	accentedPath := func(t *testing.T) string {
 		t.Helper()
 
-		path := randomLetters(t, api.MaxPathBytes-len(".md")-len(norm.NFD.String("é"))) + "é.md"
-		require.Len(t, norm.NFD.String(path), api.MaxPathBytes)
+		path := portableLetters(t, maxNewPathBytes-len(".md")-len(norm.NFD.String("é"))) + "é.md"
+		require.Len(t, norm.NFD.String(path), maxNewPathBytes)
 
 		return path
 	}
@@ -116,12 +140,12 @@ func TestMaximumLengthPathKeyCollisions(t *testing.T) {
 		collide bool
 	}{
 		{name: "identical", collide: true, paths: func(t *testing.T) (string, string) {
-			path := incompressiblePath(t, api.MaxPathBytes)
+			path := portablePath(t, maxNewPathBytes)
 
 			return path, path
 		}},
 		{name: "case", collide: true, paths: func(t *testing.T) (string, string) {
-			path := incompressiblePath(t, api.MaxPathBytes)
+			path := portablePath(t, maxNewPathBytes)
 
 			return path, strings.ToUpper(path)
 		}},
@@ -136,12 +160,12 @@ func TestMaximumLengthPathKeyCollisions(t *testing.T) {
 			return norm.NFD.String(path), norm.NFC.String(strings.ToUpper(path))
 		}},
 		{name: "last letter differs", collide: false, paths: func(t *testing.T) (string, string) {
-			stem := randomLetters(t, api.MaxPathBytes-len("x.md"))
+			stem := portableLetters(t, maxNewPathBytes-len("x.md"))
 
 			return stem + "a.md", stem + "b.md"
 		}},
 		{name: "first letter differs", collide: false, paths: func(t *testing.T) (string, string) {
-			stem := randomLetters(t, api.MaxPathBytes-len("x.md"))
+			stem := portableLetters(t, maxNewPathBytes-len("x.md"))
 
 			return "a" + stem + ".md", "b" + stem + ".md"
 		}},
@@ -150,7 +174,7 @@ func TestMaximumLengthPathKeyCollisions(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			existing, other := test.paths(t)
-			require.Len(t, existing, api.MaxPathBytes-strings.Count(existing, "é"))
+			require.Len(t, existing, maxNewPathBytes-strings.Count(existing, "é"))
 
 			alice.mustCommit(t, alice.create(t, existing, content))
 

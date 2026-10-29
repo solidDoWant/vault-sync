@@ -317,12 +317,17 @@ func requirePathKeysAcrossReleases(t *testing.T, previous, current *instance, to
 	client := newSyncClient(t, previous, token, vaultID)
 	content := client.content(t, previous, "path keys across releases")
 
-	random := make([]byte, 4096-len(".md"))
+	// The longest path a commit may create: 1024 bytes, in names of at
+	// most 255.
+	random := make([]byte, 1024-len(".md"))
 	_, err := rand.Read(random)
 	require.NoError(t, err)
 
 	for index, value := range random {
 		random[index] = 'a' + value%26
+		if index%251 == 250 {
+			random[index] = '/'
+		}
 	}
 
 	longPath := string(random) + ".md"
