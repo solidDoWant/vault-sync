@@ -3,7 +3,7 @@ import { SyncEngine, type RefusedName, type SyncApi, type TooLargeFile } from ".
 import { commitRestore, documentHistory, readRevision, type HistoryEntry, type HistoryPage } from "../core/sync/history";
 import type { SkippedEntry, SyncJournal } from "../core/sync/journal";
 import type { RemoteRevision } from "../core/sync/remote";
-import { uuidv7 } from "../core/uuid";
+import { v7 as uuidv7 } from "uuid";
 import type { VaultAdapter } from "../core/vault/adapter";
 import type { PathRules } from "../core/vaultpath/platform";
 import { visiblePath } from "./display-text";

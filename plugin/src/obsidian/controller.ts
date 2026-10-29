@@ -7,7 +7,7 @@ import type { AuthState } from "../core/auth/tokens";
 import type { ProtocolClient } from "../core/protocol/client";
 import type { SyncJournal } from "../core/sync/journal";
 import type { VaultAdapter } from "../core/vault/adapter";
-import { uuidv7 } from "../core/uuid";
+import { v7 as uuidv7 } from "uuid";
 import type { PathRules } from "../core/vaultpath/platform";
 import { oidcConfig, serverBaseUrl, type ConnectedVault, type PluginData } from "./data";
 import { DeviceNameError, deviceNameOf } from "./device-name";

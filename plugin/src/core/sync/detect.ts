@@ -1,5 +1,5 @@
 import { sha256Hex } from "../hash";
-import { uuidv7 } from "../uuid";
+import { v7 as uuidv7 } from "uuid";
 import { isVaultError, type FileStat, type VaultAdapter } from "../vault/adapter";
 import type { DocEntry, JournalChange, JournalState, PendingKind, PendingOp, SyncKind } from "./journal";
 
@@ -273,13 +273,13 @@ export async function detectChanges(state: JournalState, options: DetectOptions)
   for (const step of steps) {
     if (!("id" in step)) {
       change.putPending.push({
-        opId: uuidv7(options.now()),
+        opId: uuidv7({ msecs: options.now() }),
         order: order++,
-        documentId: uuidv7(options.now()),
+        documentId: uuidv7({ msecs: options.now() }),
         kind: "create",
         path: step.create.path,
         docKind: step.kind,
-        revisionId: uuidv7(options.now()),
+        revisionId: uuidv7({ msecs: options.now() }),
         contentHash: step.create.hash,
         contentSize: step.create.size,
         sent: false,
@@ -313,13 +313,13 @@ function record(projection: Projection, next: State, nextOrder: number, now: () 
   const content = next.deleted && before !== undefined ? before : next;
   const kind: PendingKind = next.deleted ? "delete" : before === undefined || before.deleted ? "create" : before.path !== next.path ? "rename" : "edit";
   return {
-    opId: unsent?.opId ?? uuidv7(now()),
+    opId: unsent?.opId ?? uuidv7({ msecs: now() }),
     order: unsent?.order ?? nextOrder,
     documentId: projection.documentId,
     kind,
     path: next.path,
     docKind: projection.kind,
-    revisionId: unsent?.revisionId ?? uuidv7(now()),
+    revisionId: unsent?.revisionId ?? uuidv7({ msecs: now() }),
     contentHash: content.hash,
     contentSize: content.size,
     sent: false,
