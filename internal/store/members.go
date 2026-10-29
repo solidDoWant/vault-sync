@@ -80,7 +80,14 @@ func lockVault(ctx context.Context, tx pgx.Tx, vaultID uuid.UUID) (int64, error)
 // ErrInvitationLimit when the vault already has limit pending ones. The
 // invitation's id is id, or a new one for uuid.Nil. entry is its membership
 // log entry, appended in the same transaction (see appendLog).
-func (vault *VaultStore) CreateInvitation(ctx context.Context, creatorID, id uuid.UUID, role Role, codeHash []byte, ttl time.Duration, limit int, entry *LogAppend) (Invitation, error) {
+//
+// keys are the invitation's key slots and invite anchor: required in an
+// E2EE vault (ErrInvitationKeysRequired), refused in a plaintext one
+// (ErrUnexpectedInvitationKeys). The slots must be exactly one per existing
+// epoch for this invitation (ErrInvalidRecipients, ErrEpochNotFound, or
+// ErrEpochNotCurrent when an epoch is missing). A codeHash already in use
+// returns ErrInvitationIDTaken.
+func (vault *VaultStore) CreateInvitation(ctx context.Context, creatorID, id uuid.UUID, role Role, codeHash []byte, ttl time.Duration, limit int, entry *LogAppend, keys *InvitationKeys) (Invitation, error) {
 	if id == uuid.Nil {
 		generated, err := uuid.NewV7()
 		if err != nil {
@@ -93,17 +100,38 @@ func (vault *VaultStore) CreateInvitation(ctx context.Context, creatorID, id uui
 	invitation := Invitation{ID: id, VaultID: vault.vaultID, Role: role, CreatedBy: creatorID}
 
 	err := pgx.BeginFunc(ctx, vault.store.pool, func(tx pgx.Tx) error {
-		if _, err := lockVault(ctx, tx, vault.vaultID); err != nil {
+		state, err := lockKeyState(ctx, tx, vault.vaultID)
+		if err != nil {
 			return err
+		}
+
+		switch {
+		case state.Encryption == EncryptionE2EE && keys == nil:
+			return ErrInvitationKeysRequired
+		case state.Encryption != EncryptionE2EE && keys != nil:
+			return ErrUnexpectedInvitationKeys
+		case keys != nil:
+			missing, err := checkOneSlotPerEpoch(keys.Slots, state.CurrentEpoch, RecipientInvitation, id.String())
+			if err != nil {
+				return err
+			}
+
+			if missing {
+				return ErrEpochNotCurrent
+			}
 		}
 
 		if err := appendLog(ctx, tx, vault.vaultID, uuid.Nil, entry); err != nil {
 			return err
 		}
 
-		_, err := tx.Exec(ctx, `DELETE FROM vault_invitations WHERE vault_id = $1 AND expires_at <= now()`, vault.vaultID)
+		_, err = tx.Exec(ctx, `DELETE FROM vault_invitations WHERE vault_id = $1 AND expires_at <= now()`, vault.vaultID)
 		if err != nil {
 			return fmt.Errorf("prune expired invitations: %w", err)
+		}
+
+		if err := deleteOrphanInvitationSlots(ctx, tx, vault.vaultID); err != nil {
+			return err
 		}
 
 		var pending int
@@ -117,13 +145,29 @@ func (vault *VaultStore) CreateInvitation(ctx context.Context, creatorID, id uui
 			return ErrInvitationLimit
 		}
 
+		var anchor []byte
+		if keys != nil {
+			anchor = keys.Anchor
+		}
+
 		err = tx.QueryRow(ctx, `
-			INSERT INTO vault_invitations (id, vault_id, code_hash, role, created_by, expires_at)
-			VALUES ($1, $2, $3, $4, $5, now() + make_interval(secs => $6))
+			INSERT INTO vault_invitations (id, vault_id, code_hash, role, created_by, expires_at, invite_anchor)
+			VALUES ($1, $2, $3, $4, $5, now() + make_interval(secs => $6), $7)
+			ON CONFLICT (code_hash) DO NOTHING
 			RETURNING created_at, expires_at`,
-			id, vault.vaultID, codeHash, role, creatorID, ttl.Seconds()).Scan(&invitation.CreatedAt, &invitation.ExpiresAt)
+			id, vault.vaultID, codeHash, role, creatorID, ttl.Seconds(), anchor).Scan(&invitation.CreatedAt, &invitation.ExpiresAt)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrInvitationIDTaken
+		}
+
 		if err != nil {
 			return fmt.Errorf("insert invitation: %w", err)
+		}
+
+		if keys != nil {
+			if _, err := insertKeySlots(ctx, tx, vault.vaultID, creatorID, keys.Slots); err != nil {
+				return err
+			}
 		}
 
 		return nil
@@ -190,7 +234,7 @@ func (vault *VaultStore) RevokeInvitation(ctx context.Context, invitationID uuid
 			return ErrInvitationNotFound
 		}
 
-		return nil
+		return deleteOrphanInvitationSlots(ctx, tx, vault.vaultID)
 	})
 }
 
@@ -202,7 +246,14 @@ func (vault *VaultStore) RevokeInvitation(ctx context.Context, invitationID uuid
 // is kept), and ErrMemberLimit when the vault already has memberLimit
 // members (the invitation is kept). entry is the redeem entry, appended in
 // the same transaction (see appendLog).
-func (store *Store) RedeemInvitation(ctx context.Context, userID uuid.UUID, codeHash []byte, memberLimit int, entry *LogAppend) (Vault, error) {
+//
+// In an E2EE vault slots are the user's own key slots, exactly one per
+// existing epoch, stored in the same transaction; the invitation's slots
+// are deleted with it. The user must have a user key (ErrNoUserKey). Slots
+// for anyone else are ErrInvalidRecipients, and a missing epoch (the vault
+// rotated since the user read the invitation's slots) ErrEpochNotCurrent.
+// A plaintext vault takes no slots (ErrUnexpectedInvitationKeys).
+func (store *Store) RedeemInvitation(ctx context.Context, userID uuid.UUID, codeHash []byte, memberLimit int, entry *LogAppend, slots []KeySlot) (Vault, error) {
 	var joined Vault
 
 	err := pgx.BeginFunc(ctx, store.pool, func(tx pgx.Tx) error {
@@ -276,6 +327,10 @@ func (store *Store) RedeemInvitation(ctx context.Context, userID uuid.UUID, code
 			return ErrMemberLimit
 		}
 
+		if err := checkRedeemSlots(ctx, tx, joined.ID, userID, slots); err != nil {
+			return err
+		}
+
 		if err := appendLog(ctx, tx, joined.ID, invitationID, entry); err != nil {
 			return err
 		}
@@ -285,9 +340,17 @@ func (store *Store) RedeemInvitation(ctx context.Context, userID uuid.UUID, code
 			return fmt.Errorf("insert membership: %w", err)
 		}
 
+		if _, err := insertKeySlots(ctx, tx, joined.ID, userID, slots); err != nil {
+			return err
+		}
+
 		_, err = tx.Exec(ctx, `DELETE FROM vault_invitations WHERE id = $1`, invitationID)
 		if err != nil {
 			return fmt.Errorf("delete invitation: %w", err)
+		}
+
+		if err := deleteOrphanInvitationSlots(ctx, tx, joined.ID); err != nil {
+			return err
 		}
 
 		err = tx.QueryRow(ctx, `SELECT name, encryption, escrow, head_seq, created_at FROM vaults WHERE id = $1`, joined.ID).
@@ -339,6 +402,46 @@ func deleteInvitationsBy(ctx context.Context, tx pgx.Tx, vaultID, userID uuid.UU
 	_, err := tx.Exec(ctx, `DELETE FROM vault_invitations WHERE vault_id = $1 AND created_by = $2`, vaultID, userID)
 	if err != nil {
 		return fmt.Errorf("delete member's invitations: %w", err)
+	}
+
+	return deleteOrphanInvitationSlots(ctx, tx, vaultID)
+}
+
+// checkRedeemSlots checks a redeeming user's own key slots against the
+// vault's key state, under the vault row lock held by tx (see
+// RedeemInvitation).
+func checkRedeemSlots(ctx context.Context, tx pgx.Tx, vaultID, userID uuid.UUID, slots []KeySlot) error {
+	state, err := keyState(ctx, tx, vaultID, "")
+	if err != nil {
+		return err
+	}
+
+	if state.Encryption != EncryptionE2EE {
+		if len(slots) > 0 {
+			return ErrUnexpectedInvitationKeys
+		}
+
+		return nil
+	}
+
+	var keyed bool
+
+	err = tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM user_keys WHERE user_id = $1)`, userID).Scan(&keyed)
+	if err != nil {
+		return fmt.Errorf("look up user key: %w", err)
+	}
+
+	if !keyed {
+		return ErrNoUserKey
+	}
+
+	missing, err := checkOneSlotPerEpoch(slots, state.CurrentEpoch, RecipientUser, userID.String())
+	if err != nil {
+		return err
+	}
+
+	if missing {
+		return ErrEpochNotCurrent
 	}
 
 	return nil

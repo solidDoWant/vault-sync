@@ -21,8 +21,9 @@ const (
 	MaxEpochRecordRecipients = MaxMembersPerVault + MaxPendingInvitationsPerVault + 1
 
 	// Epoch recipient kind bytes (docs/design/crypto.md).
-	epochRecipientUser   = 0x01
-	epochRecipientEscrow = 0x02
+	epochRecipientUser       = 0x01
+	epochRecipientEscrow     = 0x02
+	epochRecipientInvitation = 0x03
 )
 
 // signedEpoch is a RotateEpoch's record and escrow entry, bounds-checked.
@@ -136,8 +137,8 @@ func (signed signedEpoch) check(next store.NextEpoch) store.EpochCheck {
 	}
 }
 
-// slotsMatchRecipients refuses slots that are not exactly one per user and
-// escrow recipient of the record. Invitation recipients have no slot here.
+// slotsMatchRecipients refuses slots that are not exactly one per user,
+// invitation and escrow recipient of the record.
 func slotsMatchRecipients(slots []store.KeySlot, recipients []e2ee.EpochRecipient) error {
 	type recipientKey struct {
 		kind store.RecipientKind
@@ -155,6 +156,13 @@ func slotsMatchRecipients(slots []store.KeySlot, recipients []e2ee.EpochRecipien
 			}
 
 			expected[recipientKey{store.RecipientUser, userID.String()}] = true
+		case epochRecipientInvitation:
+			invitationID, err := uuid.FromBytes(recipient.ID)
+			if err != nil {
+				return refuseEpoch("malformed invitation recipient")
+			}
+
+			expected[recipientKey{store.RecipientInvitation, invitationID.String()}] = true
 		case epochRecipientEscrow:
 			expected[recipientKey{store.RecipientEscrow, string(recipient.ID)}] = true
 		}

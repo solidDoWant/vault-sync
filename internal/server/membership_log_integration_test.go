@@ -123,16 +123,15 @@ func TestMembershipChangesRefuseEntriesThatDoNotVerifyAgainstPostgres(t *testing
 	// CreateInvitation, for carol.
 	invitation := fixture.signedInvitation(t, alice, vaultsyncv1.VaultRole_VAULT_ROLE_VIEWER)
 
-	var code string
+	inviteRequest := fixture.inviteRequest(t, alice, vaultsyncv1.VaultRole_VAULT_ROLE_VIEWER, invitation)
 
 	fixture.requireRefusalsThenAccept(t, logChange{
 		lister: alice, entryType: e2ee.EntryInvite, payload: invitation.entry.GetPayload(), keys: owner, wrongKeys: editor,
 		call: func(entry *vaultsyncv1.LogEntry) error {
-			response, err := members.CreateInvitation(t.Context(), authorized(&vaultsyncv1.CreateInvitationRequest{
-				VaultId: vaultID, Role: vaultsyncv1.VaultRole_VAULT_ROLE_VIEWER, LogEntry: entry,
-			}, alice.token))
+			inviteRequest.LogEntry = entry
+
+			response, err := members.CreateInvitation(t.Context(), authorized(inviteRequest, alice.token))
 			if err == nil {
-				code = response.Msg.GetCode()
 				assert.Equal(t, invitation.id.String(), response.Msg.GetInvitation().GetId(), "the invitation has its entry's id")
 			}
 
@@ -147,12 +146,14 @@ func TestMembershipChangesRefuseEntriesThatDoNotVerifyAgainstPostgres(t *testing
 	redeemPayload, err := e2ee.RedeemPayload(invitation.id.String(), bundle)
 	require.NoError(t, err)
 
+	redeemSlots := fixture.redeemSlots(t, carol, invitation)
+
 	fixture.requireRefusalsThenAccept(t, logChange{
 		lister: alice, entryType: e2ee.EntryRedeem, payload: redeemPayload,
 		keys:      []ed25519.PrivateKey{invitation.signKey, carol.secret.SignKey()},
 		wrongKeys: []ed25519.PrivateKey{carol.secret.SignKey(), carol.secret.SignKey()},
 		call: func(entry *vaultsyncv1.LogEntry) error {
-			_, err := members.RedeemInvitation(t.Context(), authorized(&vaultsyncv1.RedeemInvitationRequest{Code: code, LogEntry: entry}, carol.token))
+			_, err := members.RedeemInvitation(t.Context(), authorized(&vaultsyncv1.RedeemInvitationRequest{Code: invitation.code, LogEntry: entry, Slots: redeemSlots}, carol.token))
 
 			return err
 		},
@@ -161,9 +162,7 @@ func TestMembershipChangesRefuseEntriesThatDoNotVerifyAgainstPostgres(t *testing
 
 	// RevokeInvitation.
 	revoked := fixture.signedInvitation(t, alice, vaultsyncv1.VaultRole_VAULT_ROLE_EDITOR)
-	_, err = members.CreateInvitation(t.Context(), authorized(&vaultsyncv1.CreateInvitationRequest{
-		VaultId: vaultID, Role: vaultsyncv1.VaultRole_VAULT_ROLE_EDITOR, LogEntry: revoked.entry,
-	}, alice.token))
+	_, err = members.CreateInvitation(t.Context(), authorized(fixture.inviteRequest(t, alice, vaultsyncv1.VaultRole_VAULT_ROLE_EDITOR, revoked), alice.token))
 	require.NoError(t, err)
 
 	fixture.requireRefusalsThenAccept(t, logChange{
@@ -248,9 +247,10 @@ func TestMembershipChangesRefuseAnEntryForAnotherChangeAgainstPostgres(t *testin
 			return err
 		},
 		"an invite entry for another role": func() error {
-			_, err := fixture.members(0).CreateInvitation(t.Context(), authorized(&vaultsyncv1.CreateInvitationRequest{
-				VaultId: vaultID, Role: vaultsyncv1.VaultRole_VAULT_ROLE_OWNER, LogEntry: invitation.entry,
-			}, alice.token))
+			request := fixture.inviteRequest(t, alice, vaultsyncv1.VaultRole_VAULT_ROLE_EDITOR, invitation)
+			request.Role = vaultsyncv1.VaultRole_VAULT_ROLE_OWNER
+
+			_, err := fixture.members(0).CreateInvitation(t.Context(), authorized(request, alice.token))
 
 			return err
 		},
@@ -292,10 +292,10 @@ func TestConcurrentLogAppendsLandExactlyOnceAgainstPostgres(t *testing.T) {
 	var group sync.WaitGroup
 
 	for index, invitation := range invitations {
+		request := fixture.inviteRequest(t, alice, vaultsyncv1.VaultRole_VAULT_ROLE_EDITOR, invitation)
+
 		group.Go(func() {
-			_, errs[index] = fixture.members(index).CreateInvitation(t.Context(), authorized(&vaultsyncv1.CreateInvitationRequest{
-				VaultId: vaultID, Role: vaultsyncv1.VaultRole_VAULT_ROLE_EDITOR, LogEntry: invitation.entry,
-			}, alice.token))
+			_, errs[index] = fixture.members(index).CreateInvitation(t.Context(), authorized(request, alice.token))
 		})
 	}
 
@@ -324,9 +324,7 @@ func TestConcurrentLogAppendsLandExactlyOnceAgainstPostgres(t *testing.T) {
 
 	// The loser retries on top of the winner.
 	retried := fixture.signedInvitation(t, alice, vaultsyncv1.VaultRole_VAULT_ROLE_EDITOR)
-	_, err := fixture.members(0).CreateInvitation(t.Context(), authorized(&vaultsyncv1.CreateInvitationRequest{
-		VaultId: vaultID, Role: vaultsyncv1.VaultRole_VAULT_ROLE_EDITOR, LogEntry: retried.entry,
-	}, alice.token))
+	_, err := fixture.members(0).CreateInvitation(t.Context(), authorized(fixture.inviteRequest(t, alice, vaultsyncv1.VaultRole_VAULT_ROLE_EDITOR, retried), alice.token))
 	require.NoError(t, err)
 }
 

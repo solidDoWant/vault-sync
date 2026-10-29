@@ -42,6 +42,9 @@ const (
 	// MembershipServiceRevokeInvitationProcedure is the fully-qualified name of the MembershipService's
 	// RevokeInvitation RPC.
 	MembershipServiceRevokeInvitationProcedure = "/vaultsync.v1.MembershipService/RevokeInvitation"
+	// MembershipServiceGetInvitationSlotsProcedure is the fully-qualified name of the
+	// MembershipService's GetInvitationSlots RPC.
+	MembershipServiceGetInvitationSlotsProcedure = "/vaultsync.v1.MembershipService/GetInvitationSlots"
 	// MembershipServiceRedeemInvitationProcedure is the fully-qualified name of the MembershipService's
 	// RedeemInvitation RPC.
 	MembershipServiceRedeemInvitationProcedure = "/vaultsync.v1.MembershipService/RedeemInvitation"
@@ -66,9 +69,19 @@ type MembershipServiceClient interface {
 	// its hash. Anyone holding the code can redeem it until it expires, is
 	// revoked or is used.
 	//
-	// Errors: INVALID_ARGUMENT for an unspecified role or a ttl_seconds above
-	// the server maximum (30 days); RESOURCE_EXHAUSTED when the vault already
-	// has the maximum number of pending invitations (100).
+	// In an end-to-end encrypted vault the inviting device generates the code
+	// `<id>.<secret>` itself (docs/design/encryption.md, "Invitations") and
+	// sends only id_hash, the invitation's key slots (exactly one for every
+	// existing epoch, each wrapped to the invitation's key) and its
+	// invite_anchor. The response then carries no code.
+	//
+	// Errors: INVALID_ARGUMENT for an unspecified role, a ttl_seconds above
+	// the server maximum (30 days), or, in an end-to-end encrypted vault, a
+	// missing or malformed id_hash or invite_anchor or slots that are not
+	// exactly one per existing epoch for this invitation (in a plaintext
+	// vault these fields must be unset); ALREADY_EXISTS for an id_hash that is
+	// already in use; RESOURCE_EXHAUSTED when the vault already has the
+	// maximum number of pending invitations (100).
 	CreateInvitation(context.Context, *connect.Request[v1.CreateInvitationRequest]) (*connect.Response[v1.CreateInvitationResponse], error)
 	// ListInvitations lists the vault's pending invitations (not used, not
 	// revoked, not expired), oldest first. Codes are never returned. The list
@@ -80,15 +93,33 @@ type MembershipServiceClient interface {
 	// Errors: INVALID_ARGUMENT when invitation_id is not a canonical lowercase
 	// UUID; NOT_FOUND when the vault has no such pending invitation.
 	RevokeInvitation(context.Context, *connect.Request[v1.RevokeInvitationRequest]) (*connect.Response[v1.RevokeInvitationResponse], error)
+	// GetInvitationSlots returns a pending invitation to an end-to-end
+	// encrypted vault, its key slots, the vault's epochs and its invite
+	// anchor, to the holder of the code's `<id>`: the first of the two
+	// redemption steps (docs/design/encryption.md, "Invitations"). Any
+	// authenticated user may call it; it names no vault.
+	//
+	// Errors: NOT_FOUND, with the same message whatever the reason, for an id
+	// that is malformed, unknown, expired, revoked or already used.
+	GetInvitationSlots(context.Context, *connect.Request[v1.GetInvitationSlotsRequest]) (*connect.Response[v1.GetInvitationSlotsResponse], error)
 	// RedeemInvitation makes the caller a member of the invitation's vault
-	// with the invitation's role, and uses the invitation up.
+	// with the invitation's role, and uses the invitation up. For an
+	// invitation to an end-to-end encrypted vault the code is `<id>.<secret>`,
+	// of which the server reads only `<id>`, and the request carries the
+	// caller's own key slots, exactly one for every existing epoch; they are
+	// stored and the invitation's slots deleted in the same transaction as the
+	// membership. The caller must have a user key.
 	//
 	// Errors: NOT_FOUND, with the same message whatever the reason, for a code
 	// that is malformed, unknown, expired, revoked or already used, so a
 	// failed redemption reveals nothing about any vault; ALREADY_EXISTS when
 	// the caller is already a member of the vault (the invitation stays
 	// usable); RESOURCE_EXHAUSTED when the vault already has the maximum
-	// number of members (100).
+	// number of members (100); INVALID_ARGUMENT when slots are set for a
+	// plaintext vault, or, for an end-to-end encrypted vault, the caller has no
+	// user key or slots are not exactly one per epoch wrapped to the caller;
+	// FAILED_PRECONDITION with reason ERROR_REASON_EPOCH_NOT_CURRENT when the
+	// vault gained an epoch after GetInvitationSlots (call it again).
 	RedeemInvitation(context.Context, *connect.Request[v1.RedeemInvitationRequest]) (*connect.Response[v1.RedeemInvitationResponse], error)
 	// ListMembers lists the vault's members, oldest membership first. The list
 	// is bounded by the member limit.
@@ -159,6 +190,12 @@ func NewMembershipServiceClient(httpClient connect.HTTPClient, baseURL string, o
 			connect.WithSchema(membershipServiceMethods.ByName("RevokeInvitation")),
 			connect.WithClientOptions(opts...),
 		),
+		getInvitationSlots: connect.NewClient[v1.GetInvitationSlotsRequest, v1.GetInvitationSlotsResponse](
+			httpClient,
+			baseURL+MembershipServiceGetInvitationSlotsProcedure,
+			connect.WithSchema(membershipServiceMethods.ByName("GetInvitationSlots")),
+			connect.WithClientOptions(opts...),
+		),
 		redeemInvitation: connect.NewClient[v1.RedeemInvitationRequest, v1.RedeemInvitationResponse](
 			httpClient,
 			baseURL+MembershipServiceRedeemInvitationProcedure,
@@ -194,14 +231,15 @@ func NewMembershipServiceClient(httpClient connect.HTTPClient, baseURL string, o
 
 // membershipServiceClient implements MembershipServiceClient.
 type membershipServiceClient struct {
-	createInvitation *connect.Client[v1.CreateInvitationRequest, v1.CreateInvitationResponse]
-	listInvitations  *connect.Client[v1.ListInvitationsRequest, v1.ListInvitationsResponse]
-	revokeInvitation *connect.Client[v1.RevokeInvitationRequest, v1.RevokeInvitationResponse]
-	redeemInvitation *connect.Client[v1.RedeemInvitationRequest, v1.RedeemInvitationResponse]
-	listMembers      *connect.Client[v1.ListMembersRequest, v1.ListMembersResponse]
-	updateMemberRole *connect.Client[v1.UpdateMemberRoleRequest, v1.UpdateMemberRoleResponse]
-	removeMember     *connect.Client[v1.RemoveMemberRequest, v1.RemoveMemberResponse]
-	leaveVault       *connect.Client[v1.LeaveVaultRequest, v1.LeaveVaultResponse]
+	createInvitation   *connect.Client[v1.CreateInvitationRequest, v1.CreateInvitationResponse]
+	listInvitations    *connect.Client[v1.ListInvitationsRequest, v1.ListInvitationsResponse]
+	revokeInvitation   *connect.Client[v1.RevokeInvitationRequest, v1.RevokeInvitationResponse]
+	getInvitationSlots *connect.Client[v1.GetInvitationSlotsRequest, v1.GetInvitationSlotsResponse]
+	redeemInvitation   *connect.Client[v1.RedeemInvitationRequest, v1.RedeemInvitationResponse]
+	listMembers        *connect.Client[v1.ListMembersRequest, v1.ListMembersResponse]
+	updateMemberRole   *connect.Client[v1.UpdateMemberRoleRequest, v1.UpdateMemberRoleResponse]
+	removeMember       *connect.Client[v1.RemoveMemberRequest, v1.RemoveMemberResponse]
+	leaveVault         *connect.Client[v1.LeaveVaultRequest, v1.LeaveVaultResponse]
 }
 
 // CreateInvitation calls vaultsync.v1.MembershipService.CreateInvitation.
@@ -217,6 +255,11 @@ func (c *membershipServiceClient) ListInvitations(ctx context.Context, req *conn
 // RevokeInvitation calls vaultsync.v1.MembershipService.RevokeInvitation.
 func (c *membershipServiceClient) RevokeInvitation(ctx context.Context, req *connect.Request[v1.RevokeInvitationRequest]) (*connect.Response[v1.RevokeInvitationResponse], error) {
 	return c.revokeInvitation.CallUnary(ctx, req)
+}
+
+// GetInvitationSlots calls vaultsync.v1.MembershipService.GetInvitationSlots.
+func (c *membershipServiceClient) GetInvitationSlots(ctx context.Context, req *connect.Request[v1.GetInvitationSlotsRequest]) (*connect.Response[v1.GetInvitationSlotsResponse], error) {
+	return c.getInvitationSlots.CallUnary(ctx, req)
 }
 
 // RedeemInvitation calls vaultsync.v1.MembershipService.RedeemInvitation.
@@ -251,9 +294,19 @@ type MembershipServiceHandler interface {
 	// its hash. Anyone holding the code can redeem it until it expires, is
 	// revoked or is used.
 	//
-	// Errors: INVALID_ARGUMENT for an unspecified role or a ttl_seconds above
-	// the server maximum (30 days); RESOURCE_EXHAUSTED when the vault already
-	// has the maximum number of pending invitations (100).
+	// In an end-to-end encrypted vault the inviting device generates the code
+	// `<id>.<secret>` itself (docs/design/encryption.md, "Invitations") and
+	// sends only id_hash, the invitation's key slots (exactly one for every
+	// existing epoch, each wrapped to the invitation's key) and its
+	// invite_anchor. The response then carries no code.
+	//
+	// Errors: INVALID_ARGUMENT for an unspecified role, a ttl_seconds above
+	// the server maximum (30 days), or, in an end-to-end encrypted vault, a
+	// missing or malformed id_hash or invite_anchor or slots that are not
+	// exactly one per existing epoch for this invitation (in a plaintext
+	// vault these fields must be unset); ALREADY_EXISTS for an id_hash that is
+	// already in use; RESOURCE_EXHAUSTED when the vault already has the
+	// maximum number of pending invitations (100).
 	CreateInvitation(context.Context, *connect.Request[v1.CreateInvitationRequest]) (*connect.Response[v1.CreateInvitationResponse], error)
 	// ListInvitations lists the vault's pending invitations (not used, not
 	// revoked, not expired), oldest first. Codes are never returned. The list
@@ -265,15 +318,33 @@ type MembershipServiceHandler interface {
 	// Errors: INVALID_ARGUMENT when invitation_id is not a canonical lowercase
 	// UUID; NOT_FOUND when the vault has no such pending invitation.
 	RevokeInvitation(context.Context, *connect.Request[v1.RevokeInvitationRequest]) (*connect.Response[v1.RevokeInvitationResponse], error)
+	// GetInvitationSlots returns a pending invitation to an end-to-end
+	// encrypted vault, its key slots, the vault's epochs and its invite
+	// anchor, to the holder of the code's `<id>`: the first of the two
+	// redemption steps (docs/design/encryption.md, "Invitations"). Any
+	// authenticated user may call it; it names no vault.
+	//
+	// Errors: NOT_FOUND, with the same message whatever the reason, for an id
+	// that is malformed, unknown, expired, revoked or already used.
+	GetInvitationSlots(context.Context, *connect.Request[v1.GetInvitationSlotsRequest]) (*connect.Response[v1.GetInvitationSlotsResponse], error)
 	// RedeemInvitation makes the caller a member of the invitation's vault
-	// with the invitation's role, and uses the invitation up.
+	// with the invitation's role, and uses the invitation up. For an
+	// invitation to an end-to-end encrypted vault the code is `<id>.<secret>`,
+	// of which the server reads only `<id>`, and the request carries the
+	// caller's own key slots, exactly one for every existing epoch; they are
+	// stored and the invitation's slots deleted in the same transaction as the
+	// membership. The caller must have a user key.
 	//
 	// Errors: NOT_FOUND, with the same message whatever the reason, for a code
 	// that is malformed, unknown, expired, revoked or already used, so a
 	// failed redemption reveals nothing about any vault; ALREADY_EXISTS when
 	// the caller is already a member of the vault (the invitation stays
 	// usable); RESOURCE_EXHAUSTED when the vault already has the maximum
-	// number of members (100).
+	// number of members (100); INVALID_ARGUMENT when slots are set for a
+	// plaintext vault, or, for an end-to-end encrypted vault, the caller has no
+	// user key or slots are not exactly one per epoch wrapped to the caller;
+	// FAILED_PRECONDITION with reason ERROR_REASON_EPOCH_NOT_CURRENT when the
+	// vault gained an epoch after GetInvitationSlots (call it again).
 	RedeemInvitation(context.Context, *connect.Request[v1.RedeemInvitationRequest]) (*connect.Response[v1.RedeemInvitationResponse], error)
 	// ListMembers lists the vault's members, oldest membership first. The list
 	// is bounded by the member limit.
@@ -340,6 +411,12 @@ func NewMembershipServiceHandler(svc MembershipServiceHandler, opts ...connect.H
 		connect.WithSchema(membershipServiceMethods.ByName("RevokeInvitation")),
 		connect.WithHandlerOptions(opts...),
 	)
+	membershipServiceGetInvitationSlotsHandler := connect.NewUnaryHandler(
+		MembershipServiceGetInvitationSlotsProcedure,
+		svc.GetInvitationSlots,
+		connect.WithSchema(membershipServiceMethods.ByName("GetInvitationSlots")),
+		connect.WithHandlerOptions(opts...),
+	)
 	membershipServiceRedeemInvitationHandler := connect.NewUnaryHandler(
 		MembershipServiceRedeemInvitationProcedure,
 		svc.RedeemInvitation,
@@ -378,6 +455,8 @@ func NewMembershipServiceHandler(svc MembershipServiceHandler, opts ...connect.H
 			membershipServiceListInvitationsHandler.ServeHTTP(w, r)
 		case MembershipServiceRevokeInvitationProcedure:
 			membershipServiceRevokeInvitationHandler.ServeHTTP(w, r)
+		case MembershipServiceGetInvitationSlotsProcedure:
+			membershipServiceGetInvitationSlotsHandler.ServeHTTP(w, r)
 		case MembershipServiceRedeemInvitationProcedure:
 			membershipServiceRedeemInvitationHandler.ServeHTTP(w, r)
 		case MembershipServiceListMembersProcedure:
@@ -407,6 +486,10 @@ func (UnimplementedMembershipServiceHandler) ListInvitations(context.Context, *c
 
 func (UnimplementedMembershipServiceHandler) RevokeInvitation(context.Context, *connect.Request[v1.RevokeInvitationRequest]) (*connect.Response[v1.RevokeInvitationResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("vaultsync.v1.MembershipService.RevokeInvitation is not implemented"))
+}
+
+func (UnimplementedMembershipServiceHandler) GetInvitationSlots(context.Context, *connect.Request[v1.GetInvitationSlotsRequest]) (*connect.Response[v1.GetInvitationSlotsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("vaultsync.v1.MembershipService.GetInvitationSlots is not implemented"))
 }
 
 func (UnimplementedMembershipServiceHandler) RedeemInvitation(context.Context, *connect.Request[v1.RedeemInvitationRequest]) (*connect.Response[v1.RedeemInvitationResponse], error) {

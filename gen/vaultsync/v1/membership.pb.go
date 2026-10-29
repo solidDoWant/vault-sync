@@ -202,7 +202,18 @@ type CreateInvitationRequest struct {
 	// log (docs/design/crypto.md): required there, and must be unset in a
 	// plaintext vault. Its invitation id becomes the invitation's id and its
 	// role must be the requested role.
-	LogEntry      *LogEntry `protobuf:"bytes,4,opt,name=log_entry,json=logEntry,proto3" json:"log_entry,omitempty"`
+	LogEntry *LogEntry `protobuf:"bytes,4,opt,name=log_entry,json=logEntry,proto3" json:"log_entry,omitempty"`
+	// End-to-end encrypted vaults only: SHA-256 of the 16 bytes that `<id>`
+	// (22 characters of base64url without padding) encodes. The server stores
+	// only this hash.
+	IdHash []byte `protobuf:"bytes,5,opt,name=id_hash,json=idHash,proto3" json:"id_hash,omitempty"`
+	// End-to-end encrypted vaults only: the vault's epoch keys wrapped to the
+	// invitation's key, exactly one slot (KEY_RECIPIENT_KIND_INVITATION, this
+	// invitation's id) for every existing epoch.
+	Slots []*KeySlot `protobuf:"bytes,6,rep,name=slots,proto3" json:"slots,omitempty"`
+	// End-to-end encrypted vaults only: the invite anchor (96 bytes,
+	// docs/design/crypto.md), returned by GetInvitationSlots.
+	InviteAnchor  []byte `protobuf:"bytes,7,opt,name=invite_anchor,json=inviteAnchor,proto3" json:"invite_anchor,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -265,13 +276,35 @@ func (x *CreateInvitationRequest) GetLogEntry() *LogEntry {
 	return nil
 }
 
+func (x *CreateInvitationRequest) GetIdHash() []byte {
+	if x != nil {
+		return x.IdHash
+	}
+	return nil
+}
+
+func (x *CreateInvitationRequest) GetSlots() []*KeySlot {
+	if x != nil {
+		return x.Slots
+	}
+	return nil
+}
+
+func (x *CreateInvitationRequest) GetInviteAnchor() []byte {
+	if x != nil {
+		return x.InviteAnchor
+	}
+	return nil
+}
+
 // CreateInvitationResponse returns the invitation and its code.
 type CreateInvitationResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The new invitation.
 	Invitation *Invitation `protobuf:"bytes,1,opt,name=invitation,proto3" json:"invitation,omitempty"`
 	// The secret invite code to hand to the invited user. It is shown only
-	// once and cannot be retrieved later.
+	// once and cannot be retrieved later. Empty for an end-to-end encrypted
+	// vault, whose code the inviting device generated.
 	Code          string `protobuf:"bytes,2,opt,name=code,proto3" json:"code,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -517,22 +550,165 @@ func (*RevokeInvitationResponse) Descriptor() ([]byte, []int) {
 	return file_vaultsync_v1_membership_proto_rawDescGZIP(), []int{7}
 }
 
+// GetInvitationSlotsRequest names an invitation by its code's `<id>`.
+type GetInvitationSlotsRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The `<id>` part of an end-to-end encrypted vault's invite code.
+	Id            string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetInvitationSlotsRequest) Reset() {
+	*x = GetInvitationSlotsRequest{}
+	mi := &file_vaultsync_v1_membership_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetInvitationSlotsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetInvitationSlotsRequest) ProtoMessage() {}
+
+func (x *GetInvitationSlotsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_vaultsync_v1_membership_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetInvitationSlotsRequest.ProtoReflect.Descriptor instead.
+func (*GetInvitationSlotsRequest) Descriptor() ([]byte, []int) {
+	return file_vaultsync_v1_membership_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *GetInvitationSlotsRequest) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+// GetInvitationSlotsResponse is what a newcomer needs to unwrap the vault's
+// epoch keys and wrap them to itself.
+type GetInvitationSlotsResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The invitation id, which the invitation's key pair is derived from.
+	InvitationId string `protobuf:"bytes,1,opt,name=invitation_id,json=invitationId,proto3" json:"invitation_id,omitempty"`
+	// The vault the invitation is to.
+	VaultId string `protobuf:"bytes,2,opt,name=vault_id,json=vaultId,proto3" json:"vault_id,omitempty"`
+	// The role the redeeming user receives.
+	Role VaultRole `protobuf:"varint,3,opt,name=role,proto3,enum=vaultsync.v1.VaultRole" json:"role,omitempty"`
+	// The invitation's key slots, one per epoch, in ascending epoch order.
+	Slots []*KeySlot `protobuf:"bytes,4,rep,name=slots,proto3" json:"slots,omitempty"`
+	// The vault's epochs with their commitments and records, ascending.
+	Epochs []*KeyEpoch `protobuf:"bytes,5,rep,name=epochs,proto3" json:"epochs,omitempty"`
+	// The invite anchor stored with CreateInvitation.
+	InviteAnchor  []byte `protobuf:"bytes,6,opt,name=invite_anchor,json=inviteAnchor,proto3" json:"invite_anchor,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetInvitationSlotsResponse) Reset() {
+	*x = GetInvitationSlotsResponse{}
+	mi := &file_vaultsync_v1_membership_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetInvitationSlotsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetInvitationSlotsResponse) ProtoMessage() {}
+
+func (x *GetInvitationSlotsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_vaultsync_v1_membership_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetInvitationSlotsResponse.ProtoReflect.Descriptor instead.
+func (*GetInvitationSlotsResponse) Descriptor() ([]byte, []int) {
+	return file_vaultsync_v1_membership_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *GetInvitationSlotsResponse) GetInvitationId() string {
+	if x != nil {
+		return x.InvitationId
+	}
+	return ""
+}
+
+func (x *GetInvitationSlotsResponse) GetVaultId() string {
+	if x != nil {
+		return x.VaultId
+	}
+	return ""
+}
+
+func (x *GetInvitationSlotsResponse) GetRole() VaultRole {
+	if x != nil {
+		return x.Role
+	}
+	return VaultRole_VAULT_ROLE_UNSPECIFIED
+}
+
+func (x *GetInvitationSlotsResponse) GetSlots() []*KeySlot {
+	if x != nil {
+		return x.Slots
+	}
+	return nil
+}
+
+func (x *GetInvitationSlotsResponse) GetEpochs() []*KeyEpoch {
+	if x != nil {
+		return x.Epochs
+	}
+	return nil
+}
+
+func (x *GetInvitationSlotsResponse) GetInviteAnchor() []byte {
+	if x != nil {
+		return x.InviteAnchor
+	}
+	return nil
+}
+
 // RedeemInvitationRequest carries the invite code.
 type RedeemInvitationRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The code from CreateInvitationResponse.code.
+	// The code from CreateInvitationResponse.code, or, for an end-to-end
+	// encrypted vault, the `<id>.<secret>` code the inviting device generated.
 	Code string `protobuf:"bytes,1,opt,name=code,proto3" json:"code,omitempty"`
 	// The redeem entry, signed by the invitation key and then by the caller,
 	// carrying the caller's bundle: required for an invitation to an
 	// end-to-end encrypted vault, and must be unset for a plaintext vault.
-	LogEntry      *LogEntry `protobuf:"bytes,2,opt,name=log_entry,json=logEntry,proto3" json:"log_entry,omitempty"`
+	LogEntry *LogEntry `protobuf:"bytes,2,opt,name=log_entry,json=logEntry,proto3" json:"log_entry,omitempty"`
+	// End-to-end encrypted vaults only: the caller's own key slots
+	// (KEY_RECIPIENT_KIND_USER, the caller's user id), exactly one for every
+	// existing epoch.
+	Slots         []*KeySlot `protobuf:"bytes,3,rep,name=slots,proto3" json:"slots,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *RedeemInvitationRequest) Reset() {
 	*x = RedeemInvitationRequest{}
-	mi := &file_vaultsync_v1_membership_proto_msgTypes[8]
+	mi := &file_vaultsync_v1_membership_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -544,7 +720,7 @@ func (x *RedeemInvitationRequest) String() string {
 func (*RedeemInvitationRequest) ProtoMessage() {}
 
 func (x *RedeemInvitationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_vaultsync_v1_membership_proto_msgTypes[8]
+	mi := &file_vaultsync_v1_membership_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -557,7 +733,7 @@ func (x *RedeemInvitationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RedeemInvitationRequest.ProtoReflect.Descriptor instead.
 func (*RedeemInvitationRequest) Descriptor() ([]byte, []int) {
-	return file_vaultsync_v1_membership_proto_rawDescGZIP(), []int{8}
+	return file_vaultsync_v1_membership_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *RedeemInvitationRequest) GetCode() string {
@@ -574,6 +750,13 @@ func (x *RedeemInvitationRequest) GetLogEntry() *LogEntry {
 	return nil
 }
 
+func (x *RedeemInvitationRequest) GetSlots() []*KeySlot {
+	if x != nil {
+		return x.Slots
+	}
+	return nil
+}
+
 // RedeemInvitationResponse returns the vault the caller joined.
 type RedeemInvitationResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -585,7 +768,7 @@ type RedeemInvitationResponse struct {
 
 func (x *RedeemInvitationResponse) Reset() {
 	*x = RedeemInvitationResponse{}
-	mi := &file_vaultsync_v1_membership_proto_msgTypes[9]
+	mi := &file_vaultsync_v1_membership_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -597,7 +780,7 @@ func (x *RedeemInvitationResponse) String() string {
 func (*RedeemInvitationResponse) ProtoMessage() {}
 
 func (x *RedeemInvitationResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_vaultsync_v1_membership_proto_msgTypes[9]
+	mi := &file_vaultsync_v1_membership_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -610,7 +793,7 @@ func (x *RedeemInvitationResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RedeemInvitationResponse.ProtoReflect.Descriptor instead.
 func (*RedeemInvitationResponse) Descriptor() ([]byte, []int) {
-	return file_vaultsync_v1_membership_proto_rawDescGZIP(), []int{9}
+	return file_vaultsync_v1_membership_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *RedeemInvitationResponse) GetVault() *Vault {
@@ -631,7 +814,7 @@ type ListMembersRequest struct {
 
 func (x *ListMembersRequest) Reset() {
 	*x = ListMembersRequest{}
-	mi := &file_vaultsync_v1_membership_proto_msgTypes[10]
+	mi := &file_vaultsync_v1_membership_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -643,7 +826,7 @@ func (x *ListMembersRequest) String() string {
 func (*ListMembersRequest) ProtoMessage() {}
 
 func (x *ListMembersRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_vaultsync_v1_membership_proto_msgTypes[10]
+	mi := &file_vaultsync_v1_membership_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -656,7 +839,7 @@ func (x *ListMembersRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListMembersRequest.ProtoReflect.Descriptor instead.
 func (*ListMembersRequest) Descriptor() ([]byte, []int) {
-	return file_vaultsync_v1_membership_proto_rawDescGZIP(), []int{10}
+	return file_vaultsync_v1_membership_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *ListMembersRequest) GetVaultId() string {
@@ -677,7 +860,7 @@ type ListMembersResponse struct {
 
 func (x *ListMembersResponse) Reset() {
 	*x = ListMembersResponse{}
-	mi := &file_vaultsync_v1_membership_proto_msgTypes[11]
+	mi := &file_vaultsync_v1_membership_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -689,7 +872,7 @@ func (x *ListMembersResponse) String() string {
 func (*ListMembersResponse) ProtoMessage() {}
 
 func (x *ListMembersResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_vaultsync_v1_membership_proto_msgTypes[11]
+	mi := &file_vaultsync_v1_membership_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -702,7 +885,7 @@ func (x *ListMembersResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListMembersResponse.ProtoReflect.Descriptor instead.
 func (*ListMembersResponse) Descriptor() ([]byte, []int) {
-	return file_vaultsync_v1_membership_proto_rawDescGZIP(), []int{11}
+	return file_vaultsync_v1_membership_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *ListMembersResponse) GetMembers() []*Member {
@@ -730,7 +913,7 @@ type UpdateMemberRoleRequest struct {
 
 func (x *UpdateMemberRoleRequest) Reset() {
 	*x = UpdateMemberRoleRequest{}
-	mi := &file_vaultsync_v1_membership_proto_msgTypes[12]
+	mi := &file_vaultsync_v1_membership_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -742,7 +925,7 @@ func (x *UpdateMemberRoleRequest) String() string {
 func (*UpdateMemberRoleRequest) ProtoMessage() {}
 
 func (x *UpdateMemberRoleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_vaultsync_v1_membership_proto_msgTypes[12]
+	mi := &file_vaultsync_v1_membership_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -755,7 +938,7 @@ func (x *UpdateMemberRoleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateMemberRoleRequest.ProtoReflect.Descriptor instead.
 func (*UpdateMemberRoleRequest) Descriptor() ([]byte, []int) {
-	return file_vaultsync_v1_membership_proto_rawDescGZIP(), []int{12}
+	return file_vaultsync_v1_membership_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *UpdateMemberRoleRequest) GetVaultId() string {
@@ -797,7 +980,7 @@ type UpdateMemberRoleResponse struct {
 
 func (x *UpdateMemberRoleResponse) Reset() {
 	*x = UpdateMemberRoleResponse{}
-	mi := &file_vaultsync_v1_membership_proto_msgTypes[13]
+	mi := &file_vaultsync_v1_membership_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -809,7 +992,7 @@ func (x *UpdateMemberRoleResponse) String() string {
 func (*UpdateMemberRoleResponse) ProtoMessage() {}
 
 func (x *UpdateMemberRoleResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_vaultsync_v1_membership_proto_msgTypes[13]
+	mi := &file_vaultsync_v1_membership_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -822,7 +1005,7 @@ func (x *UpdateMemberRoleResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateMemberRoleResponse.ProtoReflect.Descriptor instead.
 func (*UpdateMemberRoleResponse) Descriptor() ([]byte, []int) {
-	return file_vaultsync_v1_membership_proto_rawDescGZIP(), []int{13}
+	return file_vaultsync_v1_membership_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *UpdateMemberRoleResponse) GetMember() *Member {
@@ -854,7 +1037,7 @@ type RemoveMemberRequest struct {
 
 func (x *RemoveMemberRequest) Reset() {
 	*x = RemoveMemberRequest{}
-	mi := &file_vaultsync_v1_membership_proto_msgTypes[14]
+	mi := &file_vaultsync_v1_membership_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -866,7 +1049,7 @@ func (x *RemoveMemberRequest) String() string {
 func (*RemoveMemberRequest) ProtoMessage() {}
 
 func (x *RemoveMemberRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_vaultsync_v1_membership_proto_msgTypes[14]
+	mi := &file_vaultsync_v1_membership_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -879,7 +1062,7 @@ func (x *RemoveMemberRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveMemberRequest.ProtoReflect.Descriptor instead.
 func (*RemoveMemberRequest) Descriptor() ([]byte, []int) {
-	return file_vaultsync_v1_membership_proto_rawDescGZIP(), []int{14}
+	return file_vaultsync_v1_membership_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *RemoveMemberRequest) GetVaultId() string {
@@ -919,7 +1102,7 @@ type RemoveMemberResponse struct {
 
 func (x *RemoveMemberResponse) Reset() {
 	*x = RemoveMemberResponse{}
-	mi := &file_vaultsync_v1_membership_proto_msgTypes[15]
+	mi := &file_vaultsync_v1_membership_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -931,7 +1114,7 @@ func (x *RemoveMemberResponse) String() string {
 func (*RemoveMemberResponse) ProtoMessage() {}
 
 func (x *RemoveMemberResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_vaultsync_v1_membership_proto_msgTypes[15]
+	mi := &file_vaultsync_v1_membership_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -944,7 +1127,7 @@ func (x *RemoveMemberResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveMemberResponse.ProtoReflect.Descriptor instead.
 func (*RemoveMemberResponse) Descriptor() ([]byte, []int) {
-	return file_vaultsync_v1_membership_proto_rawDescGZIP(), []int{15}
+	return file_vaultsync_v1_membership_proto_rawDescGZIP(), []int{17}
 }
 
 // LeaveVaultRequest names the vault to leave.
@@ -961,7 +1144,7 @@ type LeaveVaultRequest struct {
 
 func (x *LeaveVaultRequest) Reset() {
 	*x = LeaveVaultRequest{}
-	mi := &file_vaultsync_v1_membership_proto_msgTypes[16]
+	mi := &file_vaultsync_v1_membership_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -973,7 +1156,7 @@ func (x *LeaveVaultRequest) String() string {
 func (*LeaveVaultRequest) ProtoMessage() {}
 
 func (x *LeaveVaultRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_vaultsync_v1_membership_proto_msgTypes[16]
+	mi := &file_vaultsync_v1_membership_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -986,7 +1169,7 @@ func (x *LeaveVaultRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LeaveVaultRequest.ProtoReflect.Descriptor instead.
 func (*LeaveVaultRequest) Descriptor() ([]byte, []int) {
-	return file_vaultsync_v1_membership_proto_rawDescGZIP(), []int{16}
+	return file_vaultsync_v1_membership_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *LeaveVaultRequest) GetVaultId() string {
@@ -1012,7 +1195,7 @@ type LeaveVaultResponse struct {
 
 func (x *LeaveVaultResponse) Reset() {
 	*x = LeaveVaultResponse{}
-	mi := &file_vaultsync_v1_membership_proto_msgTypes[17]
+	mi := &file_vaultsync_v1_membership_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1024,7 +1207,7 @@ func (x *LeaveVaultResponse) String() string {
 func (*LeaveVaultResponse) ProtoMessage() {}
 
 func (x *LeaveVaultResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_vaultsync_v1_membership_proto_msgTypes[17]
+	mi := &file_vaultsync_v1_membership_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1037,7 +1220,7 @@ func (x *LeaveVaultResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LeaveVaultResponse.ProtoReflect.Descriptor instead.
 func (*LeaveVaultResponse) Descriptor() ([]byte, []int) {
-	return file_vaultsync_v1_membership_proto_rawDescGZIP(), []int{17}
+	return file_vaultsync_v1_membership_proto_rawDescGZIP(), []int{19}
 }
 
 var File_vaultsync_v1_membership_proto protoreflect.FileDescriptor
@@ -1060,13 +1243,16 @@ const file_vaultsync_v1_membership_proto_rawDesc = "" +
 	"\x04role\x18\x03 \x01(\x0e2\x17.vaultsync.v1.VaultRoleR\x04role\x127\n" +
 	"\tjoin_time\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\bjoinTime\x12\x1d\n" +
 	"\n" +
-	"public_key\x18\x05 \x01(\fR\tpublicKey\"\xb7\x01\n" +
+	"public_key\x18\x05 \x01(\fR\tpublicKey\"\xa2\x02\n" +
 	"\x17CreateInvitationRequest\x12\x19\n" +
 	"\bvault_id\x18\x01 \x01(\tR\avaultId\x12+\n" +
 	"\x04role\x18\x02 \x01(\x0e2\x17.vaultsync.v1.VaultRoleR\x04role\x12\x1f\n" +
 	"\vttl_seconds\x18\x03 \x01(\rR\n" +
 	"ttlSeconds\x123\n" +
-	"\tlog_entry\x18\x04 \x01(\v2\x16.vaultsync.v1.LogEntryR\blogEntry\"h\n" +
+	"\tlog_entry\x18\x04 \x01(\v2\x16.vaultsync.v1.LogEntryR\blogEntry\x12\x17\n" +
+	"\aid_hash\x18\x05 \x01(\fR\x06idHash\x12+\n" +
+	"\x05slots\x18\x06 \x03(\v2\x15.vaultsync.v1.KeySlotR\x05slots\x12#\n" +
+	"\rinvite_anchor\x18\a \x01(\fR\finviteAnchor\"h\n" +
 	"\x18CreateInvitationResponse\x128\n" +
 	"\n" +
 	"invitation\x18\x01 \x01(\v2\x18.vaultsync.v1.InvitationR\n" +
@@ -1080,10 +1266,20 @@ const file_vaultsync_v1_membership_proto_rawDesc = "" +
 	"\bvault_id\x18\x01 \x01(\tR\avaultId\x12#\n" +
 	"\rinvitation_id\x18\x02 \x01(\tR\finvitationId\x123\n" +
 	"\tlog_entry\x18\x03 \x01(\v2\x16.vaultsync.v1.LogEntryR\blogEntry\"\x1a\n" +
-	"\x18RevokeInvitationResponse\"b\n" +
+	"\x18RevokeInvitationResponse\"+\n" +
+	"\x19GetInvitationSlotsRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\"\x8b\x02\n" +
+	"\x1aGetInvitationSlotsResponse\x12#\n" +
+	"\rinvitation_id\x18\x01 \x01(\tR\finvitationId\x12\x19\n" +
+	"\bvault_id\x18\x02 \x01(\tR\avaultId\x12+\n" +
+	"\x04role\x18\x03 \x01(\x0e2\x17.vaultsync.v1.VaultRoleR\x04role\x12+\n" +
+	"\x05slots\x18\x04 \x03(\v2\x15.vaultsync.v1.KeySlotR\x05slots\x12.\n" +
+	"\x06epochs\x18\x05 \x03(\v2\x16.vaultsync.v1.KeyEpochR\x06epochs\x12#\n" +
+	"\rinvite_anchor\x18\x06 \x01(\fR\finviteAnchor\"\x8f\x01\n" +
 	"\x17RedeemInvitationRequest\x12\x12\n" +
 	"\x04code\x18\x01 \x01(\tR\x04code\x123\n" +
-	"\tlog_entry\x18\x02 \x01(\v2\x16.vaultsync.v1.LogEntryR\blogEntry\"E\n" +
+	"\tlog_entry\x18\x02 \x01(\v2\x16.vaultsync.v1.LogEntryR\blogEntry\x12+\n" +
+	"\x05slots\x18\x03 \x03(\v2\x15.vaultsync.v1.KeySlotR\x05slots\"E\n" +
 	"\x18RedeemInvitationResponse\x12)\n" +
 	"\x05vault\x18\x01 \x01(\v2\x13.vaultsync.v1.VaultR\x05vault\"/\n" +
 	"\x12ListMembersRequest\x12\x19\n" +
@@ -1107,11 +1303,12 @@ const file_vaultsync_v1_membership_proto_rawDesc = "" +
 	"\x11LeaveVaultRequest\x12\x19\n" +
 	"\bvault_id\x18\x01 \x01(\tR\avaultId\x123\n" +
 	"\tlog_entry\x18\x02 \x01(\v2\x16.vaultsync.v1.LogEntryR\blogEntry\"\x14\n" +
-	"\x12LeaveVaultResponse2\x8b\x06\n" +
+	"\x12LeaveVaultResponse2\xf6\x06\n" +
 	"\x11MembershipService\x12c\n" +
 	"\x10CreateInvitation\x12%.vaultsync.v1.CreateInvitationRequest\x1a&.vaultsync.v1.CreateInvitationResponse\"\x00\x12`\n" +
 	"\x0fListInvitations\x12$.vaultsync.v1.ListInvitationsRequest\x1a%.vaultsync.v1.ListInvitationsResponse\"\x00\x12c\n" +
-	"\x10RevokeInvitation\x12%.vaultsync.v1.RevokeInvitationRequest\x1a&.vaultsync.v1.RevokeInvitationResponse\"\x00\x12c\n" +
+	"\x10RevokeInvitation\x12%.vaultsync.v1.RevokeInvitationRequest\x1a&.vaultsync.v1.RevokeInvitationResponse\"\x00\x12i\n" +
+	"\x12GetInvitationSlots\x12'.vaultsync.v1.GetInvitationSlotsRequest\x1a(.vaultsync.v1.GetInvitationSlotsResponse\"\x00\x12c\n" +
 	"\x10RedeemInvitation\x12%.vaultsync.v1.RedeemInvitationRequest\x1a&.vaultsync.v1.RedeemInvitationResponse\"\x00\x12T\n" +
 	"\vListMembers\x12 .vaultsync.v1.ListMembersRequest\x1a!.vaultsync.v1.ListMembersResponse\"\x00\x12c\n" +
 	"\x10UpdateMemberRole\x12%.vaultsync.v1.UpdateMemberRoleRequest\x1a&.vaultsync.v1.UpdateMemberRoleResponse\"\x00\x12W\n" +
@@ -1131,73 +1328,84 @@ func file_vaultsync_v1_membership_proto_rawDescGZIP() []byte {
 	return file_vaultsync_v1_membership_proto_rawDescData
 }
 
-var file_vaultsync_v1_membership_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
+var file_vaultsync_v1_membership_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
 var file_vaultsync_v1_membership_proto_goTypes = []any{
-	(*Invitation)(nil),               // 0: vaultsync.v1.Invitation
-	(*Member)(nil),                   // 1: vaultsync.v1.Member
-	(*CreateInvitationRequest)(nil),  // 2: vaultsync.v1.CreateInvitationRequest
-	(*CreateInvitationResponse)(nil), // 3: vaultsync.v1.CreateInvitationResponse
-	(*ListInvitationsRequest)(nil),   // 4: vaultsync.v1.ListInvitationsRequest
-	(*ListInvitationsResponse)(nil),  // 5: vaultsync.v1.ListInvitationsResponse
-	(*RevokeInvitationRequest)(nil),  // 6: vaultsync.v1.RevokeInvitationRequest
-	(*RevokeInvitationResponse)(nil), // 7: vaultsync.v1.RevokeInvitationResponse
-	(*RedeemInvitationRequest)(nil),  // 8: vaultsync.v1.RedeemInvitationRequest
-	(*RedeemInvitationResponse)(nil), // 9: vaultsync.v1.RedeemInvitationResponse
-	(*ListMembersRequest)(nil),       // 10: vaultsync.v1.ListMembersRequest
-	(*ListMembersResponse)(nil),      // 11: vaultsync.v1.ListMembersResponse
-	(*UpdateMemberRoleRequest)(nil),  // 12: vaultsync.v1.UpdateMemberRoleRequest
-	(*UpdateMemberRoleResponse)(nil), // 13: vaultsync.v1.UpdateMemberRoleResponse
-	(*RemoveMemberRequest)(nil),      // 14: vaultsync.v1.RemoveMemberRequest
-	(*RemoveMemberResponse)(nil),     // 15: vaultsync.v1.RemoveMemberResponse
-	(*LeaveVaultRequest)(nil),        // 16: vaultsync.v1.LeaveVaultRequest
-	(*LeaveVaultResponse)(nil),       // 17: vaultsync.v1.LeaveVaultResponse
-	(VaultRole)(0),                   // 18: vaultsync.v1.VaultRole
-	(*timestamppb.Timestamp)(nil),    // 19: google.protobuf.Timestamp
-	(*LogEntry)(nil),                 // 20: vaultsync.v1.LogEntry
-	(*Vault)(nil),                    // 21: vaultsync.v1.Vault
-	(*NextEpoch)(nil),                // 22: vaultsync.v1.NextEpoch
+	(*Invitation)(nil),                 // 0: vaultsync.v1.Invitation
+	(*Member)(nil),                     // 1: vaultsync.v1.Member
+	(*CreateInvitationRequest)(nil),    // 2: vaultsync.v1.CreateInvitationRequest
+	(*CreateInvitationResponse)(nil),   // 3: vaultsync.v1.CreateInvitationResponse
+	(*ListInvitationsRequest)(nil),     // 4: vaultsync.v1.ListInvitationsRequest
+	(*ListInvitationsResponse)(nil),    // 5: vaultsync.v1.ListInvitationsResponse
+	(*RevokeInvitationRequest)(nil),    // 6: vaultsync.v1.RevokeInvitationRequest
+	(*RevokeInvitationResponse)(nil),   // 7: vaultsync.v1.RevokeInvitationResponse
+	(*GetInvitationSlotsRequest)(nil),  // 8: vaultsync.v1.GetInvitationSlotsRequest
+	(*GetInvitationSlotsResponse)(nil), // 9: vaultsync.v1.GetInvitationSlotsResponse
+	(*RedeemInvitationRequest)(nil),    // 10: vaultsync.v1.RedeemInvitationRequest
+	(*RedeemInvitationResponse)(nil),   // 11: vaultsync.v1.RedeemInvitationResponse
+	(*ListMembersRequest)(nil),         // 12: vaultsync.v1.ListMembersRequest
+	(*ListMembersResponse)(nil),        // 13: vaultsync.v1.ListMembersResponse
+	(*UpdateMemberRoleRequest)(nil),    // 14: vaultsync.v1.UpdateMemberRoleRequest
+	(*UpdateMemberRoleResponse)(nil),   // 15: vaultsync.v1.UpdateMemberRoleResponse
+	(*RemoveMemberRequest)(nil),        // 16: vaultsync.v1.RemoveMemberRequest
+	(*RemoveMemberResponse)(nil),       // 17: vaultsync.v1.RemoveMemberResponse
+	(*LeaveVaultRequest)(nil),          // 18: vaultsync.v1.LeaveVaultRequest
+	(*LeaveVaultResponse)(nil),         // 19: vaultsync.v1.LeaveVaultResponse
+	(VaultRole)(0),                     // 20: vaultsync.v1.VaultRole
+	(*timestamppb.Timestamp)(nil),      // 21: google.protobuf.Timestamp
+	(*LogEntry)(nil),                   // 22: vaultsync.v1.LogEntry
+	(*KeySlot)(nil),                    // 23: vaultsync.v1.KeySlot
+	(*KeyEpoch)(nil),                   // 24: vaultsync.v1.KeyEpoch
+	(*Vault)(nil),                      // 25: vaultsync.v1.Vault
+	(*NextEpoch)(nil),                  // 26: vaultsync.v1.NextEpoch
 }
 var file_vaultsync_v1_membership_proto_depIdxs = []int32{
-	18, // 0: vaultsync.v1.Invitation.role:type_name -> vaultsync.v1.VaultRole
-	19, // 1: vaultsync.v1.Invitation.create_time:type_name -> google.protobuf.Timestamp
-	19, // 2: vaultsync.v1.Invitation.expire_time:type_name -> google.protobuf.Timestamp
-	18, // 3: vaultsync.v1.Member.role:type_name -> vaultsync.v1.VaultRole
-	19, // 4: vaultsync.v1.Member.join_time:type_name -> google.protobuf.Timestamp
-	18, // 5: vaultsync.v1.CreateInvitationRequest.role:type_name -> vaultsync.v1.VaultRole
-	20, // 6: vaultsync.v1.CreateInvitationRequest.log_entry:type_name -> vaultsync.v1.LogEntry
-	0,  // 7: vaultsync.v1.CreateInvitationResponse.invitation:type_name -> vaultsync.v1.Invitation
-	0,  // 8: vaultsync.v1.ListInvitationsResponse.invitations:type_name -> vaultsync.v1.Invitation
-	20, // 9: vaultsync.v1.RevokeInvitationRequest.log_entry:type_name -> vaultsync.v1.LogEntry
-	20, // 10: vaultsync.v1.RedeemInvitationRequest.log_entry:type_name -> vaultsync.v1.LogEntry
-	21, // 11: vaultsync.v1.RedeemInvitationResponse.vault:type_name -> vaultsync.v1.Vault
-	1,  // 12: vaultsync.v1.ListMembersResponse.members:type_name -> vaultsync.v1.Member
-	18, // 13: vaultsync.v1.UpdateMemberRoleRequest.role:type_name -> vaultsync.v1.VaultRole
-	20, // 14: vaultsync.v1.UpdateMemberRoleRequest.log_entry:type_name -> vaultsync.v1.LogEntry
-	1,  // 15: vaultsync.v1.UpdateMemberRoleResponse.member:type_name -> vaultsync.v1.Member
-	22, // 16: vaultsync.v1.RemoveMemberRequest.next_epoch:type_name -> vaultsync.v1.NextEpoch
-	20, // 17: vaultsync.v1.RemoveMemberRequest.log_entry:type_name -> vaultsync.v1.LogEntry
-	20, // 18: vaultsync.v1.LeaveVaultRequest.log_entry:type_name -> vaultsync.v1.LogEntry
-	2,  // 19: vaultsync.v1.MembershipService.CreateInvitation:input_type -> vaultsync.v1.CreateInvitationRequest
-	4,  // 20: vaultsync.v1.MembershipService.ListInvitations:input_type -> vaultsync.v1.ListInvitationsRequest
-	6,  // 21: vaultsync.v1.MembershipService.RevokeInvitation:input_type -> vaultsync.v1.RevokeInvitationRequest
-	8,  // 22: vaultsync.v1.MembershipService.RedeemInvitation:input_type -> vaultsync.v1.RedeemInvitationRequest
-	10, // 23: vaultsync.v1.MembershipService.ListMembers:input_type -> vaultsync.v1.ListMembersRequest
-	12, // 24: vaultsync.v1.MembershipService.UpdateMemberRole:input_type -> vaultsync.v1.UpdateMemberRoleRequest
-	14, // 25: vaultsync.v1.MembershipService.RemoveMember:input_type -> vaultsync.v1.RemoveMemberRequest
-	16, // 26: vaultsync.v1.MembershipService.LeaveVault:input_type -> vaultsync.v1.LeaveVaultRequest
-	3,  // 27: vaultsync.v1.MembershipService.CreateInvitation:output_type -> vaultsync.v1.CreateInvitationResponse
-	5,  // 28: vaultsync.v1.MembershipService.ListInvitations:output_type -> vaultsync.v1.ListInvitationsResponse
-	7,  // 29: vaultsync.v1.MembershipService.RevokeInvitation:output_type -> vaultsync.v1.RevokeInvitationResponse
-	9,  // 30: vaultsync.v1.MembershipService.RedeemInvitation:output_type -> vaultsync.v1.RedeemInvitationResponse
-	11, // 31: vaultsync.v1.MembershipService.ListMembers:output_type -> vaultsync.v1.ListMembersResponse
-	13, // 32: vaultsync.v1.MembershipService.UpdateMemberRole:output_type -> vaultsync.v1.UpdateMemberRoleResponse
-	15, // 33: vaultsync.v1.MembershipService.RemoveMember:output_type -> vaultsync.v1.RemoveMemberResponse
-	17, // 34: vaultsync.v1.MembershipService.LeaveVault:output_type -> vaultsync.v1.LeaveVaultResponse
-	27, // [27:35] is the sub-list for method output_type
-	19, // [19:27] is the sub-list for method input_type
-	19, // [19:19] is the sub-list for extension type_name
-	19, // [19:19] is the sub-list for extension extendee
-	0,  // [0:19] is the sub-list for field type_name
+	20, // 0: vaultsync.v1.Invitation.role:type_name -> vaultsync.v1.VaultRole
+	21, // 1: vaultsync.v1.Invitation.create_time:type_name -> google.protobuf.Timestamp
+	21, // 2: vaultsync.v1.Invitation.expire_time:type_name -> google.protobuf.Timestamp
+	20, // 3: vaultsync.v1.Member.role:type_name -> vaultsync.v1.VaultRole
+	21, // 4: vaultsync.v1.Member.join_time:type_name -> google.protobuf.Timestamp
+	20, // 5: vaultsync.v1.CreateInvitationRequest.role:type_name -> vaultsync.v1.VaultRole
+	22, // 6: vaultsync.v1.CreateInvitationRequest.log_entry:type_name -> vaultsync.v1.LogEntry
+	23, // 7: vaultsync.v1.CreateInvitationRequest.slots:type_name -> vaultsync.v1.KeySlot
+	0,  // 8: vaultsync.v1.CreateInvitationResponse.invitation:type_name -> vaultsync.v1.Invitation
+	0,  // 9: vaultsync.v1.ListInvitationsResponse.invitations:type_name -> vaultsync.v1.Invitation
+	22, // 10: vaultsync.v1.RevokeInvitationRequest.log_entry:type_name -> vaultsync.v1.LogEntry
+	20, // 11: vaultsync.v1.GetInvitationSlotsResponse.role:type_name -> vaultsync.v1.VaultRole
+	23, // 12: vaultsync.v1.GetInvitationSlotsResponse.slots:type_name -> vaultsync.v1.KeySlot
+	24, // 13: vaultsync.v1.GetInvitationSlotsResponse.epochs:type_name -> vaultsync.v1.KeyEpoch
+	22, // 14: vaultsync.v1.RedeemInvitationRequest.log_entry:type_name -> vaultsync.v1.LogEntry
+	23, // 15: vaultsync.v1.RedeemInvitationRequest.slots:type_name -> vaultsync.v1.KeySlot
+	25, // 16: vaultsync.v1.RedeemInvitationResponse.vault:type_name -> vaultsync.v1.Vault
+	1,  // 17: vaultsync.v1.ListMembersResponse.members:type_name -> vaultsync.v1.Member
+	20, // 18: vaultsync.v1.UpdateMemberRoleRequest.role:type_name -> vaultsync.v1.VaultRole
+	22, // 19: vaultsync.v1.UpdateMemberRoleRequest.log_entry:type_name -> vaultsync.v1.LogEntry
+	1,  // 20: vaultsync.v1.UpdateMemberRoleResponse.member:type_name -> vaultsync.v1.Member
+	26, // 21: vaultsync.v1.RemoveMemberRequest.next_epoch:type_name -> vaultsync.v1.NextEpoch
+	22, // 22: vaultsync.v1.RemoveMemberRequest.log_entry:type_name -> vaultsync.v1.LogEntry
+	22, // 23: vaultsync.v1.LeaveVaultRequest.log_entry:type_name -> vaultsync.v1.LogEntry
+	2,  // 24: vaultsync.v1.MembershipService.CreateInvitation:input_type -> vaultsync.v1.CreateInvitationRequest
+	4,  // 25: vaultsync.v1.MembershipService.ListInvitations:input_type -> vaultsync.v1.ListInvitationsRequest
+	6,  // 26: vaultsync.v1.MembershipService.RevokeInvitation:input_type -> vaultsync.v1.RevokeInvitationRequest
+	8,  // 27: vaultsync.v1.MembershipService.GetInvitationSlots:input_type -> vaultsync.v1.GetInvitationSlotsRequest
+	10, // 28: vaultsync.v1.MembershipService.RedeemInvitation:input_type -> vaultsync.v1.RedeemInvitationRequest
+	12, // 29: vaultsync.v1.MembershipService.ListMembers:input_type -> vaultsync.v1.ListMembersRequest
+	14, // 30: vaultsync.v1.MembershipService.UpdateMemberRole:input_type -> vaultsync.v1.UpdateMemberRoleRequest
+	16, // 31: vaultsync.v1.MembershipService.RemoveMember:input_type -> vaultsync.v1.RemoveMemberRequest
+	18, // 32: vaultsync.v1.MembershipService.LeaveVault:input_type -> vaultsync.v1.LeaveVaultRequest
+	3,  // 33: vaultsync.v1.MembershipService.CreateInvitation:output_type -> vaultsync.v1.CreateInvitationResponse
+	5,  // 34: vaultsync.v1.MembershipService.ListInvitations:output_type -> vaultsync.v1.ListInvitationsResponse
+	7,  // 35: vaultsync.v1.MembershipService.RevokeInvitation:output_type -> vaultsync.v1.RevokeInvitationResponse
+	9,  // 36: vaultsync.v1.MembershipService.GetInvitationSlots:output_type -> vaultsync.v1.GetInvitationSlotsResponse
+	11, // 37: vaultsync.v1.MembershipService.RedeemInvitation:output_type -> vaultsync.v1.RedeemInvitationResponse
+	13, // 38: vaultsync.v1.MembershipService.ListMembers:output_type -> vaultsync.v1.ListMembersResponse
+	15, // 39: vaultsync.v1.MembershipService.UpdateMemberRole:output_type -> vaultsync.v1.UpdateMemberRoleResponse
+	17, // 40: vaultsync.v1.MembershipService.RemoveMember:output_type -> vaultsync.v1.RemoveMemberResponse
+	19, // 41: vaultsync.v1.MembershipService.LeaveVault:output_type -> vaultsync.v1.LeaveVaultResponse
+	33, // [33:42] is the sub-list for method output_type
+	24, // [24:33] is the sub-list for method input_type
+	24, // [24:24] is the sub-list for extension type_name
+	24, // [24:24] is the sub-list for extension extendee
+	0,  // [0:24] is the sub-list for field type_name
 }
 
 func init() { file_vaultsync_v1_membership_proto_init() }
@@ -1213,7 +1421,7 @@ func file_vaultsync_v1_membership_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_vaultsync_v1_membership_proto_rawDesc), len(file_vaultsync_v1_membership_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   18,
+			NumMessages:   20,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

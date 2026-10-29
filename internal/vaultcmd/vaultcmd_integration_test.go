@@ -112,10 +112,10 @@ func TestUndeleteRestoresADeletedVaultIntact(t *testing.T) {
 	require.NoError(t, err)
 
 	codeHash := []byte("editor-code-hash-000000000000000")
-	_, err = fixture.store.InVault(vault.ID).CreateInvitation(ctx, owner, uuid.Nil, store.RoleEditor, codeHash, time.Hour, 10, nil)
+	_, err = fixture.store.InVault(vault.ID).CreateInvitation(ctx, owner, uuid.Nil, store.RoleEditor, codeHash, time.Hour, 10, nil, nil)
 	require.NoError(t, err)
 
-	_, err = fixture.store.RedeemInvitation(ctx, editor, codeHash, 10, nil)
+	_, err = fixture.store.RedeemInvitation(ctx, editor, codeHash, 10, nil, nil)
 	require.NoError(t, err)
 
 	vaultStore := fixture.store.InVault(vault.ID)

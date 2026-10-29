@@ -205,15 +205,15 @@ func TestRotateEpochBoundsEveryFieldBeforeTheStore(t *testing.T) {
 		{"commitment of 31 bytes", func(next *vaultsyncv1.NextEpoch) { next.Commitment = make([]byte, 31) }, false},
 		{"commitment of 33 bytes", func(next *vaultsyncv1.NextEpoch) { next.Commitment = make([]byte, 33) }, false},
 		{"no commitment", func(next *vaultsyncv1.NextEpoch) { next.Commitment = nil }, false},
-		{"101 slots", func(next *vaultsyncv1.NextEpoch) {
+		{"201 slots: every member, every pending invitation and escrow", func(next *vaultsyncv1.NextEpoch) {
 			next.Slots = nil
-			for range 101 {
+			for range 201 {
 				next.Slots = append(next.Slots, userSlot(0))
 			}
 		}, true},
-		{"102 slots", func(next *vaultsyncv1.NextEpoch) {
+		{"202 slots", func(next *vaultsyncv1.NextEpoch) {
 			next.Slots = nil
-			for range 102 {
+			for range 202 {
 				next.Slots = append(next.Slots, userSlot(0))
 			}
 		}, false},
