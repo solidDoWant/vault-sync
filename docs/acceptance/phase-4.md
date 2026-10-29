@@ -1,6 +1,6 @@
 # Phase 4 acceptance checklist: end-to-end encryption
 
-Owner-approved on 2026-10-29. **This list is the definition of done for Phase 4. Only the owner adds to it or changes it.**
+Owner-approved on 2026-10-29. P4-19 to P4-23 were added after the owner decided on 2026-10-29 that encryption must also hold against an active server. **This list is the definition of done for Phase 4. Only the owner adds to it or changes it.**
 
 Phase 4 is done when:
 - every scenario below passes as an automated test on `master` (named `[P4-nn] …`), apart from P4-18, which the owner signs off;
@@ -29,7 +29,12 @@ Design: `docs/design/encryption.md` and `docs/design/crypto.md`.
 | P4-16 | The server never receives plaintext contents, paths, vault keys, passphrases or private keys. A test checks the database, S3 and the logs after the scenarios above. |
 | P4-17 | Every key wrapping uses the hybrid post-quantum scheme (X25519 + ML-KEM-768). Cross-language test vectors pass in Go and TypeScript. |
 | P4-18 | "How encryption works" (`docs/encryption.md`) is approved by the owner. |
+| P4-19 | An active server that adds a public key to a vault, or swaps a member's key, gets no epoch key: no device wraps one to it, and the owner's device stops and reports it. |
+| P4-20 | An active server that injects an epoch not signed by an owner, or rolls back the membership log or the epoch, is refused. Devices stop syncing that vault, keep their files and report it. They never encrypt under the injected or older key. |
+| P4-21 | A newcomer redeeming an invitation refuses a forged membership log. A user's second device refuses a rolled-back anchor list. |
+| P4-22 | A swapped escrow key is refused at vault creation and at rotation unless it carries a rotation statement signed by the previous escrow key. The export job's escrow rotation (P4-12) writes that statement. |
+| P4-23 | Every member's key fingerprint is shown in the member list, and converting a plaintext vault shows them for comparison first. |
 
 ## Out of scope for Phase 4
 
-Live co-editing (Phase 5); revoking a single lost device's user key (rotate the vault key instead); per-vault passphrases; an external crypto audit.
+Proving who wrote a revision (signatures on content); detecting a server that withholds or replays content changes; live co-editing (Phase 5); revoking a single lost device's user key (rotate the vault key instead); per-vault passphrases; an external crypto audit.

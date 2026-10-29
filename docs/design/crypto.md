@@ -58,6 +58,50 @@ Opening a slot (`OpenKeySlot` / `openKeySlot`) opens the age file and fails with
 
 Every epoch stores its **key commitment**. A recipient that unwraps an epoch key checks it against the commitment (`VerifyKeyCommitment` / `verifyKeyCommitment`, a constant-time comparison that refuses with `ErrKeyCommitment` / `KeyCommitmentError`) before using it. The wrapping only proves that someone sealed this key to the recipient, and anyone who knows the recipient's public key can do that. The commitment ties the key to the epoch: every recipient checks against the same commitment, stored once when the epoch is created, so a slot that holds any other key (sealed by the server, or by a member who wraps a different key for a new member) is refused, and all members of an epoch end up with the same key. This check alone does not stop a server that replaces an epoch's commitment together with its slots. The commitment is an HMAC under the epoch key itself, so it reveals nothing about the key. It binds the vault and the epoch, so one epoch's commitment cannot be reused for another.
 
+## Identity keys, the membership log and signed epochs
+
+These implement *Protection against an active server* in `docs/design/encryption.md`. Signatures are Ed25519 (RFC 8032) through `@noble/curves` and Go `crypto/ed25519`. Every signed message is a labelled, length-prefixed byte string. `lp(x)` is `len(x)` as u32 followed by `x`, and `uuid` is the 16 bytes of a canonical lowercase UUID.
+
+```
+user_secret        = kem_seed (32) || sign_seed (32)         # the secret the passphrase wraps
+bundle             = "vault-sync/v1/bundle" || uuid(user_id) || sign_pub (32) || kem_pub (1216)
+fingerprint        = SHA-256("vault-sync/v1/fingerprint" || sign_pub || kem_pub)   # shown as its first 20 bytes in Crockford base32, groups of 4
+
+entry_body         = "vault-sync/v1/log-entry" || uuid(vault_id) || seq (u64) || prev_hash (32) || type (u8) || lp(payload)
+entry_hash         = SHA-256(entry_body)                      # prev_hash of genesis (seq 1) is 32 zero bytes
+entry_sig          = Ed25519(signer_sign_key, entry_body)
+
+epoch_body         = "vault-sync/v1/epoch" || uuid(vault_id) || epoch (u64) || commitment (32) || prev_commitment (32)
+                     || log_seq (u64) || log_hash (32) || count (u16) || recipients
+recipient          = kind (u8) || lp(recipient_id) || SHA-256(recipient_public_key)   # sorted by kind, then recipient_id
+epoch_sig          = Ed25519(owner_sign_key, epoch_body)      # prev_commitment of epoch 1 is 32 zero bytes
+
+invite_sign_seed   = HKDF-SHA256(ikm = secret, salt = uuid(vault_id), info = "vault-sync/v1/invitation-sign" || uuid(invitation_id), length = 32)
+invite_anchor      = seal_to(invitation_pub, "vault-sync/v1/invite-anchor" || uuid(vault_id) || genesis_hash (32) || inviter_fingerprint (32))
+
+anchor_key         = HKDF-SHA256(ikm = kem_seed, salt = empty, info = "vault-sync/v1/anchors", length = 32)
+anchor_list        = 0x02 || nonce || XChaCha20-Poly1305(anchor_key, nonce, list, ad = 0x02 || "vault-sync/v1/anchors" || uuid(user_id) || version (u64))
+list               = count (u32) || (uuid(vault_id) || genesis_hash (32))*
+
+escrow_bundle      = "vault-sync/v1/escrow" || escrow_sign_pub (32) || lp(age_recipient_string)
+escrow_rotation    = "vault-sync/v1/escrow-rotation" || SHA-256(old escrow_bundle) || new escrow_bundle, signed by the old escrow_sign_key
+```
+
+Entry types and payloads:
+
+| type | Entry | Payload | Signed by |
+|---|---|---|---|
+| 0x01 | genesis | `bundle` of the creator, then `0x00` or `0x01 || escrow_bundle` | the creator |
+| 0x02 | invite | `uuid(invitation_id)` · role (u8) · `invite_sign_pub` (32) | an owner |
+| 0x03 | revoke invitation | `uuid(invitation_id)` | an owner |
+| 0x04 | redeem | `uuid(invitation_id)` · newcomer `bundle` | the invitation key **and** the newcomer (two signatures) |
+| 0x05 | remove member | `uuid(user_id)` | an owner |
+| 0x06 | leave | `uuid(user_id)` | that member |
+| 0x07 | set role | `uuid(user_id)` · role (u8) | an owner |
+| 0x08 | escrow | `0x00` (off) or `0x01 || escrow_bundle` (on) | an owner |
+
+Roles are `0x01` owner, `0x02` editor and `0x03` viewer. An invitation is pending from its invite entry until its redeem or revoke entry. Expiry is enforced by the server, and an owner device appends a revoke entry for an invitation it sees has expired. Recipient kinds and ids are those of the key slots. The escrow recipient's public key is its age recipient string as bytes. Both implementations pass shared vectors for every format above, including rejected inputs: a wrong signer, a broken link, a reordered or omitted recipient, an unsigned rotation, and an unchained escrow key.
+
 ## Associated data of contents and paths
 
 ```
