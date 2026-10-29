@@ -1,5 +1,6 @@
 import { browser, expect } from "@wdio/globals";
 
+import { DocumentKind } from "../../../src/gen/vaultsync/v1/types_pb";
 import type VaultSyncPlugin from "../../../src/main";
 import { e2eEnvironment, harnessId, pluginId } from "../environment";
 import { reloadPlugin } from "../obsidian";
@@ -53,18 +54,18 @@ function connect(name: string, options: { create: boolean; confirmed: boolean })
 
 /** The server's file revisions in the connected vault (not folder documents'), with their paths and the devices that committed them, read through the plugin's client. */
 function remoteFiles() {
-  return browser.executeObsidian(async ({ app }, id) => {
+  return browser.executeObsidian(async ({ app }, id, folderKind) => {
     const plugin = (app as unknown as { plugins: { plugins: Record<string, VaultSyncPlugin> } }).plugins.plugins[id];
     const vaultId = plugin?.connectedVault?.id;
     if (plugin === undefined || vaultId === undefined) throw new Error("vault-sync is not connected");
     const response = await plugin.protocolClient().sync.listChanges({ vaultId, sinceSeq: 0n });
     const decoder = new TextDecoder();
-    // DOCUMENT_KIND_FOLDER (4): a folder, which has no content.
+    // A folder has no content.
     return response.revisions
-      .filter((revision) => revision.kind !== 4)
+      .filter((revision) => revision.kind !== folderKind)
       .map((revision) => ({ path: decoder.decode(revision.path), deviceId: revision.deviceId }))
       .sort((a, b) => a.path.localeCompare(b.path));
-  }, pluginId);
+  }, pluginId, DocumentKind.FOLDER);
 }
 
 /** The server's head revision of each document in the connected vault: its path, document id and whether it is deleted. */
