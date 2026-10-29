@@ -162,6 +162,10 @@ config:
       # VAULT_SYNC_ESCROW_DEFAULT: whether new encrypted vaults have escrow
       # unless their owner turns it off (true when unset).
       default: ""
+      # VAULT_SYNC_ESCROW_RETIRING_KEY_IDS: comma-separated ids of escrow
+      # keys being rotated away from, which escrow slots may still name
+      # until the export job has re-wrapped them all.
+      retiringKeyIds: ""
     metrics:
       # serviceMonitor creates a prometheus-operator ServiceMonitor scraping
       # /metrics on the "metrics" Service (port 9090). Needs the

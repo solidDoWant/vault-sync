@@ -29,6 +29,7 @@ type signedVault struct {
 	prevCommitment             []byte
 	escrow                     *e2ee.EscrowBundle
 	escrowKeyID                string
+	escrowPublic               []byte
 }
 
 func newSignedVault(t *testing.T) *signedVault {
@@ -50,6 +51,8 @@ func newSignedVault(t *testing.T) *signedVault {
 	vault.escrow = &e2ee.EscrowBundle{SignPub: signPub, Recipient: recipient}
 	vault.escrowKeyID, err = e2ee.EscrowKeyID(escrowPublic)
 	require.NoError(t, err)
+
+	vault.escrowPublic = escrowPublic
 
 	return vault
 }
@@ -95,7 +98,10 @@ func (vault *signedVault) check(t *testing.T, request *vaultsyncv1.RotateEpochRe
 	t.Helper()
 
 	recorder := &keyRecorder{}
-	service := api.VaultKeyService{Keys: func(uuid.UUID) api.VaultKeyStore { return recorder }}
+	service := api.VaultKeyService{
+		Keys:   func(uuid.UUID) api.VaultKeyStore { return recorder },
+		Escrow: api.Escrow{PublicKey: vault.escrowPublic, KeyID: vault.escrowKeyID},
+	}
 	ctx := authz.WithMembership(auth.WithUser(context.Background(), auth.User{ID: vault.ownerID}), authz.Membership{VaultID: vault.vaultID, Role: store.RoleOwner})
 
 	_, err := service.RotateEpoch(ctx, connect.NewRequest(request))

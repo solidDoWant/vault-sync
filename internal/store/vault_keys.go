@@ -149,7 +149,8 @@ func (vault *VaultStore) KeyState(ctx context.Context) (KeyState, error) {
 // It is a compare-and-set on the current epoch: ErrEpochNotCurrent when
 // next.ExpectedEpoch is not the vault's current epoch (another rotation won),
 // ErrInvalidRecipients when the slots are not exactly one per member with a
-// user key (plus at most one escrow slot in an escrow vault), and
+// user key (plus exactly one escrow slot in an escrow vault, none in
+// another), and
 // ErrNotEncrypted for a plaintext vault.
 func (vault *VaultStore) RotateEpoch(ctx context.Context, creatorID uuid.UUID, next NextEpoch) (Epoch, error) {
 	var created Epoch
@@ -288,8 +289,8 @@ func keyedMembers(ctx context.Context, tx pgx.Tx, vaultID uuid.UUID) (map[string
 }
 
 // checkEpochRecipients returns ErrInvalidRecipients unless slots hold
-// exactly one slot per member with a user key and, in an escrow vault, at
-// most one escrow slot.
+// exactly one slot per member with a user key and, in an escrow vault,
+// exactly one escrow slot (none in another).
 func checkEpochRecipients(ctx context.Context, tx pgx.Tx, vaultID uuid.UUID, state KeyState, slots []KeySlot) error {
 	required, err := keyedMembers(ctx, tx, vaultID)
 	if err != nil {
@@ -327,6 +328,10 @@ func checkEpochRecipients(ctx context.Context, tx pgx.Tx, vaultID uuid.UUID, sta
 		}
 	}
 
+	if state.Escrow && escrow == 0 {
+		return fmt.Errorf("%w: an escrow vault's epoch needs its escrow slot", ErrInvalidRecipients)
+	}
+
 	return nil
 }
 
@@ -362,8 +367,10 @@ func insertKeySlots(ctx context.Context, tx pgx.Tx, vaultID, creatorID uuid.UUID
 // same epoch and recipient is kept, never replaced. It returns
 // ErrNotEncrypted for a plaintext vault, ErrEpochNotFound for an epoch the
 // vault does not have, and ErrInvalidRecipients for a user slot whose
-// recipient is not a member with a user key, or an escrow slot in a vault
-// without escrow. Nothing is stored unless every slot is valid.
+// recipient is not a member with a user key, an escrow slot in a vault
+// without escrow, or a second escrow slot for an epoch (in slots, or one
+// already stored for another recipient). Nothing is stored unless every
+// slot is valid.
 func (vault *VaultStore) AddKeySlots(ctx context.Context, creatorID uuid.UUID, slots []KeySlot) (int, error) {
 	var added int
 
@@ -384,6 +391,8 @@ func (vault *VaultStore) AddKeySlots(ctx context.Context, creatorID uuid.UUID, s
 			return err
 		}
 
+		escrowIDs := make(map[int32]string)
+
 		for _, slot := range slots {
 			if slot.Epoch < 1 || slot.Epoch > state.CurrentEpoch {
 				return fmt.Errorf("%w: %d", ErrEpochNotFound, slot.Epoch)
@@ -398,9 +407,19 @@ func (vault *VaultStore) AddKeySlots(ctx context.Context, creatorID uuid.UUID, s
 				if !state.Escrow {
 					return fmt.Errorf("%w: the vault has no escrow", ErrInvalidRecipients)
 				}
+
+				if _, ok := escrowIDs[slot.Epoch]; ok {
+					return fmt.Errorf("%w: epoch %d has one escrow slot", ErrInvalidRecipients, slot.Epoch)
+				}
+
+				escrowIDs[slot.Epoch] = slot.RecipientID
 			default:
 				return fmt.Errorf("%w: unknown recipient kind", ErrInvalidRecipients)
 			}
+		}
+
+		if err := checkStoredEscrowSlots(ctx, tx, vault.vaultID, escrowIDs); err != nil {
+			return err
 		}
 
 		added, err = insertKeySlots(ctx, tx, vault.vaultID, creatorID, slots)
@@ -412,6 +431,40 @@ func (vault *VaultStore) AddKeySlots(ctx context.Context, creatorID uuid.UUID, s
 	}
 
 	return added, nil
+}
+
+// checkStoredEscrowSlots returns ErrInvalidRecipients when an epoch in
+// escrowIDs (epoch to the recipient id of its new escrow slot) already has
+// an escrow slot for another recipient: every epoch has one escrow slot.
+func checkStoredEscrowSlots(ctx context.Context, tx pgx.Tx, vaultID uuid.UUID, escrowIDs map[int32]string) error {
+	if len(escrowIDs) == 0 {
+		return nil
+	}
+
+	epochs := make([]int32, 0, len(escrowIDs))
+	ids := make([]string, 0, len(escrowIDs))
+
+	for epoch, id := range escrowIDs {
+		epochs = append(epochs, epoch)
+		ids = append(ids, id)
+	}
+
+	var conflict int32
+
+	err := tx.QueryRow(ctx, `
+		SELECT s.epoch FROM key_slots s
+		JOIN unnest($2::integer[], $3::text[]) AS new (epoch, id) ON new.epoch = s.epoch
+		WHERE s.vault_id = $1 AND s.recipient_kind = $4 AND s.recipient_id <> new.id
+		LIMIT 1`, vaultID, epochs, ids, string(RecipientEscrow)).Scan(&conflict)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+
+	if err != nil {
+		return fmt.Errorf("check escrow slots: %w", err)
+	}
+
+	return fmt.Errorf("%w: epoch %d already has an escrow slot", ErrInvalidRecipients, conflict)
 }
 
 // ListEpochs returns up to limit of the vault's epochs after epoch after,
