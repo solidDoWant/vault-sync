@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -30,18 +31,30 @@ import (
 // approves its sign-in.
 var signInCode = regexp.MustCompile(`code (\S+)$`)
 
-// importFolder runs `vault-sync-server import SERVER_URL vaultID source` as
-// a client of server, approves its device sign-in as subject, and returns its
-// exit code and report. The child gets none of the server's variables: it
-// reaches the vault only through the API.
+// importFolder runs `vault-sync-server import [flags] SERVER_URL vaultID
+// source` as a client of server, approves its device sign-in as subject, and
+// returns its exit code and report. The child gets none of the server's
+// variables: it reaches the vault only through the API.
 func (cluster *deployment) importFolder(t *testing.T, binary string, server *instance, flow *authtest.DeviceFlow,
-	subject, vaultID, source string,
+	subject, vaultID, source string, flags ...string,
 ) (int, vaultimport.Report) {
+	t.Helper()
+
+	code, report, _ := cluster.importFolderWithLogs(t, binary, server, flow, subject, vaultID, source, flags...)
+
+	return code, report
+}
+
+// importFolderWithLogs is importFolder, also returning what the import wrote
+// to stderr.
+func (cluster *deployment) importFolderWithLogs(t *testing.T, binary string, server *instance, flow *authtest.DeviceFlow,
+	subject, vaultID, source string, flags ...string,
+) (int, vaultimport.Report, string) {
 	t.Helper()
 
 	var stdout bytes.Buffer
 
-	command := exec.CommandContext(t.Context(), binary, "import", server.apiURL, vaultID, source)
+	command := exec.CommandContext(t.Context(), binary, slices.Concat([]string{"import"}, flags, []string{server.apiURL, vaultID, source})...)
 
 	for _, variable := range os.Environ() {
 		if !strings.HasPrefix(variable, "VAULT_SYNC_") {
@@ -84,7 +97,7 @@ func (cluster *deployment) importFolder(t *testing.T, binary string, server *ins
 
 	t.Logf("import logs:\n%s", logs.String())
 
-	return code, report
+	return code, report, logs.String()
 }
 
 // syncedFile is one document a device holds after a full sync.

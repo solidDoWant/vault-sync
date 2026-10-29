@@ -437,3 +437,14 @@ func randomBytes(size int) ([]byte, error) {
 
 	return out, nil
 }
+
+// userKeyADLabel labels the associated data of a passphrase-wrapped user
+// private key.
+const userKeyADLabel = "vault-sync/v1/user-key"
+
+// UserKeyAD returns the associated data a user's private key is wrapped
+// under the recovery passphrase with: "vault-sync/v1/user-key" || public key,
+// so a wrapped key cannot be passed off as another key pair's.
+func UserKeyAD(publicKey []byte) []byte {
+	return slices.Concat([]byte(userKeyADLabel), publicKey)
+}
