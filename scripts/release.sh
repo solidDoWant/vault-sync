@@ -12,14 +12,15 @@
 #       Runs before anything is built or pushed.
 #   scripts/release.sh check-assets VERSION PUSH_ALL ASSET_DIR
 #       Checks the plugin release assets in ASSET_DIR (main.js,
-#       manifest.json whose version is VERSION, styles.css). `make release`
-#       runs it before the image and chart are pushed, so a broken asset
-#       stops the release before anything is published.
+#       manifest.json whose version is VERSION, styles.css).
 #   scripts/release.sh publish VERSION PUSH_ALL ASSET_DIR
 #       Checks the assets again, writes the "## VERSION" section of
 #       CHANGELOG.md (heading excluded) to ASSET_DIR/release-notes.md, then
 #       tags HEAD as VERSION, pushes the tag and creates the GitHub release
 #       with those notes and the assets attached. A dry run prints the notes.
+#       The pushed tag starts the release workflow
+#       (.github/workflows/release.yml), which publishes the server image
+#       and the Helm chart, so no step here needs registry credentials.
 #
 # The tag is VERSION exactly, without a "v": Obsidian and BRAT require the
 # release tag, the release name and the version in the released
@@ -102,8 +103,8 @@ release_notes() {
 
 case "$step" in
 preflight)
-	# Unprefixed, so an unauthenticated gh stops the release before any
-	# image is built or pushed.
+	# Unprefixed, so an unauthenticated gh stops the release before
+	# anything is built.
 	gh auth status
 	release_notes >/dev/null
 	if $dry_run; then
