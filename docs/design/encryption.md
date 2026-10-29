@@ -64,9 +64,19 @@ Status: approved by the owner on 2026-10-29. It adds to `SPEC.md` §9.3–§9.4,
 
 `#1199`: a client-side tool. It encrypts with the vault's current key, unwrapped through the escrow identity or the user's passphrase.
 
+## No hand-written cryptography
+
+Every primitive comes from an established, maintained library:
+- `@noble/*` and `@noble/post-quantum` in TypeScript;
+- the Go standard library and `golang.org/x/crypto` in Go;
+- age, where its format is used;
+- an established WebAssembly Argon2id package.
+
+Agents never implement a cipher, hash, KDF or KEM themselves, nor hand-encode WebAssembly for one. Our code only composes library calls, in the formats `crypto.md` defines, and is checked against cross-language vectors.
+
 ## Argon2id
 
-64 MiB of memory, 3 passes, 1 lane. It uses a WebAssembly SIMD implementation where available, and the pure-JavaScript one otherwise. The target is an unlock of about 2 seconds or less on a Snapdragon 855-class phone.
+64 MiB of memory, 3 passes, 1 lane. It uses an established WebAssembly Argon2id library (for example `hash-wasm`), and `@noble/hashes` otherwise. A known-answer self-test at first use falls back to `@noble/hashes` if the WebAssembly result is wrong, which guards against engine bugs. The target is an unlock of about 2 seconds or less on a Snapdragon 855-class phone.
 
 ## Documentation
 
