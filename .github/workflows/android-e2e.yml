@@ -130,10 +130,22 @@ jobs:
         env:
           VAULT_SYNC_E2E_ANDROID: "1"
           VAULT_SYNC_E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
+          # The device checks' results, for the acceptance scoreboard
+          # (acceptance.yml reads the latest run's on master).
+          VAULT_SYNC_ACCEPTANCE_RESULTS: ${{ runner.temp }}/acceptance-results
           E2E_TIMEOUT: 40m
         run: |
-          mkdir -p "$VAULT_SYNC_E2E_LOG_DIR"
+          mkdir -p "$VAULT_SYNC_E2E_LOG_DIR" "$VAULT_SYNC_ACCEPTANCE_RESULTS"
           nix develop -c ./scripts/test-e2e.sh
+
+      - name: Upload the device checks' results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-e2e-results
+          path: ${{ runner.temp }}/acceptance-results
+          if-no-files-found: ignore
+          retention-days: 30
 
       - name: Collect device logs
         if: failure()

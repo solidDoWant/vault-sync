@@ -19,6 +19,7 @@ import {
   writeNote,
   type Device,
 } from "../devices";
+import { e2eEnvironment } from "../environment";
 
 // Offline edits and conflicts between two devices (docs/acceptance/phase-2.md,
 // AC-10 to AC-16; docs/design/engine.md §5). A and B are two vaults open in
@@ -34,6 +35,10 @@ describe("offline edits and conflicts between two devices", function () {
   let b: Device;
 
   before(async function () {
+    // The second device is a second vault on disk opened in the same desktop
+    // Obsidian (devices.ts), which needs the vault's file-system path: the
+    // Android app has none. Desktop and emulated mobile run this spec.
+    if (e2eEnvironment.android) this.skip();
     a = await currentDevice("A");
     await setUpDevice(a, subject, remoteVaultName, true);
     await waitForIdle(a);
