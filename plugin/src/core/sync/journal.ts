@@ -26,6 +26,12 @@ export interface DocEntry {
   baseHash: string;
   /** Size in bytes of the base revision's content: a tombstone names the content it deletes. */
   baseSize: number;
+  /**
+   * The base revision is a tombstone: the document was deleted on the server
+   * while this device kept it (rows A7 and A10), and a pending re-create
+   * builds on it.
+   */
+  deleted?: boolean;
 }
 
 export type PendingKind = "create" | "edit" | "rename" | "delete";
@@ -52,6 +58,12 @@ export interface PendingOp {
    * acknowledged, so its retry is the same commit.
    */
   sent: boolean;
+  /**
+   * The server refused the operation's path as unportable or taken by a
+   * document this device already holds (rules P2, P3), with its reason. The
+   * operation is not retried until the file is renamed.
+   */
+  refused?: string;
 }
 
 /** A conflict copy this device created, for the conflict view. */
