@@ -2,9 +2,11 @@
 """Prints the acceptance scoreboard (`make acceptance`): one line per scenario
 of the checklist with the result of its tests, then the number passing.
 
-A test belongs to a scenario by its name: `[AC-nn] ...` for the e2e and plugin
-integration tests (mocha and vitest titles) and Go subtests (`t.Run`), and
-`TestACnn...` for top-level Go tests (Go function names cannot hold brackets).
+A test belongs to a scenario by its name: `[AC-nn] ...` (Phase 2) or
+`[P3-nn] ...` (Phase 3) for the e2e and plugin integration tests (mocha and
+vitest titles) and Go subtests (`t.Run`), and `TestACnn...` for top-level Go
+tests (Go function names cannot hold brackets). The checklist lists its
+scenarios as `- **AC-nn** ...` items or as `| P3-nn | ... |` table rows.
 The results directory holds what the runs wrote:
 
 - `*.jsonl`: one `{"title": ..., "passed": ...}` per e2e test (wdio.conf.mts);
@@ -17,7 +19,8 @@ results) of which none failed and not all passed, and `no test` otherwise.
 
 With `--go-run-pattern`, it prints instead the `go test -run` pattern that
 selects the Go acceptance tests: the `TestACnn...` tests, the plugin protocol
-client test and every top-level test that holds an `[AC-nn] ...` subtest.
+client test and every top-level test that holds an `[AC-nn] ...` or
+`[P3-nn] ...` subtest.
 """
 
 import argparse
@@ -27,11 +30,13 @@ import re
 import sys
 
 SCENARIO = re.compile(r"^- \*\*(AC-\d+)\*\*\s*(.*)$")
-TAG = re.compile(r"\[(AC-\d+)\]")
+TABLE_SCENARIO = re.compile(r"^\|\s*(P\d+-\d+)\s*\|\s*(.*?)\s*\|\s*$")
+TAG = re.compile(r"\[((?:AC|P\d+)-\d+)\]")
 GO_TEST = re.compile(r"^TestAC(\d+)")
 GO_DECLARATION = re.compile(r"^func TestAC(\d+)\w*\(", re.MULTILINE)
 GO_FUNCTION = re.compile(r"^func (Test\w+)\(", re.MULTILINE)
-GO_SUBTEST = re.compile(r"""\bt\.Run\(\s*["`]\[(AC-\d+)\]""")
+GO_SUBTEST = re.compile(r"""\bt\.Run\(\s*["`]\[((?:AC|P\d+)-\d+)\]""")
+IT_TAG = re.compile(r"""\bit\(\s*["'`]\[((?:AC|P\d+)-\d+)\]""")
 # Go tests the acceptance run selects besides the tagged ones: the plugin
 # integration suite runs inside TestPluginProtocolClient.
 GO_EXTRA_TESTS = ["TestPluginProtocolClient"]
@@ -41,7 +46,7 @@ def scenarios(checklist):
     """The checklist's scenario ids, without the ones the owner removed."""
     ids = []
     for line in checklist.read_text(encoding="utf-8").splitlines():
-        match = SCENARIO.match(line)
+        match = SCENARIO.match(line) or TABLE_SCENARIO.match(line)
         if match and not match.group(2).startswith("(Removed"):
             ids.append(match.group(1))
     return ids
@@ -104,7 +109,7 @@ def tagged_in_sources(root):
         for path in tests.rglob("*.ts"):
             if "node_modules" in path.parts:
                 continue
-            for match in re.finditer(r"""\bit\(\s*["'`]\[(AC-\d+)\]""", path.read_text(encoding="utf-8")):
+            for match in IT_TAG.finditer(path.read_text(encoding="utf-8")):
                 ids.add(match.group(1))
     for path in root.rglob("*_test.go"):
         if "node_modules" in path.parts:
@@ -118,7 +123,7 @@ def tagged_in_sources(root):
 
 
 def go_tests_with_tagged_subtests(root):
-    """Names of the top-level Go tests that hold an `[AC-nn] ...` subtest."""
+    """Names of the top-level Go tests that hold a tagged subtest."""
     names = set()
     for path in root.rglob("*_test.go"):
         if "node_modules" in path.parts:

@@ -79,7 +79,12 @@ func TestPluginE2E(t *testing.T) {
 	token := authtest.Sign(t, key, issuer.Claims("plugin-e2e-user", time.Now()))
 	// A separate user, so vaults the signed-in plugin creates never show up
 	// for the test token.
-	issuer.EnableDeviceFlow(t, key, authtest.DeviceFlowOptions{Subject: "plugin-e2e-device-user"})
+	// The users of the shared-vault spec (shared-vault.e2e.ts) have display
+	// names on the identity provider, as real users do.
+	issuer.EnableDeviceFlow(t, key, authtest.DeviceFlowOptions{Subject: "plugin-e2e-device-user", Names: map[string]string{
+		"plugin-e2e-shared-owner":  "Olivia Owner",
+		"plugin-e2e-shared-member": "Max Member",
+	}})
 
 	binary := testinfra.BuildServer(t, repoRoot)
 
