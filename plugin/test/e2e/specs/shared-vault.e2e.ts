@@ -1,3 +1,6 @@
+import { writeFile } from "node:fs/promises";
+import path from "node:path";
+
 import { browser, expect } from "@wdio/globals";
 
 import type VaultSyncPlugin from "../../../src/main";
@@ -13,7 +16,9 @@ import {
   openSecondDevice,
   serverHeads,
   setUpDevice,
+  syncStatus,
   use,
+  vaultFiles,
   waitForIdle,
   waitForServer,
   waitForText,
@@ -21,7 +26,8 @@ import {
   type Device,
 } from "../devices";
 import { e2eEnvironment, pluginId } from "../environment";
-import { answerModal, clickButton, notices, openSettings, recordNotices, type, type SettingsApp } from "../settings-ui";
+import { answerModal, clickButton, modals, notices, openSettings, recordNotices, type, type SettingsApp } from "../settings-ui";
+import { callHarness } from "../obsidian";
 import { configure, signInAs } from "../signin";
 
 // A vault shared by two users (docs/acceptance/phase-3.md, P3-01 to P3-05):
@@ -30,7 +36,11 @@ import { configure, signInAs } from "../signin";
 // (devices.ts). The two are different accounts on the identity provider,
 // with the display names the e2e driver gives them (Olivia Owner, Max
 // Member), and each device has its own name. The member joins with a code
-// typed into the settings, as a user does.
+// typed into the settings, as a user does. P3-06 to P3-12 go on from there:
+// the member as a viewer who then leaves, the last owner handing the vault
+// over and leaving, deleting the vault (each user who left joins again with
+// a new code first), then a second vault of the new owner's, whose other
+// member is removed.
 
 const ownerSubject = "plugin-e2e-shared-owner";
 const memberSubject = "plugin-e2e-shared-member";
@@ -39,6 +49,9 @@ const memberName = "Max Member";
 const ownerDevice = "Owner laptop";
 const memberDevice = "Member phone";
 const remoteVaultName = "e2e shared vault";
+const secondVaultName = "e2e second shared vault";
+const lastOwner = "A vault must keep at least one owner. Make another member an owner first.";
+const viewerRefused = "Vault Sync: this vault is shared with you as a viewer, so files cannot be created, renamed or deleted in it.";
 const refusedCode = "could not join: This invite code is invalid, has expired or was already used. Ask the vault's owner for a new one.";
 
 type Plugins = { plugins: { plugins: Record<string, VaultSyncPlugin> } };
@@ -171,6 +184,162 @@ function openNote(path: string) {
 /** Whether the current device shows the viewer's read-only banner on its open note. */
 function viewerBannerShown() {
   return browser.executeObsidian(() => document.querySelector(".vault-sync-viewer-banner") !== null);
+}
+
+/** Opens the settings on the current device, recording notices, and waits for the Sharing section to load. */
+async function openSharing(): Promise<void> {
+  await openSettings();
+  await recordNotices();
+  await browser.waitUntil(async () => !(await settingsText()).includes("Loading the vault's members"), { timeoutMsg: "the Sharing section never loaded" });
+}
+
+/** The text of the open settings tab on the current device. */
+function settingsText() {
+  return browser.executeObsidian(({ app }) => (app as unknown as SettingsApp).setting.activeTab?.containerEl.textContent ?? "");
+}
+
+/** Clicks the button labelled `label` in the settings' Sharing section on the current device. */
+function clickSharingButton(label: string) {
+  return browser.executeObsidian(({ app }, text) => {
+    const buttons = (app as unknown as SettingsApp).setting.activeTab?.containerEl.querySelectorAll<HTMLButtonElement>(".vault-sync-sharing button") ?? [];
+    const button = [...buttons].find((candidate) => candidate.textContent === text);
+    if (button === undefined) throw new Error(`no ${text} button in the Sharing section`);
+    button.click();
+  }, label);
+}
+
+/** Picks `role` in the role menu of the member named `name` in the settings' member list on the current device (an owner's). */
+function pickMemberRole(name: string, role: VaultRole) {
+  return browser.executeObsidian(
+    ({ app }, memberName, value) => {
+      const rows = (app as unknown as SettingsApp).setting.activeTab?.containerEl.querySelectorAll(".vault-sync-members .setting-item") ?? [];
+      const row = [...rows].find((candidate) => candidate.querySelector(".setting-item-name")?.textContent.replace(/[⁦-⁩]/gu, "") === memberName);
+      const select = row?.querySelector("select");
+      if (select === null || select === undefined) throw new Error(`no role menu for ${memberName}`);
+      select.value = value;
+      select.dispatchEvent(new Event("change"));
+    },
+    name,
+    String(role),
+  );
+}
+
+/** Types `value` into the text field of the open modal titled `title`. */
+async function typeInModal(title: string, value: string): Promise<void> {
+  await browser.waitUntil(async () => (await modals(title)).length === 1, { timeoutMsg: `no "${title}" modal opened` });
+  await browser.executeObsidian(
+    ({ app }, wanted, text) => {
+      const modal = [...((app as unknown as SettingsApp).setting.activeTab?.containerEl.ownerDocument ?? document).querySelectorAll(".modal")].find((candidate) => candidate.querySelector(".modal-title")?.textContent === wanted);
+      const input = modal?.querySelector<HTMLInputElement>("input");
+      if (input === null || input === undefined) throw new Error(`the "${wanted}" modal has no text field`);
+      input.value = text;
+      input.dispatchEvent(new Event("input"));
+    },
+    title,
+    value,
+  );
+}
+
+/** Waits until a notice recorded on the current device holds `text`. */
+async function waitForNotice(text: string): Promise<void> {
+  await browser.waitUntil(async () => (await notices()).some((shown) => shown.includes(text)), {
+    timeoutMsg: `no notice said ${JSON.stringify(text)}: ${JSON.stringify(await notices())}`,
+  });
+}
+
+/** Runs the Sync now command on the current device. */
+function syncNow() {
+  return browser.executeObsidian(({ app }, id) => {
+    (app as unknown as { commands: { executeCommandById(command: string): boolean } }).commands.executeCommandById(`${id}:sync-now`);
+  }, pluginId);
+}
+
+/** Waits until the current device's sync status is `state`. */
+async function waitForState(device: Device, state: string): Promise<void> {
+  await use(device);
+  await browser.waitUntil(async () => (await syncStatus())?.state === state, {
+    timeout: 60_000,
+    timeoutMsg: `${device.name} never showed ${state}: ${JSON.stringify(await syncStatus())}`,
+  });
+}
+
+/** Stops syncing the connected vault on the current device. */
+function disconnect() {
+  return browser.executeObsidian(async ({ app }, id) => {
+    await (app as unknown as Plugins).plugins.plugins[id]?.disconnectVault();
+  }, pluginId);
+}
+
+/** The member list of the connected vault on the current device (an owner's): each member's display name and role. */
+function members() {
+  return browser.executeObsidian(async ({ app }, id) => {
+    const plugin = (app as unknown as Plugins).plugins.plugins[id];
+    if (plugin === undefined) throw new Error("vault-sync is not loaded");
+    const sharing = await plugin.loadSharing();
+    if (sharing.kind !== "owner") throw new Error(`not an owner: ${sharing.kind}`);
+    return sharing.members.map((member) => ({ name: member.label.replace(/[⁦-⁩]/gu, ""), role: member.role }));
+  }, pluginId);
+}
+
+/** The text of the file at `path` on the current device, read from disk: it may be in a dot folder Obsidian does not index. Null if there is none. */
+function diskText(filePath: string) {
+  return browser.executeObsidian(async ({ app }, target) => ((await app.vault.adapter.exists(target)) ? app.vault.adapter.read(target) : null), filePath);
+}
+
+/**
+ * Has `inviter` (an owner) invite `device`'s user with `role`, and joins
+ * with the code on `device`, which first disconnects the vault it lost
+ * access to. Waits until `device` synced.
+ */
+async function joinAgain(device: Device, inviter: Device, role: VaultRole): Promise<void> {
+  await use(inviter);
+  const vaultId = await connectedVaultId();
+  const { code } = await invite(role);
+  await use(device);
+  await disconnect();
+  await join(code);
+  await answerModal("Connect a vault that has files?", "Connect and combine");
+  await browser.waitUntil(async () => (await connectedVaultId()) === vaultId, { timeoutMsg: `${device.name} never connected the vault again` });
+  await closeSettings();
+  await browser.waitUntil(
+    async () => {
+      const status = await syncStatus();
+      return status?.state === "idle" && status.pending === 0;
+    },
+    { timeout: 90_000, timeoutMsg: `${device.name} never synced after joining again: ${JSON.stringify(await syncStatus())}` },
+  );
+}
+
+/**
+ * Checks that `device` lost access to the vault the way docs/design/sharing.md
+ * says: its status and settings show `shown`, it keeps `files`, and it no
+ * longer syncs: a note the owner on `owner` writes does not reach it, and a
+ * note it writes is not uploaded.
+ */
+async function checkAccessLost(scenario: string, device: Device, owner: Device, state: "not-member" | "vault-deleted", shown: string, files: Record<string, string>, owners: "live" | "none"): Promise<void> {
+  await waitForState(device, state);
+  expect(await browser.executeObsidian(() => document.querySelector(".vault-sync-status")?.textContent ?? null)).toMatch(new RegExp(`^(Vault Sync: ${shown}|null)$`, "u"));
+  await openSharing();
+  expect(await settingsText()).toContain(shown === "vault deleted" ? "An owner deleted this vault, so it cannot sync." : "You are no longer a member of this vault, so it cannot sync.");
+  await closeSettings();
+  expect(await vaultFiles()).toEqual(files);
+
+  const marker = `${scenario} ${device.name} after losing access.md`;
+  await writeNote(marker, "written after losing access\n");
+  if (owners === "live") {
+    await use(owner);
+    await writeNote(`For ${marker}`, "the owner's note after the loss\n");
+    await waitForServer(owner, (heads) => heads[`For ${marker}`] !== undefined, "the owner's note after the loss");
+  }
+  await use(device);
+  await syncNow();
+  await waitForState(device, state);
+  expect(await fileText(`For ${marker}`)).toBeNull();
+  expect(await fileText(marker)).toBe("written after losing access\n");
+  if (owners === "live") {
+    await use(owner);
+    expect((await serverHeads())[marker]).toBeUndefined();
+  }
 }
 
 describe("a vault shared by two users", function () {
@@ -312,5 +481,229 @@ describe("a vault shared by two users", function () {
     await browser.waitUntil(async () => !(await viewerBannerShown()), { timeout: 60_000, timeoutMsg: "the member's device stayed read-only" });
     await writeNote("Shared.md", "the member edits again\n");
     await waitForText(a, "Shared.md", "the member edits again\n");
+  });
+
+  it("[P3-06] a viewer's notes open read-only, with a banner; editing in Obsidian is blocked, and nothing is uploaded", async function () {
+    await use(a);
+    await setMemberRole(VaultRole.VIEWER);
+    await writeNote("For the viewer.md", "the owner's note for the viewer\n");
+    await waitForText(b, "For the viewer.md", "the owner's note for the viewer\n");
+
+    await use(b);
+    await openNote("Shared.md");
+    await browser.waitUntil(viewerBannerShown, { timeout: 60_000, timeoutMsg: "the viewer's note never showed the banner" });
+    expect(await browser.executeObsidian(() => document.querySelector(".vault-sync-viewer-banner")?.textContent)).toContain("shared with you as a viewer");
+    const shared = await fileText("Shared.md");
+    const before = await serverHeads();
+
+    // The note is in reading view, and its editor takes no input.
+    const editor = () =>
+      browser.executeObsidian(({ app }) => {
+        const view = app.workspace.getMostRecentLeaf()?.view as unknown as { getMode?(): string; editor?: { cm?: { state: { readOnly: boolean }; contentDOM: HTMLElement } } } | undefined;
+        return { mode: view?.getMode?.() ?? null, readOnly: view?.editor?.cm?.state.readOnly ?? null };
+      });
+    await browser.waitUntil(async () => (await editor()).mode === "preview", { timeoutMsg: `the viewer's note never opened in reading view: ${JSON.stringify(await editor())}` });
+    expect(await editor()).toEqual({ mode: "preview", readOnly: true });
+    await browser.executeObsidian(({ app }) => {
+      (app.workspace.getMostRecentLeaf()?.view as unknown as { editor?: { cm?: { contentDOM: HTMLElement } } } | undefined)?.editor?.cm?.contentDOM.focus();
+    });
+    await browser.keys("typed by the viewer");
+
+    // Creating, renaming and deleting through Obsidian are refused with a notice.
+    await recordNotices();
+    await dismissNotices();
+    const outcomes = await browser.executeObsidian(async ({ app }) => {
+      const file = app.vault.getFileByPath("Shared.md");
+      if (file === null) throw new Error("no Shared.md");
+      const fileManager = app.fileManager as unknown as { createNewMarkdownFile?(folder: unknown, name: string): Promise<unknown> };
+      const actions: Record<string, () => Promise<unknown>> = {
+        rename: () => app.fileManager.renameFile(file, "Renamed by the viewer.md"),
+        delete: () => app.fileManager.trashFile(file),
+        create: () => fileManager.createNewMarkdownFile?.(app.vault.getRoot(), "Created by the viewer") ?? Promise.reject(new Error("no createNewMarkdownFile")),
+      };
+      const results: Record<string, string> = {};
+      for (const [name, action] of Object.entries(actions)) {
+        try {
+          await action();
+          results[name] = "done";
+        } catch {
+          results[name] = "refused";
+        }
+      }
+      return results;
+    });
+    expect(outcomes).toEqual({ rename: "refused", delete: "refused", create: "refused" });
+    await waitForNotice(viewerRefused);
+
+    await waitForIdle(b);
+    expect(await fileText("Shared.md")).toBe(shared);
+    expect(await fileText("Renamed by the viewer.md")).toBeNull();
+    expect(await fileText("Created by the viewer.md")).toBeNull();
+    expect(await serverHeads()).toEqual(before);
+  });
+
+  it("[P3-07] a viewer's file changed outside Obsidian is not uploaded: the shared version is restored, and the viewer's version is kept in .vault-sync/local-copies/ with a notice", async function () {
+    await use(b);
+    const shared = await fileText("From the member.md");
+    if (shared === null) throw new Error("the viewer has no From the member.md");
+    const before = await serverHeads();
+    const base = await callHarness("vaultBasePath");
+    if (base === null) throw new Error("the viewer's vault has no base path");
+    await recordNotices();
+    await dismissNotices();
+
+    await writeFile(path.join(base, "From the member.md"), "changed outside Obsidian by the viewer\n");
+
+    await waitForNotice("so From the member.md was not synced. The shared version is restored, and your version is kept in ");
+    const notice = (await notices()).find((text) => text.includes("so From the member.md was not synced"));
+    const copy = /kept in (.*)\.$/u.exec(notice ?? "")?.[1];
+    expect(copy).toMatch(/^\.vault-sync\/local-copies\/From the member( \d+)?\.md$/u);
+    await waitForText(b, "From the member.md", shared);
+    expect(await diskText(copy ?? "")).toBe("changed outside Obsidian by the viewer\n");
+
+    await waitForIdle(b);
+    expect(await serverHeads()).toEqual(before);
+    // The local copy never syncs.
+    await use(a);
+    await writeNote("After the local copy.md", "the owner's note after the local copy\n");
+    await waitForText(b, "After the local copy.md", "the owner's note after the local copy\n");
+    await use(a);
+    expect(await diskText(copy ?? "")).toBeNull();
+    expect(Object.keys(await serverHeads()).filter((file) => file.includes("local-copies"))).toEqual([]);
+  });
+
+  it("[P3-09] a member leaves the vault from the plugin: their device stops syncing, keeps its files, and shows no longer a member", async function () {
+    await use(b);
+    const files = await vaultFiles();
+    await openSharing();
+    await clickSharingButton("Leave vault");
+    await answerModal("Leave this vault?", "Leave vault");
+    await closeSettings();
+
+    await checkAccessLost("P3-09", b, a, "not-member", "no longer a member", files, "live");
+    await use(a);
+    expect(await members()).toEqual([{ name: ownerName, role: VaultRole.OWNER }]);
+  });
+
+  it("[P3-10] the last owner can't be demoted or leave, and is told why; promoting another member to owner, then leaving, works", async function () {
+    await joinAgain(b, a, VaultRole.EDITOR);
+
+    await use(a);
+    await openSharing();
+    await dismissNotices();
+    await pickMemberRole(ownerName, VaultRole.EDITOR);
+    await answerModal("Change this member's role?", "Change role");
+    await waitForNotice(`could not change the role: ${lastOwner}`);
+    await dismissNotices();
+    await clickSharingButton("Leave vault");
+    await answerModal("Leave this vault?", "Leave vault");
+    await waitForNotice(`could not leave the vault: ${lastOwner}`);
+    expect(await members()).toEqual(
+      expect.arrayContaining([
+        { name: ownerName, role: VaultRole.OWNER },
+        { name: memberName, role: VaultRole.EDITOR },
+      ]),
+    );
+    await closeSettings();
+    await waitForIdle(a);
+
+    // Ownership moves by promoting the member, then leaving.
+    await openSharing();
+    await pickMemberRole(memberName, VaultRole.OWNER);
+    await answerModal("Change this member's role?", "Change role");
+    await browser.waitUntil(async () => (await members()).every((member) => member.role === VaultRole.OWNER), { timeoutMsg: "the member was never made an owner" });
+    const files = await vaultFiles();
+    await clickSharingButton("Leave vault");
+    await answerModal("Leave this vault?", "Leave vault");
+    await closeSettings();
+    await checkAccessLost("P3-10", a, b, "not-member", "no longer a member", files, "live");
+
+    await use(b);
+    expect(await members()).toEqual([{ name: memberName, role: VaultRole.OWNER }]);
+    await writeNote("The new owner's.md", "written by the new owner\n");
+    await waitForServer(b, (heads) => heads["The new owner's.md"] === contentOf("written by the new owner\n"), "the new owner's note");
+  });
+
+  it("[P3-12] an owner deletes the vault after typing its name: every member's device stops syncing, keeps its files, and shows vault deleted", async function () {
+    // The user who left in P3-10 joins again, so the vault has two members.
+    await joinAgain(a, b, VaultRole.EDITOR);
+    await converged(a, b);
+    await use(a);
+    const memberFiles = await vaultFiles();
+    await use(b);
+    const ownerFiles = await vaultFiles();
+
+    await openSharing();
+    await clickSharingButton("Delete vault");
+    // The confirmation works only once the vault's name is typed.
+    await browser.waitUntil(async () => (await modals("Delete this vault?")).length === 1, { timeoutMsg: "no delete confirmation opened" });
+    const confirmEnabled = () =>
+      browser.executeObsidian(({ app }) => {
+        const modal = [...((app as unknown as SettingsApp).setting.activeTab?.containerEl.ownerDocument ?? document).querySelectorAll(".modal")].find((candidate) => candidate.querySelector(".modal-title")?.textContent === "Delete this vault?");
+        const button = [...(modal?.querySelectorAll<HTMLButtonElement>("button") ?? [])].find((candidate) => candidate.textContent === "Delete vault");
+        if (button === undefined) throw new Error("the delete confirmation has no Delete vault button");
+        return !button.disabled;
+      });
+    expect(await confirmEnabled()).toBe(false);
+    await typeInModal("Delete this vault?", "e2e shared");
+    expect(await confirmEnabled()).toBe(false);
+    await typeInModal("Delete this vault?", remoteVaultName);
+    expect(await confirmEnabled()).toBe(true);
+    await answerModal("Delete this vault?", "Delete vault");
+    await closeSettings();
+
+    await checkAccessLost("P3-12", b, a, "vault-deleted", "vault deleted", ownerFiles, "none");
+    await use(a);
+    await syncNow();
+    await checkAccessLost("P3-12", a, b, "vault-deleted", "vault deleted", memberFiles, "none");
+  });
+  it("[P3-08] an owner removes a member: within one sync cycle the member's device stops syncing, keeps its files, and shows no longer a member", async function () {
+    // A new vault of the user who owns the deleted one, joined by the other user.
+    await use(b);
+    await browser.executeObsidian(
+      async ({ app }, id, name) => {
+        const plugin = (app as unknown as Plugins).plugins.plugins[id];
+        if (plugin === undefined) throw new Error("vault-sync is not loaded");
+        await plugin.disconnectVault();
+        await plugin.connectVault(await plugin.createRemoteVault(name), true);
+      },
+      pluginId,
+      secondVaultName,
+    );
+    await waitForIdle(b);
+    await joinAgain(a, b, VaultRole.EDITOR);
+    await converged(a, b);
+    await use(a);
+    const files = await vaultFiles();
+
+    await use(b);
+    await openSharing();
+    await browser.executeObsidian(({ app }, removed) => {
+      const rows = (app as unknown as SettingsApp).setting.activeTab?.containerEl.querySelectorAll(".vault-sync-members .setting-item") ?? [];
+      const row = [...rows].find((candidate) => candidate.querySelector(".setting-item-name")?.textContent.replace(/[⁦-⁩]/gu, "") === removed);
+      const button = [...(row?.querySelectorAll<HTMLButtonElement>("button") ?? [])].find((candidate) => candidate.textContent === "Remove");
+      if (button === undefined) throw new Error(`no Remove button for ${removed}`);
+      button.click();
+    }, ownerName);
+    await answerModal("Remove this member?", "Remove member");
+    await browser.waitUntil(async () => (await members()).length === 1, { timeoutMsg: "the member was never removed" });
+    await closeSettings();
+
+    // The removed member's next sync cycle finds the membership gone.
+    await use(a);
+    await syncNow();
+    await checkAccessLost("P3-08", a, b, "not-member", "no longer a member", files, "live");
+  });
+
+  it("[P3-11] after every other member is removed, the vault keeps working as a normal single-user vault", async function () {
+    await use(b);
+    expect(await members()).toEqual([{ name: memberName, role: VaultRole.OWNER }]);
+    await writeNote("Alone again.md", "a note in the vault with one member\n");
+    await writeNote("Shared.md", "edited by the only member\n");
+    await waitForServer(b, (heads) => heads["Alone again.md"] === contentOf("a note in the vault with one member\n") && heads["Shared.md"] === contentOf("edited by the only member\n"), "the only member's notes");
+    await waitForIdle(b);
+    expect((await syncStatus())?.state).toBe("idle");
+    const history = await historyRows("Shared.md");
+    expect(history[history.length - 1]).toContain(`“${memberName}”, this device · `);
   });
 });
