@@ -2,6 +2,7 @@ package e2ee
 
 import (
 	"crypto/ed25519"
+	"crypto/hkdf"
 	"crypto/sha256"
 	"encoding/hex"
 	"maps"
@@ -35,6 +36,17 @@ type inviteSignVector struct {
 	InvitationID string `json:"invitation_id"`
 	Seed         string `json:"seed"`
 	SignPub      string `json:"sign_pub"`
+}
+
+type invitationKeyVector struct {
+	Name         string `json:"name"`
+	Secret       string `json:"secret"`
+	VaultID      string `json:"vault_id"`
+	InvitationID string `json:"invitation_id"`
+	PrivateKey   string `json:"private_key"`
+	PublicKey    string `json:"public_key"`
+	AgeIdentity  string `json:"age_identity"`
+	AgeRecipient string `json:"age_recipient"`
 }
 
 type inviteAnchorVector struct {
@@ -164,6 +176,7 @@ type rejectedLogVector struct {
 type identityVectors struct {
 	Identity              []identityVector           `json:"identity"`
 	InviteSign            []inviteSignVector         `json:"invite_sign"`
+	InvitationKey         []invitationKeyVector      `json:"invitation_key"`
 	InviteAnchor          []inviteAnchorVector       `json:"invite_anchor"`
 	RejectedInviteAnchors []inviteAnchorVector       `json:"rejected_invite_anchors"`
 	AnchorList            []anchorListVector         `json:"anchor_list"`
@@ -381,10 +394,18 @@ func generateIdentityVectors(t *testing.T) identityVectors {
 		signPub, _ := ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey)
 		inviteSeeds[id], invitePubs[id] = seed, signPub
 		inviteSecrets[id] = secret
-		invitationKeys[id] = must(PublicKey(fixed("invitation kem "+id, PrivateKeySize)))
+		kemPrivateKey, kemPublicKey, err := InvitationKeyPair(secret, vectorVaultID, id)
+		require.NoError(t, err)
+
+		invitationKeys[id] = kemPublicKey
 		vectors.InviteSign = append(vectors.InviteSign, inviteSignVector{
 			Name: id, Secret: hex.EncodeToString(secret), VaultID: vectorVaultID, InvitationID: id,
 			Seed: hex.EncodeToString(seed), SignPub: hex.EncodeToString(signPub),
+		})
+		vectors.InvitationKey = append(vectors.InvitationKey, invitationKeyVector{
+			Name: id, Secret: hex.EncodeToString(secret), VaultID: vectorVaultID, InvitationID: id,
+			PrivateKey: hex.EncodeToString(kemPrivateKey), PublicKey: hex.EncodeToString(kemPublicKey),
+			AgeIdentity: must(AgeIdentity(kemPrivateKey)), AgeRecipient: must(AgeRecipient(kemPublicKey)),
 		})
 	}
 
@@ -701,6 +722,27 @@ func TestIdentityVectors(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, vector.Seed, hex.EncodeToString(seed))
 			assert.Equal(t, vector.SignPub, hex.EncodeToString(ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey)))
+		}
+	})
+
+	t.Run("invitation key", func(t *testing.T) {
+		require.Len(t, vectors.InvitationKey, 3)
+
+		for _, vector := range vectors.InvitationKey {
+			secret := unhex(t, vector.Secret)
+
+			// The seed follows docs/design/crypto.md, derived here with HKDF
+			// directly, not by the package.
+			documented, err := hkdf.Key(sha256.New, secret, uuidBytes(t, vector.VaultID), "vault-sync/v1/invitation-key"+string(uuidBytes(t, vector.InvitationID)), 32)
+			require.NoError(t, err)
+			assert.Equal(t, vector.PrivateKey, hex.EncodeToString(documented))
+
+			privateKey, publicKey, err := InvitationKeyPair(secret, vector.VaultID, vector.InvitationID)
+			require.NoError(t, err)
+			assert.Equal(t, vector.PrivateKey, hex.EncodeToString(privateKey))
+			assert.Equal(t, vector.PublicKey, hex.EncodeToString(publicKey))
+			assert.Equal(t, vector.AgeIdentity, must(AgeIdentity(privateKey)))
+			assert.Equal(t, vector.AgeRecipient, must(AgeRecipient(publicKey)))
 		}
 	})
 

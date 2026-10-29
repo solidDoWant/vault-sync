@@ -1,5 +1,6 @@
 import esbuild from "esbuild";
 
+import { argon2WorkerDefine } from "./scripts/argon2-worker.ts";
 import { releaseExternals } from "./scripts/externals.ts";
 
 const production = process.argv[2] === "production";
@@ -17,6 +18,8 @@ const context = await esbuild.context({
   treeShaking: true,
   minify: production,
   outfile: "dist/main.js",
+  // The Argon2id Web Worker's script, inlined (src/core/e2ee/argon2.ts).
+  define: await argon2WorkerDefine(),
 });
 
 if (production) {

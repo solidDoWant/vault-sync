@@ -12,19 +12,19 @@
  * and the Go implementation (internal/e2ee) must agree with it.
  *
  * Pure JavaScript (@noble/*), so it behaves the same on Electron and Android
- * WebView. Random bytes come from `crypto.getRandomValues`. The Argon2id
- * derivation is asynchronous and yields to the event loop every few
- * milliseconds, so a passphrase unlock does not freeze the UI.
+ * WebView, except that Argon2id runs on hash-wasm's WebAssembly where it
+ * passes a known-answer test (./argon2). Random bytes come from
+ * `crypto.getRandomValues`.
  */
 import { xchacha20poly1305 } from "@noble/ciphers/chacha.js";
 import { randomBytes } from "@noble/ciphers/utils.js";
-import { argon2idAsync } from "@noble/hashes/argon2.js";
 import { hkdf } from "@noble/hashes/hkdf.js";
 import { hmac } from "@noble/hashes/hmac.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 
 import { isAssignedInUnicode15, nfc } from "../pathkey/normalize";
 import { pathKey as normalizePath } from "../pathkey/pathkey";
+import { argon2id } from "./argon2";
 
 /** The suite version byte of every suite 2 symmetric ciphertext and passphrase-wrapped secret. */
 export const SUITE_V2 = 0x02;
@@ -42,12 +42,6 @@ const PASSPHRASE_HEADER_SIZE = 1 + 4 + 4 + 1 + SALT_SIZE;
 const SUBKEY_INFO_PREFIX = "vault-sync/v1/subkey/";
 const PASSPHRASE_WRAP_INFO = "vault-sync/v1/passphrase/wrap";
 const PASSPHRASE_AUTH_INFO = "vault-sync/v1/passphrase/auth";
-
-/**
- * How long (ms) the Argon2id derivation computes before it yields to the
- * event loop.
- */
-const ARGON2_ASYNC_TICK_MS = 10;
 
 const encoder = new TextEncoder();
 
@@ -235,8 +229,8 @@ export interface PassphraseKeys {
  * nfc, as the Go server does, so every device derives the same keys from the
  * same characters. Rejects an empty passphrase, a code point not assigned in
  * Unicode 15.0, a salt of the wrong size and parameters outside the bounds
- * before deriving. The derivation yields to the
- * event loop as it runs.
+ * before deriving. Argon2id runs on WebAssembly where it passes its
+ * self-test, and in pure JavaScript otherwise.
  */
 export async function derivePassphraseKeys(passphrase: string, params: Argon2Params, salt: Uint8Array): Promise<PassphraseKeys> {
   if (passphrase === "") {
@@ -249,12 +243,13 @@ export async function derivePassphraseKeys(passphrase: string, params: Argon2Par
     throw new Error(`e2ee: Argon2id parameters out of bounds: ${JSON.stringify(params)}`);
   }
   requireLength("salt", salt, SALT_SIZE);
-  const stretched = await argon2idAsync(encoder.encode(nfc(passphrase)), salt, {
-    m: params.memory,
-    t: params.iterations,
-    p: params.parallelism,
-    dkLen: KEY_SIZE,
-    asyncTick: ARGON2_ASYNC_TICK_MS,
+  const stretched = await argon2id({
+    password: encoder.encode(nfc(passphrase)),
+    salt,
+    memory: params.memory,
+    iterations: params.iterations,
+    parallelism: params.parallelism,
+    length: KEY_SIZE,
   });
   const empty = new Uint8Array(0);
   return {

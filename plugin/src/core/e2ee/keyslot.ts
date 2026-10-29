@@ -14,13 +14,14 @@ import { DecryptError, KEY_SIZE } from "./e2ee";
 import { openFrom, sealTo } from "./hybrid";
 
 /** Who a key slot is wrapped to (SPEC.md §5 key_slots). */
-export type RecipientKind = "user" | "escrow";
+export type RecipientKind = "user" | "escrow" | "invitation";
 
 /**
  * A key slot: the epoch key of vault `vaultId` at `epoch`, wrapped to a
  * recipient. `vaultId` is a canonical lowercase UUID; `recipientId` is the
- * user's id (a canonical lowercase UUID) for "user" and the escrow key's id
- * (1 to 255 UTF-8 bytes) for "escrow". `epoch` is a non-negative safe
+ * user's id (a canonical lowercase UUID) for "user", the invitation's id (a
+ * canonical lowercase UUID) for "invitation" and the escrow key's id (1 to
+ * 255 UTF-8 bytes) for "escrow". `epoch` is a non-negative safe
  * integer.
  */
 export interface KeySlot {
@@ -35,7 +36,7 @@ export const MAX_RECIPIENT_ID_SIZE = 255;
 
 const KEY_SLOT_LABEL = "vault-sync/v1/key-slot";
 const KEY_COMMITMENT_LABEL = "vault-sync/v1/key-commitment";
-const RECIPIENT_KIND_BYTES: Readonly<Record<RecipientKind, number>> = Object.freeze({ user: 0x01, escrow: 0x02 });
+const RECIPIENT_KIND_BYTES: Readonly<Record<RecipientKind, number>> = Object.freeze({ user: 0x01, escrow: 0x02, invitation: 0x03 });
 
 const CANONICAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
@@ -80,6 +81,7 @@ export function concat(...parts: Uint8Array[]): Uint8Array {
 function recipientIdBytes(slot: KeySlot): Uint8Array {
   switch (slot.recipientKind) {
     case "user":
+    case "invitation":
       return uuidBytes("recipient id", slot.recipientId);
     case "escrow": {
       const id = encoder.encode(slot.recipientId);
@@ -97,9 +99,9 @@ function recipientIdBytes(slot: KeySlot): Uint8Array {
  * The associated data a key slot binds:
  *
  *     "vault-sync/v1/key-slot" || vault_id (16) || epoch (u64 BE) ||
- *     recipient_kind (u8: 0x01 user, 0x02 escrow) || len(recipient_id) (u8) || recipient_id
+ *     recipient_kind (u8: 0x01 user, 0x02 escrow, 0x03 invitation) || len(recipient_id) (u8) || recipient_id
  *
- * with `vault_id` and a user's `recipient_id` as their 16 UUID bytes and an
+ * with `vault_id` and a user's or invitation's `recipient_id` as their 16 UUID bytes and an
  * escrow `recipient_id` as its UTF-8 bytes. Throws for ids that are not in
  * canonical form, so one slot has exactly one encoding.
  */
