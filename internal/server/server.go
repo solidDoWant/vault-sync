@@ -93,6 +93,9 @@ type Options struct {
 	// are public; never put a secret here.
 	OIDCIssuerURL string
 	OIDCClientID  string
+	// Escrow is the deployment's escrow public key and default, published
+	// by GetServerInfo; CreateVault refuses escrow vaults without a key.
+	Escrow api.Escrow
 	// Devices stores devices. When nil, DeviceService is unimplemented.
 	Devices api.DeviceStore
 	// Vaults stores vaults. When nil, VaultService is unimplemented.
@@ -263,6 +266,7 @@ func newAPIHandler(options Options, metrics *rpcMetrics, limiter *userLimiter) h
 		vaults = api.VaultService{
 			Vaults: options.Vaults,
 			Limits: api.VaultLimits{MaxResponseBytes: int(options.MaxRequestBytes)},
+			Escrow: options.Escrow,
 			Logger: options.Logger,
 		}
 	}
@@ -340,7 +344,7 @@ func newAPIHandler(options Options, metrics *rpcMetrics, limiter *userLimiter) h
 	}
 
 	mux := http.NewServeMux()
-	serverInfo := api.ServerInfoService{OIDCIssuerURL: options.OIDCIssuerURL, OIDCClientID: options.OIDCClientID}
+	serverInfo := api.ServerInfoService{OIDCIssuerURL: options.OIDCIssuerURL, OIDCClientID: options.OIDCClientID, Escrow: options.Escrow}
 
 	if options.Realtime != nil {
 		serverInfo.MaxRealtimeSubscriptions = uint32(options.Realtime.MaxSubscriptions()) //nolint:gosec // bounded by configuration.

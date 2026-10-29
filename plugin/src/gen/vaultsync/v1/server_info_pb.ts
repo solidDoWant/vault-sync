@@ -10,7 +10,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file vaultsync/v1/server_info.proto.
  */
 export const file_vaultsync_v1_server_info: GenFile = /*@__PURE__*/
-  fileDesc("Ch52YXVsdHN5bmMvdjEvc2VydmVyX2luZm8ucHJvdG8SDHZhdWx0c3luYy52MSIWChRHZXRTZXJ2ZXJJbmZvUmVxdWVzdCKXAQoVR2V0U2VydmVySW5mb1Jlc3BvbnNlEg8KB3ZlcnNpb24YASABKAkSGAoQcHJvdG9jb2xfdmVyc2lvbhgCIAEoDRIiChptYXhfcmVhbHRpbWVfc3Vic2NyaXB0aW9ucxgDIAEoDRIXCg9vaWRjX2lzc3Vlcl91cmwYBCABKAkSFgoOb2lkY19jbGllbnRfaWQYBSABKAkybwoRU2VydmVySW5mb1NlcnZpY2USWgoNR2V0U2VydmVySW5mbxIiLnZhdWx0c3luYy52MS5HZXRTZXJ2ZXJJbmZvUmVxdWVzdBojLnZhdWx0c3luYy52MS5HZXRTZXJ2ZXJJbmZvUmVzcG9uc2UiAEJAWj5naXRodWIuY29tL3NvbGlkRG9XYW50L3ZhdWx0LXN5bmMvZ2VuL3ZhdWx0c3luYy92MTt2YXVsdHN5bmN2MWIGcHJvdG8z");
+  fileDesc("Ch52YXVsdHN5bmMvdjEvc2VydmVyX2luZm8ucHJvdG8SDHZhdWx0c3luYy52MSIWChRHZXRTZXJ2ZXJJbmZvUmVxdWVzdCLhAQoVR2V0U2VydmVySW5mb1Jlc3BvbnNlEg8KB3ZlcnNpb24YASABKAkSGAoQcHJvdG9jb2xfdmVyc2lvbhgCIAEoDRIiChptYXhfcmVhbHRpbWVfc3Vic2NyaXB0aW9ucxgDIAEoDRIXCg9vaWRjX2lzc3Vlcl91cmwYBCABKAkSFgoOb2lkY19jbGllbnRfaWQYBSABKAkSGQoRZXNjcm93X3B1YmxpY19rZXkYBiABKAwSFQoNZXNjcm93X2tleV9pZBgHIAEoCRIWCg5lc2Nyb3dfZGVmYXVsdBgIIAEoCDJvChFTZXJ2ZXJJbmZvU2VydmljZRJaCg1HZXRTZXJ2ZXJJbmZvEiIudmF1bHRzeW5jLnYxLkdldFNlcnZlckluZm9SZXF1ZXN0GiMudmF1bHRzeW5jLnYxLkdldFNlcnZlckluZm9SZXNwb25zZSIAQkBaPmdpdGh1Yi5jb20vc29saWREb1dhbnQvdmF1bHQtc3luYy9nZW4vdmF1bHRzeW5jL3YxO3ZhdWx0c3luY3YxYgZwcm90bzM");
 
 /**
  * GetServerInfoRequest has no parameters.
@@ -77,6 +77,34 @@ export type GetServerInfoResponse = Message<"vaultsync.v1.GetServerInfoResponse"
    * @generated from field: string oidc_client_id = 5;
    */
   oidcClientId: string;
+
+  /**
+   * The deployment's escrow public key (SPEC.md §9.4): the 1216-byte
+   * hybrid ML-KEM-768 + X25519 public key that clients wrap every epoch key
+   * of an escrow vault to (VAULT_SYNC_ESCROW_RECIPIENT). Empty when the
+   * server has no escrow key; escrow vaults cannot be created then.
+   *
+   * @generated from field: bytes escrow_public_key = 6;
+   */
+  escrowPublicKey: Uint8Array;
+
+  /**
+   * The id that names escrow_public_key in escrow key slots (their
+   * recipient_id): "sha256:" and the lowercase hex SHA-256 of the key.
+   * Empty when the server has no escrow key.
+   *
+   * @generated from field: string escrow_key_id = 7;
+   */
+  escrowKeyId: string;
+
+  /**
+   * Whether a new end-to-end encrypted vault has escrow unless its owner
+   * turns it off (VAULT_SYNC_ESCROW_DEFAULT, on by default). Always false
+   * when the server has no escrow key.
+   *
+   * @generated from field: bool escrow_default = 8;
+   */
+  escrowDefault: boolean;
 };
 
 /**

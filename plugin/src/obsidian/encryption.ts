@@ -53,6 +53,19 @@ export async function enableOnDevice(options: EncryptionOptions, passphrase: str
   return created;
 }
 
+/**
+ * The signed-in account's key pair, when it is unlocked on this device (and
+ * is the account's key on the server); an error telling the user what to do
+ * otherwise.
+ */
+export async function unlockedUserKey(options: EncryptionOptions): Promise<UserKeyPair> {
+  const state = await encryptionState(options);
+  const cached = options.data.userKey;
+  if (state === "not-enabled") throw new Error("Enable end-to-end encryption for your account first.");
+  if (state !== "unlocked" || cached === undefined) throw new Error("Unlock end-to-end encryption on this device first.");
+  return { publicKey: hexToBytes(cached.publicKey), privateKey: hexToBytes(cached.privateKey) };
+}
+
 /** Unlocks the signed-in account's key pair with `passphrase` and caches it on this device. */
 export async function unlockOnDevice(options: EncryptionOptions, passphrase: string): Promise<void> {
   const account = await currentAccount(options.data, options.accessToken);

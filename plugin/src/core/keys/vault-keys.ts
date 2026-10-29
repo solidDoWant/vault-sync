@@ -57,6 +57,20 @@ export interface VaultKeyManagerOptions {
   keys: VaultKeyClient;
   membership: MemberKeyClient;
   store: EpochKeyStore;
+  /**
+   * The deployment's escrow key, in a vault with escrow: every epoch this
+   * device creates also wraps its key to it (SPEC.md §9.4). Undefined in a
+   * vault without escrow.
+   */
+  escrow?: EscrowRecipient;
+}
+
+/** The deployment's escrow public key, as GetServerInfo publishes it. */
+export interface EscrowRecipient {
+  /** The id escrow slots name it by (their recipient_id). */
+  keyId: string;
+  /** The hybrid ML-KEM-768 + X25519 public key (1216 bytes). */
+  publicKey: Uint8Array;
 }
 
 /** A key slot this device refused: it did not open with the user key, or its key does not match the epoch's commitment. */
@@ -197,7 +211,8 @@ export class VaultKeyManager {
 
   /**
    * Creates epoch `expected + 1` with a fresh key, wrapped for every member
-   * with a user key but `removed`, through `send`; keeps its key once the
+   * with a user key but `removed`, and for the escrow key in a vault with
+   * escrow, through `send`; keeps its key once the
    * server accepted it. Should the response be lost, the key is not: the
    * device's own slot is in the epoch.
    */
@@ -218,6 +233,15 @@ export class VaultKeyManager {
           }),
         ),
     );
+    const { escrow } = this.options;
+    if (escrow !== undefined) {
+      slots.push({
+        epoch,
+        recipientKind: KeyRecipientKind.ESCROW,
+        recipientId: escrow.keyId,
+        wrappedKey: await sealKeySlot(escrow.publicKey, epochKey, { vaultId, epoch, recipientKind: "escrow", recipientId: escrow.keyId }),
+      });
+    }
     await send({ expectedEpoch: expected, commitment: keyCommitment(epochKey, vaultId, epoch), slots });
     const keys = await this.loaded();
     keys.set(epoch, epochKey);

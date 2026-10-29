@@ -2,6 +2,8 @@ package e2ee
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"strings"
@@ -66,6 +68,64 @@ func AgeRecipient(publicKey []byte) (string, error) {
 	}
 
 	return bech32Encode(ageRecipientHRP, publicKey), nil
+}
+
+// ParseAgeRecipient returns the hybrid public key of an age hybrid
+// recipient string (age1pq1…). age validates the string first (its Bech32
+// checksum, its human-readable part and its key), so only a recipient age
+// itself accepts is decoded; any other string is refused.
+func ParseAgeRecipient(encoded string) ([]byte, error) {
+	if _, err := age.ParseHybridRecipient(encoded); err != nil {
+		return nil, fmt.Errorf("e2ee: %w", err)
+	}
+
+	lower := strings.ToLower(encoded)
+	separator := strings.LastIndexByte(lower, '1')
+	// The data part ends with a six-character checksum.
+	words := lower[separator+1 : len(lower)-6]
+	publicKey := make([]byte, 0, len(words)*5/8)
+
+	var (
+		accumulator uint32
+		bits        uint
+	)
+
+	for index := range len(words) {
+		value := strings.IndexByte(bech32Charset, words[index])
+		if value < 0 {
+			return nil, fmt.Errorf("e2ee: invalid age recipient")
+		}
+
+		accumulator = accumulator<<5 | uint32(value)
+		bits += 5
+
+		if bits >= 8 {
+			bits -= 8
+			publicKey = append(publicKey, byte(accumulator>>bits))
+		}
+	}
+
+	// age accepted it, but check the round trip rather than trust the
+	// arithmetic above.
+	if again, err := AgeRecipient(publicKey); err != nil || again != lower {
+		return nil, fmt.Errorf("e2ee: invalid age recipient")
+	}
+
+	return publicKey, nil
+}
+
+// EscrowKeyID returns the id that names an escrow public key in escrow key
+// slots (recipient_id, docs/design/crypto.md): "sha256:" followed by the
+// lowercase hex SHA-256 of the 1216-byte public key. It is derived from the
+// key, so a new escrow key gets a new id without any setting.
+func EscrowKeyID(publicKey []byte) (string, error) {
+	if len(publicKey) != PublicKeySize {
+		return "", fmt.Errorf("e2ee: public key must be %d bytes, got %d", PublicKeySize, len(publicKey))
+	}
+
+	sum := sha256.Sum256(publicKey)
+
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
 // AgeIdentity returns the age identity string (AGE-SECRET-KEY-PQ-1…) of a

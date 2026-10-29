@@ -41,4 +41,17 @@ message GetServerInfoResponse {
   // audience). A public client has no secret. Empty when the server
   // advertises none; the user then enters it.
   string oidc_client_id = 5;
+  // The deployment's escrow public key (SPEC.md §9.4): the 1216-byte
+  // hybrid ML-KEM-768 + X25519 public key that clients wrap every epoch key
+  // of an escrow vault to (VAULT_SYNC_ESCROW_RECIPIENT). Empty when the
+  // server has no escrow key; escrow vaults cannot be created then.
+  bytes escrow_public_key = 6;
+  // The id that names escrow_public_key in escrow key slots (their
+  // recipient_id): "sha256:" and the lowercase hex SHA-256 of the key.
+  // Empty when the server has no escrow key.
+  string escrow_key_id = 7;
+  // Whether a new end-to-end encrypted vault has escrow unless its owner
+  // turns it off (VAULT_SYNC_ESCROW_DEFAULT, on by default). Always false
+  // when the server has no escrow key.
+  bool escrow_default = 8;
 }

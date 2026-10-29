@@ -16,6 +16,7 @@ import (
 	"github.com/solidDoWant/vault-sync/internal/api"
 	"github.com/solidDoWant/vault-sync/internal/auth"
 	"github.com/solidDoWant/vault-sync/internal/blobstore"
+	"github.com/solidDoWant/vault-sync/internal/e2ee"
 	"github.com/solidDoWant/vault-sync/internal/realtime"
 	"github.com/solidDoWant/vault-sync/internal/retention"
 	"github.com/solidDoWant/vault-sync/internal/store"
@@ -38,6 +39,8 @@ const (
 	OIDCIssuerURLEnv            = "VAULT_SYNC_OIDC_ISSUER_URL"
 	OIDCAudienceEnv             = "VAULT_SYNC_OIDC_AUDIENCE"
 	OIDCClientIDEnv             = "VAULT_SYNC_OIDC_CLIENT_ID"
+	EscrowRecipientEnv          = "VAULT_SYNC_ESCROW_RECIPIENT"
+	EscrowDefaultEnv            = "VAULT_SYNC_ESCROW_DEFAULT"
 
 	S3EndpointEnv            = "VAULT_SYNC_S3_ENDPOINT"
 	S3RegionEnv              = "VAULT_SYNC_S3_REGION"
@@ -244,6 +247,10 @@ type Config struct {
 	Realtime RealtimeConfig
 	// Retention is the retention policy.
 	Retention RetentionConfig
+	// Escrow is the deployment's escrow public key, published to clients,
+	// and whether new encrypted vaults have escrow by default (SPEC.md
+	// §9.4). Its PublicKey is nil when no escrow key is configured.
+	Escrow api.Escrow
 }
 
 // OIDCConfig identifies the OIDC issuer whose access tokens the server
@@ -334,6 +341,10 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 		// The Authentik setup: the access token's aud is the client id.
 		cfg.OIDC.ClientID = cfg.OIDC.Audience
 	}
+
+	escrow, err := escrowConfig(get)
+	problems = append(problems, err)
+	cfg.Escrow = escrow
 
 	problems = append(problems, checkListenAddress(ListenAddressEnv, cfg.ListenAddress))
 	problems = append(problems, checkListenAddress(MetricsListenAddressEnv, cfg.MetricsListenAddress))
@@ -947,4 +958,35 @@ func LoadVaultCommand(lookup func(string) (string, bool)) (store.Config, error) 
 	}
 
 	return cfg, checkDatabase(cfg)
+}
+
+// escrowConfig reads the escrow public key (an age hybrid recipient,
+// age1pq1…) and the escrow default, which is on unless set to false.
+func escrowConfig(get func(string) string) (api.Escrow, error) {
+	escrow := api.Escrow{Default: true}
+
+	var problems []error
+
+	if raw := get(EscrowDefaultEnv); raw != "" {
+		value, err := strconv.ParseBool(raw)
+		if err != nil {
+			problems = append(problems, fmt.Errorf("%s: %q is not true or false", EscrowDefaultEnv, raw))
+		}
+
+		escrow.Default = value
+	}
+
+	if raw := get(EscrowRecipientEnv); raw != "" {
+		publicKey, err := e2ee.ParseAgeRecipient(strings.TrimSpace(raw))
+		if err != nil {
+			// The value is a public key, but the error need not repeat it.
+			problems = append(problems, fmt.Errorf("%s: not an age hybrid post-quantum recipient (age1pq1…)", EscrowRecipientEnv))
+		} else {
+			escrow.PublicKey = publicKey
+			escrow.KeyID, err = e2ee.EscrowKeyID(publicKey)
+			problems = append(problems, err)
+		}
+	}
+
+	return escrow, errors.Join(problems...)
 }

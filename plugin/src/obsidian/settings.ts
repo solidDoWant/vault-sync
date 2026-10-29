@@ -1,7 +1,8 @@
-import { Modal, Notice, PluginSettingTab, Setting, type App, type ButtonComponent, type Plugin } from "obsidian";
+import { Modal, Notice, PluginSettingTab, Setting, type App, type ButtonComponent, type Plugin, type ToggleComponent } from "obsidian";
 
 import { VaultRole, type Vault } from "../gen/vaultsync/v1/types_pb";
 import type { AuthState } from "../core/auth/tokens";
+import type { EscrowOffer } from "../core/keys/encrypted-vault";
 import { connectProblem } from "./controller";
 import { type ConnectedVault, type PluginData } from "./data";
 import { DeviceListLoads, DeviceRemovals, type DeviceRow } from "./devices";
@@ -25,7 +26,10 @@ export interface SettingsHost extends Plugin {
   signIn(): Promise<boolean>;
   signOut(): Promise<void>;
   listRemoteVaults(): Promise<Vault[]>;
-  createRemoteVault(name: string): Promise<Vault>;
+  /** Creates a vault: plaintext, or end-to-end encrypted (with or without escrow) when `encryption` is given. */
+  createRemoteVault(name: string, encryption?: { escrow: boolean }): Promise<Vault>;
+  /** The server's escrow key and default, for a new encrypted vault. */
+  escrowOffer(): Promise<EscrowOffer>;
   connectVault(vault: Vault, confirmed?: boolean): Promise<"connected" | "needs-confirmation">;
   disconnectVault(): Promise<void>;
   /** The signed-in user's devices (#590). */
@@ -595,6 +599,14 @@ export class VaultSyncSettingTab extends PluginSettingTab {
     );
 
     let name = this.app.vault.getName();
+    let encrypted = false;
+    let escrow = false;
+    let escrowAvailable = false;
+    // Until the server's escrow default is known, no encrypted vault is
+    // created, so that escrow is never left off by mistake.
+    let escrowLoaded = false;
+    let escrowToggle: ToggleComponent | undefined;
+    const updateEscrowToggle = () => escrowToggle?.setDisabled(!encrypted || !escrowAvailable);
     new Setting(containerEl)
       .setName("Create a vault")
       .setDesc("Create a vault on the server and sync this vault with it.")
@@ -605,13 +617,54 @@ export class VaultSyncSettingTab extends PluginSettingTab {
       )
       .addButton((button) =>
         button.setButtonText("Create and connect").onClick(async () => {
+          if (encrypted && !escrowLoaded) {
+            new Notice("Vault Sync: could not create the vault: the server's escrow setting has not loaded.");
+            return;
+          }
+          button.setDisabled(true);
           try {
-            await this.connect(await host.createRemoteVault(name));
+            await this.connect(await host.createRemoteVault(name, encrypted ? { escrow } : undefined));
           } catch (error) {
             new Notice(`Vault Sync: could not create the vault: ${errorMessage(error)}`);
+          } finally {
+            button.setDisabled(false);
           }
         }),
       );
+    new Setting(containerEl)
+      .setName("End-to-end encryption")
+      .setDesc("Encrypt the new vault's notes and paths on your devices, so the server stores only ciphertext. Chosen once, when the vault is created. Needs encryption enabled and unlocked on this device (Encryption, above).")
+      .addToggle((toggle) =>
+        toggle.setValue(encrypted).onChange((value) => {
+          encrypted = value;
+          updateEscrowToggle();
+        }),
+      );
+    const escrowSetting = new Setting(containerEl).setName("Escrow").setDesc("Loading the server's escrow setting…");
+    escrowSetting.addToggle((toggle) => {
+      escrowToggle = toggle;
+      toggle.onChange((value) => {
+        escrow = value;
+      });
+    });
+    updateEscrowToggle();
+    void host.escrowOffer().then(
+      (offer) => {
+        escrowAvailable = offer.recipient !== undefined;
+        escrow = offer.byDefault;
+        escrowLoaded = true;
+        escrowToggle?.setValue(escrow);
+        updateEscrowToggle();
+        escrowSetting.setDesc(
+          escrowAvailable
+            ? "For an encrypted vault: also wrap its keys to the server's escrow key, so the operator's backups hold your notes in plaintext and can restore the vault if you lose your passphrase. Turn it off to keep the operator out; without escrow, a lost passphrase loses the server's copy."
+            : "This server has no escrow key, so encrypted vaults are created without escrow.",
+        );
+      },
+      (error: unknown) => {
+        escrowSetting.setDesc(`Could not load the server's escrow setting: ${errorMessage(error)}`);
+      },
+    );
   }
 
   private async connect(vault: Vault): Promise<void> {

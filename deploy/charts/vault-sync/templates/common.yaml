@@ -247,6 +247,8 @@
   "VAULT_SYNC_REALTIME_MAX_CONNECTIONS" $config.server.realtime.maxConnections
   "VAULT_SYNC_REALTIME_MAX_CONNECTIONS_PER_USER" $config.server.realtime.maxConnectionsPerUser
   "VAULT_SYNC_REALTIME_MAX_SUBSCRIPTIONS" $config.server.realtime.maxSubscriptions
+  "VAULT_SYNC_ESCROW_RECIPIENT" $config.server.escrow.recipient
+  "VAULT_SYNC_ESCROW_DEFAULT" $config.server.escrow.default
 -}}
 {{- range $name, $value := $shared -}}
   {{- if and (not (kindIs "invalid" $value)) (ne (toString $value) "") -}}

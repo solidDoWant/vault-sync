@@ -27,6 +27,7 @@ import (
 	"github.com/solidDoWant/vault-sync/internal/auth"
 	"github.com/solidDoWant/vault-sync/internal/auth/authtest"
 	"github.com/solidDoWant/vault-sync/internal/authz"
+	"github.com/solidDoWant/vault-sync/internal/e2ee"
 	"github.com/solidDoWant/vault-sync/internal/server"
 	"github.com/solidDoWant/vault-sync/internal/store"
 )
@@ -158,6 +159,14 @@ func newVaultFixture(t *testing.T, users authStore, vaults vaultBackend, databas
 func newVaultFixtureWithLimit(t *testing.T, users authStore, vaults vaultBackend, database server.Pinger, maxRequestBytes int64) *authFixture {
 	t.Helper()
 
+	return newVaultFixtureWithOptions(t, users, vaults, database, maxRequestBytes, api.Escrow{})
+}
+
+// newVaultFixtureWithOptions is newVaultFixtureWithLimit on a server with
+// the given escrow key.
+func newVaultFixtureWithOptions(t *testing.T, users authStore, vaults vaultBackend, database server.Pinger, maxRequestBytes int64, escrow api.Escrow) *authFixture {
+	t.Helper()
+
 	issuer := authtest.NewIssuer(t)
 	fixture := &authFixture{issuer: issuer, key: issuer.AddKey(t, jose.RS256), logs: &syncBuffer{}}
 	logger := slog.New(slog.NewJSONHandler(fixture.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
@@ -175,6 +184,7 @@ func newVaultFixtureWithLimit(t *testing.T, users authStore, vaults vaultBackend
 		Devices:         users,
 		Vaults:          vaults,
 		Memberships:     vaults,
+		Escrow:          escrow,
 		Logger:          logger,
 	})
 
@@ -509,7 +519,7 @@ func TestCreateVaultValidatesInput(t *testing.T) {
 	token := fixture.token(t, "alice")
 
 	none := vaultsyncv1.VaultEncryption_VAULT_ENCRYPTION_NONE
-	e2ee := vaultsyncv1.VaultEncryption_VAULT_ENCRYPTION_E2EE
+	encrypted := vaultsyncv1.VaultEncryption_VAULT_ENCRYPTION_E2EE
 
 	tests := []struct {
 		name      string
@@ -518,9 +528,9 @@ func TestCreateVaultValidatesInput(t *testing.T) {
 		wantVault *vaultsyncv1.Vault
 	}{
 		{name: "plaintext", request: &vaultsyncv1.CreateVaultRequest{Name: "Notes", Encryption: none}},
-		// End-to-end encryption needs Phase 4 key management (SPEC.md §15).
-		{name: "e2ee", request: &vaultsyncv1.CreateVaultRequest{Name: "Secret", Encryption: e2ee}, wantCode: connect.CodeFailedPrecondition},
-		{name: "e2ee with escrow", request: &vaultsyncv1.CreateVaultRequest{Name: "Backed up", Encryption: e2ee, Escrow: true}, wantCode: connect.CodeFailedPrecondition},
+		{name: "e2ee", request: &vaultsyncv1.CreateVaultRequest{Name: "Secret", Encryption: encrypted}},
+		// This server has no escrow key.
+		{name: "e2ee with escrow", request: &vaultsyncv1.CreateVaultRequest{Name: "Backed up", Encryption: encrypted, Escrow: true}, wantCode: connect.CodeFailedPrecondition},
 		{name: "longest name", request: &vaultsyncv1.CreateVaultRequest{Name: strings.Repeat("n", api.MaxVaultNameBytes), Encryption: none}},
 		{name: "empty name", request: &vaultsyncv1.CreateVaultRequest{Encryption: none}, wantCode: connect.CodeInvalidArgument},
 		{name: "blank name", request: &vaultsyncv1.CreateVaultRequest{Name: " \t\n", Encryption: none}, wantCode: connect.CodeInvalidArgument},
@@ -557,27 +567,54 @@ func TestCreateVaultValidatesInput(t *testing.T) {
 	}
 }
 
-// TestCreateVaultRejectsEndToEndEncryptionUntilPhase4 guards principle 1:
-// without key management a client would store plaintext in a vault marked
-// as encrypted.
-func TestCreateVaultRejectsEndToEndEncryptionUntilPhase4(t *testing.T) {
-	fixture := newVaultFixture(t, newMemoryStore(), newMemoryVaults(), nil)
-	token := fixture.token(t, "alice")
+// TestCreateVaultEndToEndEncryptedFollowsTheEscrowKey: an encrypted vault
+// can be created with or without escrow on a server with an escrow key, and
+// only without escrow on a server that has none.
+func TestCreateVaultEndToEndEncryptedFollowsTheEscrowKey(t *testing.T) {
+	_, publicKey, err := e2ee.GenerateKeyPair()
+	require.NoError(t, err)
 
-	for _, escrow := range []bool{false, true} {
-		_, err := fixture.vaultClient().CreateVault(t.Context(), authorized(&vaultsyncv1.CreateVaultRequest{
-			Name: "Secret", Encryption: vaultsyncv1.VaultEncryption_VAULT_ENCRYPTION_E2EE, Escrow: escrow,
-		}, token))
-		require.Error(t, err)
-		assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err), "escrow %t", escrow)
+	keyID, err := e2ee.EscrowKeyID(publicKey)
+	require.NoError(t, err)
 
-		var connectErr *connect.Error
+	withKey := api.Escrow{PublicKey: publicKey, KeyID: keyID, Default: true}
 
-		require.ErrorAs(t, err, &connectErr)
-		assert.Equal(t, "end-to-end encrypted vaults are not supported yet", connectErr.Message())
+	tests := []struct {
+		name     string
+		escrow   api.Escrow
+		request  bool
+		wantCode connect.Code
+	}{
+		{name: "escrow key, escrow on", escrow: withKey, request: true},
+		{name: "escrow key, escrow off", escrow: withKey, request: false},
+		{name: "no escrow key, escrow off", request: false},
+		{name: "no escrow key, escrow on", request: true, wantCode: connect.CodeFailedPrecondition},
 	}
 
-	assert.Empty(t, fixture.listVaults(t, token), "no vault is created")
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newVaultFixtureWithOptions(t, newMemoryStore(), newMemoryVaults(), nil, 0, test.escrow)
+			token := fixture.token(t, "alice")
+
+			response, err := fixture.vaultClient().CreateVault(t.Context(), authorized(&vaultsyncv1.CreateVaultRequest{
+				Name: "Secret", Encryption: vaultsyncv1.VaultEncryption_VAULT_ENCRYPTION_E2EE, Escrow: test.request,
+			}, token))
+			if test.wantCode != 0 {
+				require.Error(t, err)
+				assert.Equal(t, test.wantCode, connect.CodeOf(err))
+				assert.Empty(t, fixture.listVaults(t, token), "no vault is created")
+
+				return
+			}
+
+			require.NoError(t, err)
+
+			vault := response.Msg.GetVault()
+			assert.Equal(t, vaultsyncv1.VaultEncryption_VAULT_ENCRYPTION_E2EE, vault.GetEncryption())
+			assert.Equal(t, test.request, vault.GetEscrow())
+			assert.Equal(t, vaultsyncv1.VaultRole_VAULT_ROLE_OWNER, vault.GetRole())
+		})
+	}
 }
 
 func TestCreateVaultLimit(t *testing.T) {

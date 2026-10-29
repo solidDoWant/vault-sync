@@ -110,7 +110,7 @@ age-keygen -pq -o escrow.key     # the identity: AGE-SECRET-KEY-PQ-1…
 age-keygen -y escrow.key         # prints the public key: age1pq1…
 ```
 
-Give the identity to the export job only, through the Secret that `config.export.escrow.secretName` names in the Helm chart (see [deployment.md](deployment.md)); the chart refuses to mount it into the server. The server publishes the public key and the escrow default to clients; [configuration.md](configuration.md) lists the variables. Treat the identity like the plaintext of every escrowed vault.
+Give the identity to the export job only, through the Secret that `config.export.escrow.secretName` names in the Helm chart (see [deployment.md](deployment.md)); the chart refuses to mount it into the server. Give the public key to the server as `VAULT_SYNC_ESCROW_RECIPIENT` (`config.server.escrow.recipient` in the chart). The server publishes it and the escrow default (`VAULT_SYNC_ESCROW_DEFAULT`) to clients; [configuration.md](configuration.md) lists the variables. Treat the identity like the plaintext of every escrowed vault.
 
 **Rotating the escrow key.** Configure the new public key, so that new epochs are wrapped to it, and give the export job both identities. The export job then re-wraps every existing escrow slot to the new key, checking each one against its key commitment first, including the slots of vaults deleted within the last 30 days. It repeats until no slot uses the old key, catching any slot that a device wrapped to the old key during the switch. Only then destroy the old identity, including its offline copies.
 

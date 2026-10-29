@@ -26,6 +26,7 @@ import (
 	vaultsyncv1 "github.com/solidDoWant/vault-sync/gen/vaultsync/v1"
 	"github.com/solidDoWant/vault-sync/gen/vaultsync/v1/vaultsyncv1connect"
 	"github.com/solidDoWant/vault-sync/internal/api"
+	"github.com/solidDoWant/vault-sync/internal/e2ee"
 	"github.com/solidDoWant/vault-sync/internal/realtime"
 	"github.com/solidDoWant/vault-sync/internal/server"
 	"github.com/solidDoWant/vault-sync/internal/version"
@@ -177,6 +178,40 @@ func TestGetServerInfoAdvertisesTheIdentityProvider(t *testing.T) {
 
 			assert.Equal(t, test.issuer, response.Msg.GetOidcIssuerUrl())
 			assert.Equal(t, test.wantClientID, response.Msg.GetOidcClientId())
+		})
+	}
+}
+
+func TestGetServerInfoPublishesTheEscrowKeyAndDefault(t *testing.T) {
+	_, publicKey, err := e2ee.GenerateKeyPair()
+	require.NoError(t, err)
+
+	keyID, err := e2ee.EscrowKeyID(publicKey)
+	require.NoError(t, err)
+
+	tests := []struct {
+		name        string
+		escrow      api.Escrow
+		wantDefault bool
+	}{
+		{name: "escrow on by default", escrow: api.Escrow{PublicKey: publicKey, KeyID: keyID, Default: true}, wantDefault: true},
+		{name: "escrow off by default", escrow: api.Escrow{PublicKey: publicKey, KeyID: keyID}, wantDefault: false},
+		// Without a key nothing can be escrowed, whatever the default says.
+		{name: "no escrow key", escrow: api.Escrow{Default: true}, wantDefault: false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			running := startServer(t, server.Options{Escrow: test.escrow})
+
+			client := vaultsyncv1connect.NewServerInfoServiceClient(http.DefaultClient, running.apiURL())
+
+			response, err := client.GetServerInfo(t.Context(), connect.NewRequest(&vaultsyncv1.GetServerInfoRequest{}))
+			require.NoError(t, err)
+
+			assert.Equal(t, test.escrow.PublicKey, response.Msg.GetEscrowPublicKey())
+			assert.Equal(t, test.escrow.KeyID, response.Msg.GetEscrowKeyId())
+			assert.Equal(t, test.wantDefault, response.Msg.GetEscrowDefault())
 		})
 	}
 }
