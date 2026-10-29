@@ -4468,4 +4468,105 @@ abstract module RoundG6 refines RoundGuarantees {
       assert LastSaw(step, device0, e, p, c);
     }
   }
+
+  // ---------------------------------------------------------------------
+  // G2 of the round: what each conditional effect expects
+  // ---------------------------------------------------------------------
+
+  // A conditional overwrite or remove of the apply expects a live revision
+  // of the document the server accepted (its clean file holds its live
+  // base), or the apply settles another device's revision, which moves its
+  // base: a link of its chain.
+  lemma ApplyCondClass(platform: Platform, accepted: map<RevId, Revision>, doc: DocId, document: Document, r: Revision,
+                       input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId, d: DeviceId)
+    requires ListingDistinct(platform, input.listing)
+    requires document.base.Some? ==>
+      document.base.value.rev in accepted && BaseRecords(document.base.value, doc, accepted[document.base.value.rev])
+    requires Newer(document, r) ==> PulledBy(document, r, d)
+    ensures var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, rev);
+      forall effect | effect in applied.effects && IsCond(effect) && !effect.Move? ::
+        AcceptedContent(accepted, doc, CondExpect(effect))
+        || (r.device != d && applied.document.base != document.base)
+  {
+    var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, rev);
+    forall effect | effect in applied.effects && IsCond(effect) && !effect.Move?
+      ensures AcceptedContent(accepted, doc, CondExpect(effect))
+              || (r.device != d && applied.document.base != document.base)
+    {
+      if document.base.Some? && !document.base.value.deleted && CondExpect(effect) == document.base.value.content {
+        assert accepted[document.base.value.rev].doc == doc;
+      }
+    }
+  }
+
+  // RuleCondClass's case of the rule clearing the way: the head's arrival
+  // settles another device's revision.
+  lemma ClearWayCondClass(platform: Platform, accepted: map<RevId, Revision>, documents: map<DocId, Document>, doc: DocId,
+                          r: Revision, input: RoundInput, revs: FreshRevs, first: Claims, d: DeviceId)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing)
+    requires var document := documents[doc];
+      var applied := ApplyRevision(platform, doc, document, r, input, BoundNames(documents), ApplyClaims(documents, first), revs[doc]);
+      HeldForName(document, applied, r)
+    requires documents[doc].base.Some? ==>
+      documents[doc].base.value.rev in accepted && BaseRecords(documents[doc].base.value, doc, accepted[documents[doc].base.value.rev])
+    requires Newer(documents[doc], r) ==> PulledBy(documents[doc], r, d)
+    ensures var ruled := ClearWay(platform, documents, doc, r, input, revs);
+      forall effect | effect in ruled.effects && IsCond(effect) && !effect.Move? ::
+        AcceptedContent(accepted, doc, CondExpect(effect))
+        || (r.device != d && doc in ruled.documents && ruled.documents[doc].base != documents[doc].base)
+  {
+    var document := documents[doc];
+    var ruled := ClearWay(platform, documents, doc, r, input, revs);
+    var applied := ApplyRevision(platform, doc, document, r, input, BoundNames(documents), ApplyClaims(documents, first), revs[doc]);
+    assert !Acknowledges(document, r);
+    assert r.device != d;
+    var keep := Keeps(platform, document, r, input);
+    var way := InTheWay(platform, input.listing, r.path, keep);
+    var avoid := BoundNames(documents) + input.unsaved;
+    var aside := Aside(platform, input.listing, avoid, AllClaims(documents), way, r.path);
+    if aside.None? || !ClearsWith(platform, documents, doc, r, input, keep, aside.value) {
+      assert |ruled.effects| == 1 && ruled.effects[0].Report?;
+      return;
+    }
+    assert ruled.documents == ClearRows(platform, documents, doc, r, input, aside.value, revs);
+    assert doc in ruled.documents && ruled.documents[doc].base == Some(BaseOf(r));
+    var front := MoveEffects(platform, documents, doc, aside.value);
+    var arrive := ArriveOf(platform, doc, document, r, input);
+    MoveEffectsShape(platform, documents, doc, aside.value);
+    assert ruled.effects == front + arrive;
+    forall effect | effect in ruled.effects && IsCond(effect) && !effect.Move?
+      ensures ruled.documents[doc].base != document.base
+    {
+      assert effect in arrive;
+      assert keep.Some?;
+      assert !Revives(platform, document, r, input) && document.binding.Some?;
+      assert document.base != Some(BaseOf(r));
+    }
+  }
+
+  // Every conditional overwrite and remove of the rule (RuleSaws: of the
+  // settled document's own file) expects a live revision of it the server
+  // accepted, or the rule settles another device's revision of it.
+  lemma RuleCondClass(platform: Platform, accepted: map<RevId, Revision>, documents: map<DocId, Document>, doc: DocId,
+                      r: Revision, input: RoundInput, revs: FreshRevs, first: Claims, d: DeviceId)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing)
+    requires documents[doc].base.Some? ==>
+      documents[doc].base.value.rev in accepted && BaseRecords(documents[doc].base.value, doc, accepted[documents[doc].base.value.rev])
+    requires Newer(documents[doc], r) ==> PulledBy(documents[doc], r, d)
+    ensures var ruled := PathRule(platform, documents, doc, r, input, revs, first);
+      forall effect | effect in ruled.effects && IsCond(effect) && !effect.Move? ::
+        AcceptedContent(accepted, doc, CondExpect(effect))
+        || (r.device != d && doc in ruled.documents && ruled.documents[doc].base != documents[doc].base)
+  {
+    var document := documents[doc];
+    var applied := ApplyRevision(platform, doc, document, r, input, BoundNames(documents), ApplyClaims(documents, first), revs[doc]);
+    if !HeldForName(document, applied, r) {
+      ApplyCondClass(platform, accepted, doc, document, r, input, BoundNames(documents), ApplyClaims(documents, first), revs[doc], d);
+      return;
+    }
+    if UnsavedCollides(platform, input.unsaved, r.path) { return; }
+    ClearWayCondClass(platform, accepted, documents, doc, r, input, revs, first, d);
+  }
 }
