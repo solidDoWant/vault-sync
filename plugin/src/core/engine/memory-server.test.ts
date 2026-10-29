@@ -104,7 +104,8 @@ describe("InMemoryServer's drive-like path rule (SPEC.md §6.2, #148)", () => {
 
     expect(await commit(server, "x", "x1", "", "1:x.md")).toBe("InvalidArgument");
     expect(await commit(server, "y", "y1", "", "é:x.md")).toBe("InvalidArgument");
-    expect(await commit(server, "z", "z1", "", "12:x.md")).toBe("ok");
+    // A colon anywhere else is not a portable name either (engine.md §6).
+    expect(await commit(server, "z", "z1", "", "12:x.md")).toBe("InvalidArgument");
   });
 
   it("lets a live document already at such a path be edited in place, but not moved to another", async () => {
@@ -125,14 +126,24 @@ describe("InMemoryServer's path text rule (SPEC.md §6.2, #148)", () => {
     expect(await commit(new InMemoryServer(), "x", "x1", "", path)).toBe("InvalidArgument");
   });
 
-  it("accepts a path of exactly 4096 bytes", async () => {
-    expect(await commit(new InMemoryServer(), "x", "x1", "", "é".repeat(2048))).toBe("ok");
+  it("creates a document at a name of exactly 255 bytes and a path of exactly 1024 bytes, and at no longer one (engine.md §6)", async () => {
+    const server = new InMemoryServer();
+    expect(await commit(server, "a", "a1", "", "é".repeat(127) + "a")).toBe("ok");
+    expect(await commit(server, "b", "b1", "", "é".repeat(128))).toBe("InvalidArgument");
+    expect(await commit(server, "c", "c1", "", `${"c".repeat(254)}/`.repeat(4) + "abcd")).toBe("ok");
+    expect(await commit(server, "d", "d1", "", `${"d".repeat(254)}/`.repeat(4) + "abcde")).toBe("InvalidArgument");
   });
 
-  // U+1D160 decomposes into three 4-byte code points (testdata/paths/key.json, #100).
-  it("refuses a path longer than 8192 bytes once normalized, and accepts one of exactly 8192", async () => {
-    expect(await commit(new InMemoryServer(), "x", "x1", "", "\u{1d160}".repeat(682) + "a".repeat(9))).toBe("InvalidArgument");
-    expect(await commit(new InMemoryServer(), "x", "x1", "", "\u{1d160}".repeat(682) + "a".repeat(8))).toBe("ok");
+  // U+1D160 decomposes into three 4-byte code points (testdata/paths/key.json). Only a
+  // document kept at a path from before the 1024-byte limit can reach the normalized limit.
+  it("refuses an edit in place of a path longer than 8192 bytes once normalized, and accepts one of exactly 8192", async () => {
+    const server = new InMemoryServer();
+    const over = "\u{1d160}".repeat(682) + "a".repeat(9);
+    const exact = "\u{1d160}".repeat(682) + "a".repeat(8);
+    const overHead = server.commit({ documentId: "over", path: over, content: "over" });
+    const exactHead = server.commit({ documentId: "exact", path: exact, content: "exact" });
+    expect(await commit(server, "over", "over2", overHead.id, over)).toBe("InvalidArgument");
+    expect(await commit(server, "exact", "exact2", exactHead.id, exact)).toBe("ok");
   });
 });
 

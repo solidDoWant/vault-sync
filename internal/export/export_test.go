@@ -144,7 +144,11 @@ func TestExportWritesOnlyInsideTheVaultDirectory(t *testing.T) {
 	// Every shared validity vector (SPEC.md §6.2) plus traversal attempts
 	// a database row could carry if it bypassed CommitRevision. Each path
 	// gets its own vault, so valid paths cannot conflict with each other.
-	paths := loadPathVectors(t)
+	// A name longer than 255 bytes is valid but no filesystem here can
+	// hold it, so such vectors are left out: this test is about containment.
+	paths := slices.DeleteFunc(loadPathVectors(t), func(vector pathVector) bool {
+		return slices.ContainsFunc(strings.Split(vector.Path, "/"), func(name string) bool { return len(name) > 255 })
+	})
 	for _, attempt := range []string{
 		"..", "../escape.md", "../../escape.md", "a/../../escape.md", "a/./b.md",
 		"/etc/escape.md", "/tmp/escape.md",

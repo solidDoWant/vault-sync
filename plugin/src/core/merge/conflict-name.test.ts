@@ -22,12 +22,12 @@ describe("conflictCopyPath", () => {
   });
 
   it("shortens a folder's conflict name so the whole path fits, or gives up", () => {
-    const rest = `${"r".repeat(250)}/`.repeat(15) + "c.md";
+    const rest = `${"r".repeat(250)}/`.repeat(3) + `${"c".repeat(60)}.md`;
     const named = conflictFolderPath("f".repeat(200), rest, "laptop", date);
     expect(named).not.toBeNull();
-    expect(bytes(named ?? "")).toBeLessThanOrEqual(4096);
+    expect(bytes(named ?? "")).toBe(1024);
     expect(named?.endsWith(`/${rest}`)).toBe(true);
-    expect(conflictFolderPath("f", `${"r".repeat(250)}/`.repeat(16) + `${"c".repeat(60)}.md`, "laptop", date) === null).toBe(true);
+    expect(conflictFolderPath("f", `${"r".repeat(250)}/`.repeat(4) + "c.md", "laptop", date) === null).toBe(true);
   });
 
   it("adds a counter from the second attempt on", () => {
@@ -52,12 +52,12 @@ describe("conflictCopyPath", () => {
     expect(bytes(copy ?? "")).toBeGreaterThan(253);
   });
 
-  it("keeps the whole path within the server's 4096-byte limit", () => {
-    const folder = `${Array.from({ length: 16 }, () => "f".repeat(250)).join("/")}/`; // 4016 bytes
+  it("keeps the whole path within the server's 1024-byte limit for a new path", () => {
+    const folder = `${"f".repeat(250)}/`.repeat(3) + `${"f".repeat(200)}/`; // 954 bytes
     const name = "n".repeat(100);
     const copy = conflictCopyPath(`${folder}${name}.md`, "laptop", date);
     expect(copy).not.toBeNull();
-    expect(bytes(copy ?? "")).toBe(4096);
+    expect(bytes(copy ?? "")).toBe(1024);
     expect(copy?.startsWith(`${folder}n`)).toBe(true);
     expect(copy?.endsWith(" (conflict laptop 2026-10-18 040506).md")).toBe(true);
   });
@@ -109,10 +109,10 @@ describe("copyCandidate", () => {
     expect(copyCandidate(`${folder}z/c.md`, `${folder}z`, 1, naming)).toBe(`${folder}${folderSuffix}/c.md`);
   });
 
-  it("keeps §6.2's 4096-byte path limit", () => {
-    const folder = `${Array.from({ length: 16 }, () => "f".repeat(250)).join("/")}/`;
+  it("keeps the 1024-byte limit for a new path", () => {
+    const folder = `${"f".repeat(250)}/`.repeat(3) + `${"f".repeat(200)}/`;
     const copy = copyCandidate(`${folder}${"n".repeat(100)}.md`, null, 1, naming);
-    expect(bytes(copy ?? "")).toBe(4096);
+    expect(bytes(copy ?? "")).toBe(1024);
     expect(copy?.endsWith(" (conflict Pixel 7 2026-10-18 040506).md")).toBe(true);
   });
 

@@ -87,12 +87,12 @@ describe("PathClaims.freeCopyName", () => {
     expect(await table.freeCopyName("Plan.md", naming)).toBe(`Plan (conflict ${stamp}).md`);
   });
 
-  it("compares listed files by the filesystem's name too: ı and I are one NTFS file with two path keys", async () => {
+  it("compares listed files by path key: ı and I share one (the NTFS upcase mapping, engine.md §6)", async () => {
     const listed = [`ı (conflict ${stamp}).md`];
     const windows = await claims({ rules: { platform: "windows" }, files: listed });
     expect(await windows.claims.freeCopyName("I.md", windows.naming)).toBe(`I (conflict ${stamp} 2).md`);
     const posix = await claims({ files: listed });
-    expect(await posix.claims.freeCopyName("I.md", posix.naming)).toBe(`I (conflict ${stamp}).md`);
+    expect(await posix.claims.freeCopyName("I.md", posix.naming)).toBe(`I (conflict ${stamp} 2).md`);
   });
 
   it("skips a name a file outside the sync scope holds", async () => {
@@ -122,7 +122,7 @@ describe("PathClaims.freeCopyName", () => {
       expect(await table.freeCopyName("a/b/c.md", naming)).toBe(`a (conflict ${stamp})/b/c.md`);
     });
 
-    // PO-14 under F (#596): ı and the folder I are one name on NTFS and APFS, though their path keys differ.
+    // PO-14: ı and the folder I are one name on NTFS and APFS.
     for (const platform of ["windows", "macos"] as const) {
       it(`names a folder a listed file holds only under the filesystem's equivalence (${platform}, ı and I/)`, async () => {
         const { claims: table, naming } = await claims({ rules: { platform }, files: ["ı"] });
@@ -135,8 +135,13 @@ describe("PathClaims.freeCopyName", () => {
       });
     }
 
-    it("keeps the path's folders where no equivalence joins them to a listed file (posix, ı and I/)", async () => {
+    it("names a folder a listed file holds by path key on posix too (ı and I/ share one)", async () => {
       const { claims: table, naming } = await claims({ files: ["ı"] });
+      expect(await table.freeCopyName("I/c.md", naming)).toBe(`I (conflict ${stamp})/c.md`);
+    });
+
+    it("keeps the path's folders where no equivalence joins them to a listed file (posix)", async () => {
+      const { claims: table, naming } = await claims({ files: ["J"] });
       expect(await table.freeCopyName("I/c.md", naming)).toBe(`I/c (conflict ${stamp}).md`);
     });
 
