@@ -90,6 +90,24 @@ func (fixture *keyFixture) nextEpoch(t *testing.T, expected int32, recipients ..
 	return next
 }
 
+// logEntry returns the next entry of the vault's membership log with a
+// verifier that accepts it: the store's tests check its storage, not the
+// signatures, which the API's verifier checks.
+func (fixture *keyFixture) logEntry(t *testing.T) *store.LogAppend {
+	t.Helper()
+
+	log, err := fixture.vault.ListLogEntries(t.Context(), 0, 1000)
+	require.NoError(t, err)
+
+	return &store.LogAppend{
+		Entry: store.LogEntry{
+			Seq: int64(len(log)) + 1, PrevHash: make([]byte, 32), Type: 0x05,
+			Payload: randomBytes(t, 16), Signatures: [][]byte{randomBytes(t, 64)},
+		},
+		Verify: func(uuid.UUID, uuid.UUID, []store.LogEntry) error { return nil },
+	}
+}
+
 func (fixture *keyFixture) state(t *testing.T) store.KeyState {
 	t.Helper()
 
@@ -253,7 +271,7 @@ func TestConcurrentRemovalsCreateExactlyOneEpoch(t *testing.T) {
 		next := fixture.nextEpoch(t, 1, remaining...)
 
 		group.Go(func() {
-			results[index] = fixture.vault.RemoveMember(t.Context(), fixture.owner, removed, &next)
+			results[index] = fixture.vault.RemoveMember(t.Context(), fixture.owner, removed, &next, fixture.logEntry(t))
 		})
 	}
 
@@ -310,13 +328,13 @@ func TestEpochRecipientsAreExactlyTheKeyedMembers(t *testing.T) {
 	}
 
 	for _, testCase := range cases {
-		err := fixture.vault.RemoveMember(t.Context(), fixture.owner, removed, testCase.next)
+		err := fixture.vault.RemoveMember(t.Context(), fixture.owner, removed, testCase.next, nil)
 		require.ErrorIs(t, err, testCase.want, testCase.name)
 		assert.True(t, fixture.isMember(t, removed), "%s: the member stays", testCase.name)
 		assert.Equal(t, int32(1), fixture.state(t).CurrentEpoch, testCase.name)
 	}
 
-	require.NoError(t, fixture.vault.RemoveMember(t.Context(), fixture.owner, removed, new(fixture.nextEpoch(t, 1, fixture.owner, kept))))
+	require.NoError(t, fixture.vault.RemoveMember(t.Context(), fixture.owner, removed, new(fixture.nextEpoch(t, 1, fixture.owner, kept)), fixture.logEntry(t)))
 	assert.False(t, fixture.isMember(t, removed))
 	assert.Equal(t, store.KeyState{Encryption: store.EncryptionE2EE, CurrentEpoch: 2}, fixture.state(t))
 }
@@ -340,8 +358,8 @@ func TestRemoveMemberOfAPlaintextVaultTakesNoNextEpoch(t *testing.T) {
 	vault := queries.InVault(created.ID)
 	next := store.NextEpoch{Commitment: make([]byte, 32)}
 
-	require.ErrorIs(t, vault.RemoveMember(t.Context(), owner, member, &next), store.ErrUnexpectedNextEpoch)
-	require.NoError(t, vault.RemoveMember(t.Context(), owner, member, nil))
+	require.ErrorIs(t, vault.RemoveMember(t.Context(), owner, member, &next, nil), store.ErrUnexpectedNextEpoch)
+	require.NoError(t, vault.RemoveMember(t.Context(), owner, member, nil, nil))
 
 	_, err = vault.RotateEpoch(t.Context(), owner, next)
 	require.ErrorIs(t, err, store.ErrNotEncrypted)
@@ -372,7 +390,7 @@ func TestCommitsFollowTheCurrentEpoch(t *testing.T) {
 		return committed, revision, err
 	}
 
-	require.NoError(t, fixture.vault.LeaveVault(t.Context(), leaver))
+	require.NoError(t, fixture.vault.LeaveVault(t.Context(), leaver, fixture.logEntry(t)))
 	assert.Equal(t, store.KeyState{Encryption: store.EncryptionE2EE, CurrentEpoch: 1, RotationPending: true}, fixture.state(t))
 
 	committed, beforeRotation, err := commit(1)
@@ -527,14 +545,14 @@ func TestRemoveMemberRefusesSelfRemovalFromAnE2EEVault(t *testing.T) {
 	slotsBefore := countSlots()
 
 	for _, next := range []*store.NextEpoch{new(fixture.nextEpoch(t, 1, other)), nil} {
-		err := fixture.vault.RemoveMember(t.Context(), fixture.owner, fixture.owner, next)
+		err := fixture.vault.RemoveMember(t.Context(), fixture.owner, fixture.owner, next, fixture.logEntry(t))
 		require.ErrorIs(t, err, store.ErrSelfRemoval)
 		assert.True(t, fixture.isMember(t, fixture.owner), "the owner stays")
 		assert.Equal(t, store.KeyState{Encryption: store.EncryptionE2EE, CurrentEpoch: 1}, fixture.state(t))
 		assert.Equal(t, slotsBefore, countSlots())
 	}
 
-	require.NoError(t, fixture.vault.LeaveVault(t.Context(), fixture.owner))
+	require.NoError(t, fixture.vault.LeaveVault(t.Context(), fixture.owner, fixture.logEntry(t)))
 	assert.False(t, fixture.isMember(t, fixture.owner))
 }
 
@@ -554,7 +572,7 @@ func TestRemoveMemberLetsAnOwnerRemoveThemselvesFromAPlaintextVault(t *testing.T
 	_, err = pool.Exec(t.Context(), `INSERT INTO vault_members (vault_id, user_id, role) VALUES ($1, $2, 'owner')`, created.ID, other)
 	require.NoError(t, err)
 
-	require.NoError(t, queries.InVault(created.ID).RemoveMember(t.Context(), owner, owner, nil))
+	require.NoError(t, queries.InVault(created.ID).RemoveMember(t.Context(), owner, owner, nil, nil))
 
 	var member bool
 	require.NoError(t, pool.QueryRow(t.Context(), `SELECT EXISTS (SELECT 1 FROM vault_members WHERE vault_id = $1 AND user_id = $2)`, created.ID, owner).Scan(&member))

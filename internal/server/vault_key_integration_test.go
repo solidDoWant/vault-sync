@@ -31,6 +31,8 @@ type keyedMember struct {
 	userID     uuid.UUID
 	privateKey []byte
 	publicKey  []byte
+	// secret signs the member's entries in E2EE vaults' membership logs.
+	secret e2ee.UserSecret
 }
 
 func (fixture *syncFixture) vaultKeys(replica int) vaultsyncv1connect.VaultKeyServiceClient {
@@ -50,15 +52,42 @@ func (fixture *syncFixture) keyedMember(t *testing.T, subject string) *keyedMemb
 	material.publicKey = publicKey
 	require.NoError(t, fixture.createUserKey(t, client.token, material))
 
-	return &keyedMember{syncClient: client, userID: userID(t, fixture.pool, fixture.issuer.URL, subject), privateKey: privateKey, publicKey: publicKey}
+	secret, err := e2ee.GenerateUserSecret()
+	require.NoError(t, err)
+
+	return &keyedMember{
+		syncClient: client, userID: userID(t, fixture.pool, fixture.issuer.URL, subject),
+		privateKey: privateKey, publicKey: publicKey, secret: secret,
+	}
 }
 
-// e2eeVault creates an E2EE vault owned by owner through the store: the
-// API still refuses to create one until #39 (SPEC.md §9.3).
+// e2eeVault creates an E2EE vault owned by owner through the store, its
+// genesis signed by owner.
 func (fixture *syncFixture) e2eeVault(t *testing.T, owner *keyedMember, escrow bool) string {
 	t.Helper()
 
-	vault, err := store.New(fixture.pool).CreateVault(t.Context(), owner.userID, store.NewVault{Name: "Secret", Encryption: store.EncryptionE2EE, Escrow: escrow}, 100)
+	var escrowBundle *e2ee.EscrowBundle
+
+	if escrow {
+		_, escrowKey, err := e2ee.GenerateKeyPair()
+		require.NoError(t, err)
+
+		escrowBundle = escrowBundleOf(t, escrowKey)
+	}
+
+	bundle, err := owner.secret.Bundle(owner.userID.String())
+	require.NoError(t, err)
+
+	payload, err := e2ee.GenesisPayload(bundle, escrowBundle)
+	require.NoError(t, err)
+
+	id := uuid.Must(uuid.NewV7())
+	genesis := signedEntry(t, id.String(), 1, make([]byte, e2ee.HashSize), e2ee.EntryGenesis, payload, owner.secret.SignKey())
+
+	vault, err := store.New(fixture.pool).CreateVault(t.Context(), owner.userID, store.NewVault{
+		ID: id, Name: "Secret", Encryption: store.EncryptionE2EE, Escrow: escrow,
+		Genesis: &store.LogEntry{Seq: 1, PrevHash: genesis.GetPrevHash(), Type: byte(e2ee.EntryGenesis), Payload: payload, Signatures: genesis.GetSignatures()},
+	}, 100)
 	require.NoError(t, err)
 
 	owner.vaultID = vault.ID.String()
@@ -67,12 +96,30 @@ func (fixture *syncFixture) e2eeVault(t *testing.T, owner *keyedMember, escrow b
 }
 
 // join makes member a member of owner's vault with role, through an
-// invitation.
+// invitation, with signed log entries in an E2EE vault.
 func (fixture *syncFixture) join(t *testing.T, owner, member *keyedMember, role vaultsyncv1.VaultRole) {
 	t.Helper()
 
-	invitation := fixture.mustInvite(t, owner.token, owner.vaultID, role)
-	_, err := fixture.redeem(t, member.token, invitation.GetCode())
+	if !fixture.encrypted(t, owner) {
+		invitation := fixture.mustInvite(t, owner.token, owner.vaultID, role)
+		_, err := fixture.redeem(t, member.token, invitation.GetCode())
+		require.NoError(t, err)
+
+		member.vaultID = owner.vaultID
+
+		return
+	}
+
+	invitation := fixture.signedInvitation(t, owner, role)
+
+	created, err := fixture.members(0).CreateInvitation(t.Context(), authorized(&vaultsyncv1.CreateInvitationRequest{
+		VaultId: owner.vaultID, Role: role, LogEntry: invitation.entry,
+	}, owner.token))
+	require.NoError(t, err)
+
+	_, err = fixture.members(1).RedeemInvitation(t.Context(), authorized(&vaultsyncv1.RedeemInvitationRequest{
+		Code: created.Msg.GetCode(), LogEntry: fixture.redeemEntry(t, owner, member, invitation),
+	}, member.token))
 	require.NoError(t, err)
 
 	member.vaultID = owner.vaultID
@@ -163,9 +210,12 @@ func (fixture *syncFixture) missingSlots(t *testing.T, caller *keyedMember) []*v
 func (fixture *syncFixture) removeWithEpoch(t *testing.T, owner, removed *keyedMember, next *vaultsyncv1.NextEpoch) error {
 	t.Helper()
 
-	_, err := fixture.members(1).RemoveMember(t.Context(), authorized(&vaultsyncv1.RemoveMemberRequest{
-		VaultId: owner.vaultID, UserId: removed.userID.String(), NextEpoch: next,
-	}, owner.token))
+	request := &vaultsyncv1.RemoveMemberRequest{VaultId: owner.vaultID, UserId: removed.userID.String(), NextEpoch: next}
+	if fixture.encrypted(t, owner) {
+		request.LogEntry = fixture.idEntry(t, owner, e2ee.EntryRemoveMember, removed.userID, owner)
+	}
+
+	_, err := fixture.members(1).RemoveMember(t.Context(), authorized(request, owner.token))
 
 	return err
 }
@@ -364,7 +414,10 @@ func TestLeavingMarksARotationPendingAndCommitsFollowTheEpochAgainstPostgres(t *
 	_, err = fixture.rotate(t, 0, alice, nextEpoch(t, alice.vaultID, 0, key, alice, bob, carol))
 	require.NoError(t, err)
 
-	require.NoError(t, fixture.leave(t, bob.token, vaultID))
+	_, err = fixture.members(1).LeaveVault(t.Context(), authorized(&vaultsyncv1.LeaveVaultRequest{
+		VaultId: vaultID, LogEntry: fixture.idEntry(t, bob, e2ee.EntryLeave, bob.userID, bob),
+	}, bob.token))
+	require.NoError(t, err)
 
 	state := fixture.epochs(t, carol)
 	assert.Equal(t, uint32(1), state.GetCurrentEpoch())

@@ -6,7 +6,7 @@ import type { GenFile, GenMessage, GenService } from "@bufbuild/protobuf/codegen
 import { fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2";
 import type { Timestamp } from "@bufbuild/protobuf/wkt";
 import { file_google_protobuf_timestamp } from "@bufbuild/protobuf/wkt";
-import type { Vault, VaultRole } from "./types_pb";
+import type { LogEntry, Vault, VaultRole } from "./types_pb";
 import { file_vaultsync_v1_types } from "./types_pb";
 import type { NextEpoch } from "./vault_key_pb";
 import { file_vaultsync_v1_vault_key } from "./vault_key_pb";
@@ -16,7 +16,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file vaultsync/v1/membership.proto.
  */
 export const file_vaultsync_v1_membership: GenFile = /*@__PURE__*/
-  fileDesc("Ch12YXVsdHN5bmMvdjEvbWVtYmVyc2hpcC5wcm90bxIMdmF1bHRzeW5jLnYxIroBCgpJbnZpdGF0aW9uEgoKAmlkGAEgASgJEiUKBHJvbGUYAiABKA4yFy52YXVsdHN5bmMudjEuVmF1bHRSb2xlEhcKD2NyZWF0b3JfdXNlcl9pZBgDIAEoCRIvCgtjcmVhdGVfdGltZRgEIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASLwoLZXhwaXJlX3RpbWUYBSABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wIpkBCgZNZW1iZXISDwoHdXNlcl9pZBgBIAEoCRIUCgxkaXNwbGF5X25hbWUYAiABKAkSJQoEcm9sZRgDIAEoDjIXLnZhdWx0c3luYy52MS5WYXVsdFJvbGUSLQoJam9pbl90aW1lGAQgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBISCgpwdWJsaWNfa2V5GAUgASgMImcKF0NyZWF0ZUludml0YXRpb25SZXF1ZXN0EhAKCHZhdWx0X2lkGAEgASgJEiUKBHJvbGUYAiABKA4yFy52YXVsdHN5bmMudjEuVmF1bHRSb2xlEhMKC3R0bF9zZWNvbmRzGAMgASgNIlYKGENyZWF0ZUludml0YXRpb25SZXNwb25zZRIsCgppbnZpdGF0aW9uGAEgASgLMhgudmF1bHRzeW5jLnYxLkludml0YXRpb24SDAoEY29kZRgCIAEoCSIqChZMaXN0SW52aXRhdGlvbnNSZXF1ZXN0EhAKCHZhdWx0X2lkGAEgASgJIkgKF0xpc3RJbnZpdGF0aW9uc1Jlc3BvbnNlEi0KC2ludml0YXRpb25zGAEgAygLMhgudmF1bHRzeW5jLnYxLkludml0YXRpb24iQgoXUmV2b2tlSW52aXRhdGlvblJlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkSFQoNaW52aXRhdGlvbl9pZBgCIAEoCSIaChhSZXZva2VJbnZpdGF0aW9uUmVzcG9uc2UiJwoXUmVkZWVtSW52aXRhdGlvblJlcXVlc3QSDAoEY29kZRgBIAEoCSI+ChhSZWRlZW1JbnZpdGF0aW9uUmVzcG9uc2USIgoFdmF1bHQYASABKAsyEy52YXVsdHN5bmMudjEuVmF1bHQiJgoSTGlzdE1lbWJlcnNSZXF1ZXN0EhAKCHZhdWx0X2lkGAEgASgJIjwKE0xpc3RNZW1iZXJzUmVzcG9uc2USJQoHbWVtYmVycxgBIAMoCzIULnZhdWx0c3luYy52MS5NZW1iZXIiYwoXVXBkYXRlTWVtYmVyUm9sZVJlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkSDwoHdXNlcl9pZBgCIAEoCRIlCgRyb2xlGAMgASgOMhcudmF1bHRzeW5jLnYxLlZhdWx0Um9sZSJAChhVcGRhdGVNZW1iZXJSb2xlUmVzcG9uc2USJAoGbWVtYmVyGAEgASgLMhQudmF1bHRzeW5jLnYxLk1lbWJlciJlChNSZW1vdmVNZW1iZXJSZXF1ZXN0EhAKCHZhdWx0X2lkGAEgASgJEg8KB3VzZXJfaWQYAiABKAkSKwoKbmV4dF9lcG9jaBgDIAEoCzIXLnZhdWx0c3luYy52MS5OZXh0RXBvY2giFgoUUmVtb3ZlTWVtYmVyUmVzcG9uc2UiJQoRTGVhdmVWYXVsdFJlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkiFAoSTGVhdmVWYXVsdFJlc3BvbnNlMosGChFNZW1iZXJzaGlwU2VydmljZRJjChBDcmVhdGVJbnZpdGF0aW9uEiUudmF1bHRzeW5jLnYxLkNyZWF0ZUludml0YXRpb25SZXF1ZXN0GiYudmF1bHRzeW5jLnYxLkNyZWF0ZUludml0YXRpb25SZXNwb25zZSIAEmAKD0xpc3RJbnZpdGF0aW9ucxIkLnZhdWx0c3luYy52MS5MaXN0SW52aXRhdGlvbnNSZXF1ZXN0GiUudmF1bHRzeW5jLnYxLkxpc3RJbnZpdGF0aW9uc1Jlc3BvbnNlIgASYwoQUmV2b2tlSW52aXRhdGlvbhIlLnZhdWx0c3luYy52MS5SZXZva2VJbnZpdGF0aW9uUmVxdWVzdBomLnZhdWx0c3luYy52MS5SZXZva2VJbnZpdGF0aW9uUmVzcG9uc2UiABJjChBSZWRlZW1JbnZpdGF0aW9uEiUudmF1bHRzeW5jLnYxLlJlZGVlbUludml0YXRpb25SZXF1ZXN0GiYudmF1bHRzeW5jLnYxLlJlZGVlbUludml0YXRpb25SZXNwb25zZSIAElQKC0xpc3RNZW1iZXJzEiAudmF1bHRzeW5jLnYxLkxpc3RNZW1iZXJzUmVxdWVzdBohLnZhdWx0c3luYy52MS5MaXN0TWVtYmVyc1Jlc3BvbnNlIgASYwoQVXBkYXRlTWVtYmVyUm9sZRIlLnZhdWx0c3luYy52MS5VcGRhdGVNZW1iZXJSb2xlUmVxdWVzdBomLnZhdWx0c3luYy52MS5VcGRhdGVNZW1iZXJSb2xlUmVzcG9uc2UiABJXCgxSZW1vdmVNZW1iZXISIS52YXVsdHN5bmMudjEuUmVtb3ZlTWVtYmVyUmVxdWVzdBoiLnZhdWx0c3luYy52MS5SZW1vdmVNZW1iZXJSZXNwb25zZSIAElEKCkxlYXZlVmF1bHQSHy52YXVsdHN5bmMudjEuTGVhdmVWYXVsdFJlcXVlc3QaIC52YXVsdHN5bmMudjEuTGVhdmVWYXVsdFJlc3BvbnNlIgBCQFo+Z2l0aHViLmNvbS9zb2xpZERvV2FudC92YXVsdC1zeW5jL2dlbi92YXVsdHN5bmMvdjE7dmF1bHRzeW5jdjFiBnByb3RvMw", [file_google_protobuf_timestamp, file_vaultsync_v1_types, file_vaultsync_v1_vault_key]);
+  fileDesc("Ch12YXVsdHN5bmMvdjEvbWVtYmVyc2hpcC5wcm90bxIMdmF1bHRzeW5jLnYxIroBCgpJbnZpdGF0aW9uEgoKAmlkGAEgASgJEiUKBHJvbGUYAiABKA4yFy52YXVsdHN5bmMudjEuVmF1bHRSb2xlEhcKD2NyZWF0b3JfdXNlcl9pZBgDIAEoCRIvCgtjcmVhdGVfdGltZRgEIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASLwoLZXhwaXJlX3RpbWUYBSABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wIpkBCgZNZW1iZXISDwoHdXNlcl9pZBgBIAEoCRIUCgxkaXNwbGF5X25hbWUYAiABKAkSJQoEcm9sZRgDIAEoDjIXLnZhdWx0c3luYy52MS5WYXVsdFJvbGUSLQoJam9pbl90aW1lGAQgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBISCgpwdWJsaWNfa2V5GAUgASgMIpIBChdDcmVhdGVJbnZpdGF0aW9uUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRIlCgRyb2xlGAIgASgOMhcudmF1bHRzeW5jLnYxLlZhdWx0Um9sZRITCgt0dGxfc2Vjb25kcxgDIAEoDRIpCglsb2dfZW50cnkYBCABKAsyFi52YXVsdHN5bmMudjEuTG9nRW50cnkiVgoYQ3JlYXRlSW52aXRhdGlvblJlc3BvbnNlEiwKCmludml0YXRpb24YASABKAsyGC52YXVsdHN5bmMudjEuSW52aXRhdGlvbhIMCgRjb2RlGAIgASgJIioKFkxpc3RJbnZpdGF0aW9uc1JlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkiSAoXTGlzdEludml0YXRpb25zUmVzcG9uc2USLQoLaW52aXRhdGlvbnMYASADKAsyGC52YXVsdHN5bmMudjEuSW52aXRhdGlvbiJtChdSZXZva2VJbnZpdGF0aW9uUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRIVCg1pbnZpdGF0aW9uX2lkGAIgASgJEikKCWxvZ19lbnRyeRgDIAEoCzIWLnZhdWx0c3luYy52MS5Mb2dFbnRyeSIaChhSZXZva2VJbnZpdGF0aW9uUmVzcG9uc2UiUgoXUmVkZWVtSW52aXRhdGlvblJlcXVlc3QSDAoEY29kZRgBIAEoCRIpCglsb2dfZW50cnkYAiABKAsyFi52YXVsdHN5bmMudjEuTG9nRW50cnkiPgoYUmVkZWVtSW52aXRhdGlvblJlc3BvbnNlEiIKBXZhdWx0GAEgASgLMhMudmF1bHRzeW5jLnYxLlZhdWx0IiYKEkxpc3RNZW1iZXJzUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCSI8ChNMaXN0TWVtYmVyc1Jlc3BvbnNlEiUKB21lbWJlcnMYASADKAsyFC52YXVsdHN5bmMudjEuTWVtYmVyIo4BChdVcGRhdGVNZW1iZXJSb2xlUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRIPCgd1c2VyX2lkGAIgASgJEiUKBHJvbGUYAyABKA4yFy52YXVsdHN5bmMudjEuVmF1bHRSb2xlEikKCWxvZ19lbnRyeRgEIAEoCzIWLnZhdWx0c3luYy52MS5Mb2dFbnRyeSJAChhVcGRhdGVNZW1iZXJSb2xlUmVzcG9uc2USJAoGbWVtYmVyGAEgASgLMhQudmF1bHRzeW5jLnYxLk1lbWJlciKQAQoTUmVtb3ZlTWVtYmVyUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRIPCgd1c2VyX2lkGAIgASgJEisKCm5leHRfZXBvY2gYAyABKAsyFy52YXVsdHN5bmMudjEuTmV4dEVwb2NoEikKCWxvZ19lbnRyeRgEIAEoCzIWLnZhdWx0c3luYy52MS5Mb2dFbnRyeSIWChRSZW1vdmVNZW1iZXJSZXNwb25zZSJQChFMZWF2ZVZhdWx0UmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRIpCglsb2dfZW50cnkYAiABKAsyFi52YXVsdHN5bmMudjEuTG9nRW50cnkiFAoSTGVhdmVWYXVsdFJlc3BvbnNlMosGChFNZW1iZXJzaGlwU2VydmljZRJjChBDcmVhdGVJbnZpdGF0aW9uEiUudmF1bHRzeW5jLnYxLkNyZWF0ZUludml0YXRpb25SZXF1ZXN0GiYudmF1bHRzeW5jLnYxLkNyZWF0ZUludml0YXRpb25SZXNwb25zZSIAEmAKD0xpc3RJbnZpdGF0aW9ucxIkLnZhdWx0c3luYy52MS5MaXN0SW52aXRhdGlvbnNSZXF1ZXN0GiUudmF1bHRzeW5jLnYxLkxpc3RJbnZpdGF0aW9uc1Jlc3BvbnNlIgASYwoQUmV2b2tlSW52aXRhdGlvbhIlLnZhdWx0c3luYy52MS5SZXZva2VJbnZpdGF0aW9uUmVxdWVzdBomLnZhdWx0c3luYy52MS5SZXZva2VJbnZpdGF0aW9uUmVzcG9uc2UiABJjChBSZWRlZW1JbnZpdGF0aW9uEiUudmF1bHRzeW5jLnYxLlJlZGVlbUludml0YXRpb25SZXF1ZXN0GiYudmF1bHRzeW5jLnYxLlJlZGVlbUludml0YXRpb25SZXNwb25zZSIAElQKC0xpc3RNZW1iZXJzEiAudmF1bHRzeW5jLnYxLkxpc3RNZW1iZXJzUmVxdWVzdBohLnZhdWx0c3luYy52MS5MaXN0TWVtYmVyc1Jlc3BvbnNlIgASYwoQVXBkYXRlTWVtYmVyUm9sZRIlLnZhdWx0c3luYy52MS5VcGRhdGVNZW1iZXJSb2xlUmVxdWVzdBomLnZhdWx0c3luYy52MS5VcGRhdGVNZW1iZXJSb2xlUmVzcG9uc2UiABJXCgxSZW1vdmVNZW1iZXISIS52YXVsdHN5bmMudjEuUmVtb3ZlTWVtYmVyUmVxdWVzdBoiLnZhdWx0c3luYy52MS5SZW1vdmVNZW1iZXJSZXNwb25zZSIAElEKCkxlYXZlVmF1bHQSHy52YXVsdHN5bmMudjEuTGVhdmVWYXVsdFJlcXVlc3QaIC52YXVsdHN5bmMudjEuTGVhdmVWYXVsdFJlc3BvbnNlIgBCQFo+Z2l0aHViLmNvbS9zb2xpZERvV2FudC92YXVsdC1zeW5jL2dlbi92YXVsdHN5bmMvdjE7dmF1bHRzeW5jdjFiBnByb3RvMw", [file_google_protobuf_timestamp, file_vaultsync_v1_types, file_vaultsync_v1_vault_key]);
 
 /**
  * Invitation is a pending invitation to a vault. It never carries the code.
@@ -145,6 +145,16 @@ export type CreateInvitationRequest = Message<"vaultsync.v1.CreateInvitationRequ
    * @generated from field: uint32 ttl_seconds = 3;
    */
   ttlSeconds: number;
+
+  /**
+   * The signed invite entry of an end-to-end encrypted vault's membership
+   * log (docs/design/crypto.md): required there, and must be unset in a
+   * plaintext vault. Its invitation id becomes the invitation's id and its
+   * role must be the requested role.
+   *
+   * @generated from field: vaultsync.v1.LogEntry log_entry = 4;
+   */
+  logEntry?: LogEntry | undefined;
 };
 
 /**
@@ -244,6 +254,16 @@ export type RevokeInvitationRequest = Message<"vaultsync.v1.RevokeInvitationRequ
    * @generated from field: string invitation_id = 2;
    */
   invitationId: string;
+
+  /**
+   * The signed revoke-invitation entry for invitation_id: required in an
+   * end-to-end encrypted vault, and must be unset in a plaintext vault. In
+   * an end-to-end encrypted vault an invitation that has expired but is
+   * still pending in the log can be revoked this way.
+   *
+   * @generated from field: vaultsync.v1.LogEntry log_entry = 3;
+   */
+  logEntry?: LogEntry | undefined;
 };
 
 /**
@@ -280,6 +300,15 @@ export type RedeemInvitationRequest = Message<"vaultsync.v1.RedeemInvitationRequ
    * @generated from field: string code = 1;
    */
   code: string;
+
+  /**
+   * The redeem entry, signed by the invitation key and then by the caller,
+   * carrying the caller's bundle: required for an invitation to an
+   * end-to-end encrypted vault, and must be unset for a plaintext vault.
+   *
+   * @generated from field: vaultsync.v1.LogEntry log_entry = 2;
+   */
+  logEntry?: LogEntry | undefined;
 };
 
 /**
@@ -378,6 +407,14 @@ export type UpdateMemberRoleRequest = Message<"vaultsync.v1.UpdateMemberRoleRequ
    * @generated from field: vaultsync.v1.VaultRole role = 3;
    */
   role: VaultRole;
+
+  /**
+   * The signed set-role entry for user_id and role: required in an
+   * end-to-end encrypted vault, and must be unset in a plaintext vault.
+   *
+   * @generated from field: vaultsync.v1.LogEntry log_entry = 4;
+   */
+  logEntry?: LogEntry | undefined;
 };
 
 /**
@@ -438,6 +475,14 @@ export type RemoveMemberRequest = Message<"vaultsync.v1.RemoveMemberRequest"> & 
    * @generated from field: vaultsync.v1.NextEpoch next_epoch = 3;
    */
   nextEpoch?: NextEpoch | undefined;
+
+  /**
+   * The signed remove-member entry for user_id: required in an end-to-end
+   * encrypted vault, and must be unset in a plaintext vault.
+   *
+   * @generated from field: vaultsync.v1.LogEntry log_entry = 4;
+   */
+  logEntry?: LogEntry | undefined;
 };
 
 /**
@@ -474,6 +519,14 @@ export type LeaveVaultRequest = Message<"vaultsync.v1.LeaveVaultRequest"> & {
    * @generated from field: string vault_id = 1;
    */
   vaultId: string;
+
+  /**
+   * The leave entry for the caller, signed by the caller: required in an
+   * end-to-end encrypted vault, and must be unset in a plaintext vault.
+   *
+   * @generated from field: vaultsync.v1.LogEntry log_entry = 2;
+   */
+  logEntry?: LogEntry | undefined;
 };
 
 /**
@@ -515,6 +568,17 @@ export const LeaveVaultResponseSchema: GenMessage<LeaveVaultResponse> = /*@__PUR
  * Membership changes take effect on the caller's next request, on every
  * server replica, and end a removed member's open realtime subscriptions to
  * the vault (with a NOT_FOUND error frame).
+ *
+ * In an end-to-end encrypted vault every change but ListInvitations and
+ * ListMembers carries its signed membership log entry (docs/design/crypto.md,
+ * "Identity keys, the membership log and signed epochs"). The server replays
+ * it onto the stored log (signatures, hash chain, the signer's right to sign),
+ * checks that it records exactly the requested change, and appends it in the
+ * same transaction as the change, under the vault row lock. A missing entry,
+ * an entry in a plaintext vault, or one that does not verify or does not match
+ * the request gets INVALID_ARGUMENT; an entry whose seq is not the log's next
+ * gets ABORTED, and the client retries on top of the new head
+ * (VaultKeyService.ListLogEntries). A refused change changes nothing.
  *
  * @generated from service vaultsync.v1.MembershipService
  */

@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/google/uuid"
@@ -64,4 +66,74 @@ func listLogEntries(ctx context.Context, db querier, vaultID uuid.UUID, after in
 	}
 
 	return entries, nil
+}
+
+// Membership log errors.
+var (
+	// ErrLogEntryRequired is returned when a membership change of an E2EE
+	// vault carries no log entry.
+	ErrLogEntryRequired = errors.New("a membership change of an E2EE vault needs its log entry")
+	// ErrUnexpectedLogEntry is returned when a membership change of a
+	// plaintext vault carries a log entry.
+	ErrUnexpectedLogEntry = errors.New("a plaintext vault has no membership log")
+	// ErrLogConflict is returned when a log entry's seq is not the next one
+	// of the stored log: another change appended first, and the client
+	// retries on top of it.
+	ErrLogConflict = errors.New("log entry is not the next one of the vault's log")
+)
+
+// LogAppend is a membership log entry to append with a membership change.
+type LogAppend struct {
+	Entry LogEntry
+	// Verify checks Entry against the vault's stored log, under the vault
+	// row lock; an error refuses the change and is returned as is.
+	// invitationID is the invitation being redeemed, uuid.Nil otherwise.
+	Verify func(vaultID, invitationID uuid.UUID, log []LogEntry) error
+}
+
+// appendLog appends a membership change's log entry in tx, which holds the
+// vault row lock: an E2EE vault requires one (ErrLogEntryRequired) and a
+// plaintext vault takes none (ErrUnexpectedLogEntry). The entry's seq must
+// follow the stored log's (ErrLogConflict), then Verify must accept it.
+func appendLog(ctx context.Context, tx pgx.Tx, vaultID, invitationID uuid.UUID, entry *LogAppend) error {
+	var encryption Encryption
+
+	err := tx.QueryRow(ctx, `SELECT encryption FROM vaults WHERE id = $1`, vaultID).Scan(&encryption)
+	if err != nil {
+		return fmt.Errorf("read vault encryption: %w", err)
+	}
+
+	switch {
+	case encryption != EncryptionE2EE && entry != nil:
+		return ErrUnexpectedLogEntry
+	case encryption != EncryptionE2EE:
+		return nil
+	case entry == nil:
+		return ErrLogEntryRequired
+	}
+
+	log, err := readLog(ctx, tx, vaultID)
+	if err != nil {
+		return err
+	}
+
+	var head int64
+	if len(log) > 0 {
+		head = log[len(log)-1].Seq
+	}
+
+	if entry.Entry.Seq != head+1 {
+		return ErrLogConflict
+	}
+
+	if err := entry.Verify(vaultID, invitationID, log); err != nil {
+		return err
+	}
+
+	return insertLogEntry(ctx, tx, vaultID, entry.Entry)
+}
+
+// readLog returns the vault's whole log in ascending seq order.
+func readLog(ctx context.Context, db querier, vaultID uuid.UUID) ([]LogEntry, error) {
+	return listLogEntries(ctx, db, vaultID, 0, math.MaxInt32)
 }

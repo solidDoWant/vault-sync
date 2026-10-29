@@ -47,7 +47,7 @@ func (fixture *fixture) fill(t *testing.T, vaultID uuid.UUID, content string) st
 	chunk := blobstore.ChunkKey(vaultID, uuid.Must(uuid.NewV7()), 0, uuid.Must(uuid.NewV7()))
 	require.NoError(t, fixture.objects.Put(t.Context(), chunk, []byte("staged")))
 
-	_, err = vault.CreateInvitation(t.Context(), fixture.user, store.RoleEditor, sum[:], time.Hour, 10)
+	_, err = vault.CreateInvitation(t.Context(), fixture.user, uuid.Nil, store.RoleEditor, sum[:], time.Hour, 10, nil)
 	require.NoError(t, err)
 
 	require.NoError(t, fixture.store.SetVaultRetention(t.Context(), vaultID, policy))
