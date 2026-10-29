@@ -295,6 +295,9 @@ export class ObsidianVaultAdapter implements VaultAdapter {
    *   edit made right after it. Otherwise the views are saved and the write
    *   rejects with UnsavedEditsError: the next pull finds the saved state as
    *   a local change.
+   * - Open in Markdown views all in reading view (UTF-8 content): as a text
+   *   file view above. Their editors are hidden and may hold older text,
+   *   which is not an unsaved edit.
    * - Open in a Markdown editor (UTF-8 content): a three-way merge inside
    *   Vault.process. The disk text is the base (the engine has checked it is
    *   the synced base), the editor buffer is the base plus any unsaved
@@ -317,10 +320,17 @@ export class ObsidianVaultAdapter implements VaultAdapter {
       await this.overwriteUnderOtherViews(file, data, others, expectedHash);
       return;
     }
-    const view = views.find((candidate) => candidate instanceof MarkdownView);
-    const text = view === undefined ? undefined : decodeText(data);
-    if (view === undefined || text === undefined) {
+    const markdown = views.filter((candidate) => candidate instanceof MarkdownView);
+    const view = markdown.find((candidate) => candidate.getMode() === "source");
+    const text = markdown.length === 0 ? undefined : decodeText(data);
+    if (text === undefined) {
       await this.replaceContent(file, data, expectedHash);
+      return;
+    }
+    // In reading view the user cannot type, and Obsidian leaves the hidden
+    // editor's buffer as it was: what such a view holds is its view data.
+    if (view === undefined) {
+      await this.overwriteUnderOtherViews(file, data, markdown, expectedHash);
       return;
     }
     const outcome = { overlapping: false, changed: false };

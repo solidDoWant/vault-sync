@@ -1,6 +1,7 @@
 import type { App } from "obsidian";
 import { describe, expect, it, vi } from "vitest";
 
+import { sha256Hex } from "../core/hash";
 import { VaultError } from "../core/vault/adapter";
 
 // The adapter's runtime imports from Obsidian, reduced to what create and
@@ -22,8 +23,9 @@ vi.mock("obsidian", () => {
   return { TAbstractFile, TFile: class extends TAbstractFile {}, TFolder: class extends TAbstractFile {}, EditableFileView, TextFileView, MarkdownView, FileSystemAdapter, normalizePath: (path: string) => path };
 });
 
-const { TFile, TFolder } = await import("obsidian");
-const { ObsidianVaultAdapter } = await import("./vault-adapter");
+const obsidian = await import("obsidian");
+const { TFile, TFolder } = obsidian;
+const { ObsidianVaultAdapter, UnsavedEditsError } = await import("./vault-adapter");
 
 /** The error Node's fs gives for a missing path, which Windows also gives for a name it refuses. */
 function enoent(path: string): Error {
@@ -64,6 +66,10 @@ function fakeApp(options: { files?: string[]; folders?: string[]; onDisk: string
 }
 
 const bytes = new TextEncoder().encode("text");
+
+function toArrayBuffer(data: Uint8Array): ArrayBuffer {
+  return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
+}
 
 describe("ObsidianVaultAdapter on an ENOENT from the platform", () => {
   it("takes a created file's name as refused when its parent folder exists", async () => {
@@ -139,5 +145,79 @@ describe("ObsidianVaultAdapter on Android's FILE_NOTCREATED (#705)", () => {
     const error = await adapter.rename("old.md", "notes/new.md").catch((caught: unknown) => caught);
     expect(error).not.toBeInstanceOf(VaultError);
     expect(error).toMatchObject({ message: "FILE_NOTCREATED" });
+  });
+});
+
+describe("ObsidianVaultAdapter writing a note open in reading view", () => {
+  /**
+   * A vault holding `disk` at note.md, open in one Markdown view in reading
+   * view whose view data is `viewData`. Its editor holds `editorText`: Obsidian
+   * does not update the hidden editor of a note in reading view.
+   */
+  function readingView(disk: string, viewData: string, editorText: string) {
+    const { MarkdownView } = vi.mocked(obsidian);
+    const file = new (TFile as unknown as new (path: string) => object)("note.md");
+    const state = { disk, saves: 0 };
+    const view = Object.assign(new (MarkdownView as unknown as new () => object)(), {
+      file,
+      data: viewData,
+      getViewType: () => "markdown",
+      getMode: () => "preview",
+      getViewData: () => view.data,
+      setViewData: (content: string) => {
+        view.data = content;
+      },
+      save: () => {
+        state.saves++;
+        state.disk = view.data;
+        return Promise.resolve();
+      },
+      editor: {
+        getValue: () => editorText,
+        transaction: () => {
+          throw new Error("the hidden editor of a note in reading view was edited");
+        },
+        offsetToPos: (offset: number) => offset,
+      },
+    });
+    const vault = {
+      getAbstractFileByPath: (path: string) => (path === "note.md" ? file : null),
+      process: (_file: unknown, change: (text: string) => string) => {
+        state.disk = change(state.disk);
+        return Promise.resolve(state.disk);
+      },
+      modifyBinary: (_file: unknown, data: ArrayBuffer) => {
+        state.disk = new TextDecoder().decode(data);
+        return Promise.resolve();
+      },
+      readBinary: () => Promise.resolve(toArrayBuffer(new TextEncoder().encode(state.disk))),
+    };
+    const workspace = {
+      iterateAllLeaves: (callback: (leaf: { view: unknown }) => void) => {
+        callback({ view });
+      },
+    };
+    return { app: { vault, workspace } as unknown as App, state, view };
+  }
+
+  it("writes the remote change, though the hidden editor holds older text", async () => {
+    const { app, state, view } = readingView("the synced text\n", "the synced text\n", "an older text\n");
+    const adapter = new ObsidianVaultAdapter(app);
+
+    await adapter.write("note.md", new TextEncoder().encode("the remote change\n"), { expectedHash: sha256Hex(new TextEncoder().encode("the synced text\n")) });
+
+    expect(state.disk).toBe("the remote change\n");
+    expect(view.data).toBe("the remote change\n");
+    expect(state.saves).toBe(0);
+  });
+
+  it("keeps unsaved view data: saves it and writes nothing", async () => {
+    const { app, state } = readingView("the synced text\n", "unsaved text\n", "unsaved text\n");
+    const adapter = new ObsidianVaultAdapter(app);
+
+    await expect(adapter.write("note.md", new TextEncoder().encode("the remote change\n"), { expectedHash: sha256Hex(new TextEncoder().encode("the synced text\n")) })).rejects.toBeInstanceOf(UnsavedEditsError);
+
+    expect(state.disk).toBe("unsaved text\n");
+    expect(state.saves).toBe(1);
   });
 });
