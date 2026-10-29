@@ -12,7 +12,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file vaultsync/v1/vault.proto.
  */
 export const file_vaultsync_v1_vault: GenFile = /*@__PURE__*/
-  fileDesc("Chh2YXVsdHN5bmMvdjEvdmF1bHQucHJvdG8SDHZhdWx0c3luYy52MSJlChJDcmVhdGVWYXVsdFJlcXVlc3QSDAoEbmFtZRgBIAEoCRIxCgplbmNyeXB0aW9uGAIgASgOMh0udmF1bHRzeW5jLnYxLlZhdWx0RW5jcnlwdGlvbhIOCgZlc2Nyb3cYAyABKAgiOQoTQ3JlYXRlVmF1bHRSZXNwb25zZRIiCgV2YXVsdBgBIAEoCzITLnZhdWx0c3luYy52MS5WYXVsdCI6ChFMaXN0VmF1bHRzUmVxdWVzdBIRCglwYWdlX3NpemUYASABKA0SEgoKcGFnZV90b2tlbhgCIAEoCSJSChJMaXN0VmF1bHRzUmVzcG9uc2USIwoGdmF1bHRzGAEgAygLMhMudmF1bHRzeW5jLnYxLlZhdWx0EhcKD25leHRfcGFnZV90b2tlbhgCIAEoCTK3AQoMVmF1bHRTZXJ2aWNlElQKC0NyZWF0ZVZhdWx0EiAudmF1bHRzeW5jLnYxLkNyZWF0ZVZhdWx0UmVxdWVzdBohLnZhdWx0c3luYy52MS5DcmVhdGVWYXVsdFJlc3BvbnNlIgASUQoKTGlzdFZhdWx0cxIfLnZhdWx0c3luYy52MS5MaXN0VmF1bHRzUmVxdWVzdBogLnZhdWx0c3luYy52MS5MaXN0VmF1bHRzUmVzcG9uc2UiAEJAWj5naXRodWIuY29tL3NvbGlkRG9XYW50L3ZhdWx0LXN5bmMvZ2VuL3ZhdWx0c3luYy92MTt2YXVsdHN5bmN2MWIGcHJvdG8z", [file_vaultsync_v1_types]);
+  fileDesc("Chh2YXVsdHN5bmMvdjEvdmF1bHQucHJvdG8SDHZhdWx0c3luYy52MSJlChJDcmVhdGVWYXVsdFJlcXVlc3QSDAoEbmFtZRgBIAEoCRIxCgplbmNyeXB0aW9uGAIgASgOMh0udmF1bHRzeW5jLnYxLlZhdWx0RW5jcnlwdGlvbhIOCgZlc2Nyb3cYAyABKAgiOQoTQ3JlYXRlVmF1bHRSZXNwb25zZRIiCgV2YXVsdBgBIAEoCzITLnZhdWx0c3luYy52MS5WYXVsdCI6ChFMaXN0VmF1bHRzUmVxdWVzdBIRCglwYWdlX3NpemUYASABKA0SEgoKcGFnZV90b2tlbhgCIAEoCSJSChJMaXN0VmF1bHRzUmVzcG9uc2USIwoGdmF1bHRzGAEgAygLMhMudmF1bHRzeW5jLnYxLlZhdWx0EhcKD25leHRfcGFnZV90b2tlbhgCIAEoCSImChJEZWxldGVWYXVsdFJlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkiFQoTRGVsZXRlVmF1bHRSZXNwb25zZTKNAgoMVmF1bHRTZXJ2aWNlElQKC0NyZWF0ZVZhdWx0EiAudmF1bHRzeW5jLnYxLkNyZWF0ZVZhdWx0UmVxdWVzdBohLnZhdWx0c3luYy52MS5DcmVhdGVWYXVsdFJlc3BvbnNlIgASUQoKTGlzdFZhdWx0cxIfLnZhdWx0c3luYy52MS5MaXN0VmF1bHRzUmVxdWVzdBogLnZhdWx0c3luYy52MS5MaXN0VmF1bHRzUmVzcG9uc2UiABJUCgtEZWxldGVWYXVsdBIgLnZhdWx0c3luYy52MS5EZWxldGVWYXVsdFJlcXVlc3QaIS52YXVsdHN5bmMudjEuRGVsZXRlVmF1bHRSZXNwb25zZSIAQkBaPmdpdGh1Yi5jb20vc29saWREb1dhbnQvdmF1bHQtc3luYy9nZW4vdmF1bHRzeW5jL3YxO3ZhdWx0c3luY3YxYgZwcm90bzM", [file_vaultsync_v1_types]);
 
 /**
  * CreateVaultRequest describes the vault to create.
@@ -132,6 +132,42 @@ export const ListVaultsResponseSchema: GenMessage<ListVaultsResponse> = /*@__PUR
   messageDesc(file_vaultsync_v1_vault, 3);
 
 /**
+ * DeleteVaultRequest names the vault to delete.
+ *
+ * @generated from message vaultsync.v1.DeleteVaultRequest
+ */
+export type DeleteVaultRequest = Message<"vaultsync.v1.DeleteVaultRequest"> & {
+  /**
+   * Vault to delete.
+   *
+   * @generated from field: string vault_id = 1;
+   */
+  vaultId: string;
+};
+
+/**
+ * Describes the message vaultsync.v1.DeleteVaultRequest.
+ * Use `create(DeleteVaultRequestSchema)` to create a new message.
+ */
+export const DeleteVaultRequestSchema: GenMessage<DeleteVaultRequest> = /*@__PURE__*/
+  messageDesc(file_vaultsync_v1_vault, 4);
+
+/**
+ * DeleteVaultResponse is empty.
+ *
+ * @generated from message vaultsync.v1.DeleteVaultResponse
+ */
+export type DeleteVaultResponse = Message<"vaultsync.v1.DeleteVaultResponse"> & {
+};
+
+/**
+ * Describes the message vaultsync.v1.DeleteVaultResponse.
+ * Use `create(DeleteVaultResponseSchema)` to create a new message.
+ */
+export const DeleteVaultResponseSchema: GenMessage<DeleteVaultResponse> = /*@__PURE__*/
+  messageDesc(file_vaultsync_v1_vault, 5);
+
+/**
  * VaultService creates and lists vaults. Membership and invitation management
  * (Phase 3) and key management (Phase 4) are added as separate services.
  *
@@ -163,6 +199,23 @@ export const VaultService: GenService<{
     methodKind: "unary";
     input: typeof ListVaultsRequestSchema;
     output: typeof ListVaultsResponseSchema;
+  },
+  /**
+   * DeleteVault marks a vault deleted. Owner only. From then on every
+   * member's requests naming the vault are NOT_FOUND with an ErrorDetail of
+   * reason ERROR_REASON_VAULT_DELETED, ListVaults no longer lists it, and it
+   * no longer counts toward its owners' vault limit.
+   *
+   * Errors: NOT_FOUND for a non-member or a vault that does not exist (with
+   * ERROR_REASON_VAULT_DELETED for a member of an already deleted vault);
+   * PERMISSION_DENIED for an editor or viewer.
+   *
+   * @generated from rpc vaultsync.v1.VaultService.DeleteVault
+   */
+  deleteVault: {
+    methodKind: "unary";
+    input: typeof DeleteVaultRequestSchema;
+    output: typeof DeleteVaultResponseSchema;
   },
 }> = /*@__PURE__*/
   serviceDesc(file_vaultsync_v1_vault, 0);

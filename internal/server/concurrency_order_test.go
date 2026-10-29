@@ -44,6 +44,10 @@ func (panickingVaults) ListVaults(context.Context, uuid.UUID, uuid.UUID, int) ([
 	panic("handler panic")
 }
 
+func (panickingVaults) DeleteVault(context.Context, uuid.UUID) error {
+	panic("handler panic")
+}
+
 // listChanges calls the vault-scoped ListChanges procedure, bounded so a
 // call that is queued rather than answered fails the test instead of
 // hanging it.

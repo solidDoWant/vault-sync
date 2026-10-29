@@ -224,6 +224,8 @@ var VaultProcedures = map[string]authz.Access{
 	vaultsyncv1connect.VaultKeyServiceListMissingSlotsProcedure: authz.Manage,
 	vaultsyncv1connect.VaultKeyServiceRotateEpochProcedure:      authz.Manage,
 	vaultsyncv1connect.VaultKeyServiceAddKeySlotsProcedure:      authz.Manage,
+	// Only owners delete a vault (docs/design/sharing.md).
+	vaultsyncv1connect.VaultServiceDeleteVaultProcedure: authz.Manage,
 }
 
 func newAPIHandler(options Options, metrics *rpcMetrics, limiter *userLimiter) http.Handler {

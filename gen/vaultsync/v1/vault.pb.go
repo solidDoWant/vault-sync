@@ -246,6 +246,89 @@ func (x *ListVaultsResponse) GetNextPageToken() string {
 	return ""
 }
 
+// DeleteVaultRequest names the vault to delete.
+type DeleteVaultRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Vault to delete.
+	VaultId       string `protobuf:"bytes,1,opt,name=vault_id,json=vaultId,proto3" json:"vault_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteVaultRequest) Reset() {
+	*x = DeleteVaultRequest{}
+	mi := &file_vaultsync_v1_vault_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteVaultRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteVaultRequest) ProtoMessage() {}
+
+func (x *DeleteVaultRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_vaultsync_v1_vault_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteVaultRequest.ProtoReflect.Descriptor instead.
+func (*DeleteVaultRequest) Descriptor() ([]byte, []int) {
+	return file_vaultsync_v1_vault_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *DeleteVaultRequest) GetVaultId() string {
+	if x != nil {
+		return x.VaultId
+	}
+	return ""
+}
+
+// DeleteVaultResponse is empty.
+type DeleteVaultResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteVaultResponse) Reset() {
+	*x = DeleteVaultResponse{}
+	mi := &file_vaultsync_v1_vault_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteVaultResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteVaultResponse) ProtoMessage() {}
+
+func (x *DeleteVaultResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_vaultsync_v1_vault_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteVaultResponse.ProtoReflect.Descriptor instead.
+func (*DeleteVaultResponse) Descriptor() ([]byte, []int) {
+	return file_vaultsync_v1_vault_proto_rawDescGZIP(), []int{5}
+}
+
 var File_vaultsync_v1_vault_proto protoreflect.FileDescriptor
 
 const file_vaultsync_v1_vault_proto_rawDesc = "" +
@@ -265,11 +348,15 @@ const file_vaultsync_v1_vault_proto_rawDesc = "" +
 	"page_token\x18\x02 \x01(\tR\tpageToken\"i\n" +
 	"\x12ListVaultsResponse\x12+\n" +
 	"\x06vaults\x18\x01 \x03(\v2\x13.vaultsync.v1.VaultR\x06vaults\x12&\n" +
-	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken2\xb7\x01\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"/\n" +
+	"\x12DeleteVaultRequest\x12\x19\n" +
+	"\bvault_id\x18\x01 \x01(\tR\avaultId\"\x15\n" +
+	"\x13DeleteVaultResponse2\x8d\x02\n" +
 	"\fVaultService\x12T\n" +
 	"\vCreateVault\x12 .vaultsync.v1.CreateVaultRequest\x1a!.vaultsync.v1.CreateVaultResponse\"\x00\x12Q\n" +
 	"\n" +
-	"ListVaults\x12\x1f.vaultsync.v1.ListVaultsRequest\x1a .vaultsync.v1.ListVaultsResponse\"\x00B@Z>github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyncv1b\x06proto3"
+	"ListVaults\x12\x1f.vaultsync.v1.ListVaultsRequest\x1a .vaultsync.v1.ListVaultsResponse\"\x00\x12T\n" +
+	"\vDeleteVault\x12 .vaultsync.v1.DeleteVaultRequest\x1a!.vaultsync.v1.DeleteVaultResponse\"\x00B@Z>github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyncv1b\x06proto3"
 
 var (
 	file_vaultsync_v1_vault_proto_rawDescOnce sync.Once
@@ -283,25 +370,29 @@ func file_vaultsync_v1_vault_proto_rawDescGZIP() []byte {
 	return file_vaultsync_v1_vault_proto_rawDescData
 }
 
-var file_vaultsync_v1_vault_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_vaultsync_v1_vault_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_vaultsync_v1_vault_proto_goTypes = []any{
 	(*CreateVaultRequest)(nil),  // 0: vaultsync.v1.CreateVaultRequest
 	(*CreateVaultResponse)(nil), // 1: vaultsync.v1.CreateVaultResponse
 	(*ListVaultsRequest)(nil),   // 2: vaultsync.v1.ListVaultsRequest
 	(*ListVaultsResponse)(nil),  // 3: vaultsync.v1.ListVaultsResponse
-	(VaultEncryption)(0),        // 4: vaultsync.v1.VaultEncryption
-	(*Vault)(nil),               // 5: vaultsync.v1.Vault
+	(*DeleteVaultRequest)(nil),  // 4: vaultsync.v1.DeleteVaultRequest
+	(*DeleteVaultResponse)(nil), // 5: vaultsync.v1.DeleteVaultResponse
+	(VaultEncryption)(0),        // 6: vaultsync.v1.VaultEncryption
+	(*Vault)(nil),               // 7: vaultsync.v1.Vault
 }
 var file_vaultsync_v1_vault_proto_depIdxs = []int32{
-	4, // 0: vaultsync.v1.CreateVaultRequest.encryption:type_name -> vaultsync.v1.VaultEncryption
-	5, // 1: vaultsync.v1.CreateVaultResponse.vault:type_name -> vaultsync.v1.Vault
-	5, // 2: vaultsync.v1.ListVaultsResponse.vaults:type_name -> vaultsync.v1.Vault
+	6, // 0: vaultsync.v1.CreateVaultRequest.encryption:type_name -> vaultsync.v1.VaultEncryption
+	7, // 1: vaultsync.v1.CreateVaultResponse.vault:type_name -> vaultsync.v1.Vault
+	7, // 2: vaultsync.v1.ListVaultsResponse.vaults:type_name -> vaultsync.v1.Vault
 	0, // 3: vaultsync.v1.VaultService.CreateVault:input_type -> vaultsync.v1.CreateVaultRequest
 	2, // 4: vaultsync.v1.VaultService.ListVaults:input_type -> vaultsync.v1.ListVaultsRequest
-	1, // 5: vaultsync.v1.VaultService.CreateVault:output_type -> vaultsync.v1.CreateVaultResponse
-	3, // 6: vaultsync.v1.VaultService.ListVaults:output_type -> vaultsync.v1.ListVaultsResponse
-	5, // [5:7] is the sub-list for method output_type
-	3, // [3:5] is the sub-list for method input_type
+	4, // 5: vaultsync.v1.VaultService.DeleteVault:input_type -> vaultsync.v1.DeleteVaultRequest
+	1, // 6: vaultsync.v1.VaultService.CreateVault:output_type -> vaultsync.v1.CreateVaultResponse
+	3, // 7: vaultsync.v1.VaultService.ListVaults:output_type -> vaultsync.v1.ListVaultsResponse
+	5, // 8: vaultsync.v1.VaultService.DeleteVault:output_type -> vaultsync.v1.DeleteVaultResponse
+	6, // [6:9] is the sub-list for method output_type
+	3, // [3:6] is the sub-list for method input_type
 	3, // [3:3] is the sub-list for extension type_name
 	3, // [3:3] is the sub-list for extension extendee
 	0, // [0:3] is the sub-list for field type_name
@@ -319,7 +410,7 @@ func file_vaultsync_v1_vault_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_vaultsync_v1_vault_proto_rawDesc), len(file_vaultsync_v1_vault_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   4,
+			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

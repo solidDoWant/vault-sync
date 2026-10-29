@@ -49,6 +49,10 @@ func (vaults *largeVaults) CreateVault(context.Context, uuid.UUID, store.NewVaul
 	return store.Vault{}, errors.New("not supported")
 }
 
+func (vaults *largeVaults) DeleteVault(context.Context, uuid.UUID) error {
+	return errors.New("not supported")
+}
+
 func (vaults *largeVaults) ListVaults(ctx context.Context, _, _ uuid.UUID, _ int) ([]store.Vault, error) {
 	if vaults.delay > 0 {
 		select {

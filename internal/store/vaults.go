@@ -14,6 +14,11 @@ import (
 // one of its members. The two cases are deliberately indistinguishable.
 var ErrVaultNotFound = errors.New("vault not found")
 
+// ErrVaultDeleted is returned to a member of a vault that an owner deleted
+// (DeleteVault). Non-members of a deleted vault get ErrVaultNotFound, as for
+// any other vault.
+var ErrVaultDeleted = errors.New("vault deleted")
+
 // ErrVaultLimit is returned when a user already owns the maximum number of
 // vaults.
 var ErrVaultLimit = errors.New("vault limit reached")
@@ -57,7 +62,8 @@ type Vault struct {
 }
 
 // CreateVault creates a vault with ownerID as its owner, in one transaction.
-// It returns ErrVaultLimit when the user already owns limit vaults, and
+// It returns ErrVaultLimit when the user already owns limit vaults that are
+// not deleted, and
 // ErrUserNotFound when the user does not exist.
 func (store *Store) CreateVault(ctx context.Context, ownerID uuid.UUID, vault NewVault, limit int) (Vault, error) {
 	id, err := uuid.NewV7()
@@ -83,7 +89,11 @@ func (store *Store) CreateVault(ctx context.Context, ownerID uuid.UUID, vault Ne
 
 		var owned int
 
-		err = tx.QueryRow(ctx, `SELECT count(*) FROM vault_members WHERE user_id = $1 AND role = $2`,
+		// A deleted vault does not count (docs/design/sharing.md), so an
+		// owner can delete a vault to make room for a new one.
+		err = tx.QueryRow(ctx, `
+			SELECT count(*) FROM vault_members m JOIN vaults v ON v.id = m.vault_id
+			WHERE m.user_id = $1 AND m.role = $2 AND v.deleted_at IS NULL`,
 			ownerID, RoleOwner).Scan(&owned)
 		if err != nil {
 			return fmt.Errorf("count owned vaults: %w", err)
@@ -119,14 +129,15 @@ func (store *Store) CreateVault(ctx context.Context, ownerID uuid.UUID, vault Ne
 	return created, nil
 }
 
-// ListVaults returns up to limit of the vaults userID is a member of, in
+// ListVaults returns up to limit of the vaults userID is a member of that are
+// not deleted, in
 // ascending id order, starting after the vault id after (uuid.Nil for the
 // first page).
 func (store *Store) ListVaults(ctx context.Context, userID, after uuid.UUID, limit int) ([]Vault, error) {
 	rows, err := store.pool.Query(ctx, `
 		SELECT v.id, v.name, v.encryption, v.escrow, v.head_seq, m.role, v.created_at
 		FROM vault_members m JOIN vaults v ON v.id = m.vault_id
-		WHERE m.user_id = $1 AND v.id > $2
+		WHERE m.user_id = $1 AND v.id > $2 AND v.deleted_at IS NULL
 		ORDER BY v.id
 		LIMIT $3`, userID, after, limit)
 	if err != nil {
@@ -149,12 +160,17 @@ func (store *Store) ListVaults(ctx context.Context, userID, after uuid.UUID, lim
 
 // VaultRole returns userID's role in vaultID. It returns ErrVaultNotFound
 // both when the vault does not exist and when the user is not a member: one
-// query answers both, so the two cases take the same path.
+// query answers both, so the two cases take the same path. A member of a
+// deleted vault gets ErrVaultDeleted.
 func (store *Store) VaultRole(ctx context.Context, vaultID, userID uuid.UUID) (Role, error) {
-	var role Role
+	var (
+		role    Role
+		deleted bool
+	)
 
-	err := store.pool.QueryRow(ctx, `SELECT role FROM vault_members WHERE vault_id = $1 AND user_id = $2`,
-		vaultID, userID).Scan(&role)
+	err := store.pool.QueryRow(ctx, `
+		SELECT m.role, v.deleted_at IS NOT NULL FROM vault_members m JOIN vaults v ON v.id = m.vault_id
+		WHERE m.vault_id = $1 AND m.user_id = $2`, vaultID, userID).Scan(&role, &deleted)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", ErrVaultNotFound
 	}
@@ -163,5 +179,33 @@ func (store *Store) VaultRole(ctx context.Context, vaultID, userID uuid.UUID) (R
 		return "", fmt.Errorf("look up vault membership: %w", err)
 	}
 
+	if deleted {
+		return "", ErrVaultDeleted
+	}
+
 	return role, nil
+}
+
+// DeleteVault marks vaultID deleted (docs/design/sharing.md). The caller
+// has authorized an owner. It notifies the vault's realtime subscribers, so
+// their subscriptions end. It returns ErrVaultDeleted when the vault is
+// already deleted and ErrVaultNotFound when it does not exist.
+func (store *Store) DeleteVault(ctx context.Context, vaultID uuid.UUID) error {
+	return pgx.BeginFunc(ctx, store.pool, func(tx pgx.Tx) error {
+		headSeq, err := lockVault(ctx, tx, vaultID)
+		if err != nil {
+			return err
+		}
+
+		tag, err := tx.Exec(ctx, `UPDATE vaults SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL`, vaultID)
+		if err != nil {
+			return fmt.Errorf("delete vault: %w", err)
+		}
+
+		if tag.RowsAffected() == 0 {
+			return ErrVaultDeleted
+		}
+
+		return notifyVaultChanged(ctx, tx, VaultChange{VaultID: vaultID, Seq: headSeq})
+	})
 }

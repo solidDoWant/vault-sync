@@ -67,6 +67,10 @@ func (vaults *blockingVaults) ListVaults(ctx context.Context, _, _ uuid.UUID, _ 
 	return nil, nil
 }
 
+func (vaults *blockingVaults) DeleteVault(context.Context, uuid.UUID) error {
+	return errors.New("not supported")
+}
+
 func (vaults *blockingVaults) callCount() int {
 	vaults.mu.Lock()
 	defer vaults.mu.Unlock()

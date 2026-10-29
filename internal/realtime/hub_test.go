@@ -72,6 +72,8 @@ type fakeStore struct {
 	// membershipQueries counts the membership checks made before
 	// delivery, each one a database round trip.
 	membershipQueries int
+	// deleted holds the vaults an owner deleted.
+	deleted map[uuid.UUID]bool
 }
 
 func newFakeStore() *fakeStore {
@@ -82,7 +84,16 @@ func newFakeStore() *fakeStore {
 		failListen:       make(chan struct{}),
 		ready:            make(chan struct{}, 16),
 		membershipErrors: map[uuid.UUID]error{},
+		deleted:          map[uuid.UUID]bool{},
 	}
+}
+
+// deleteVault marks the vault deleted, without announcing it.
+func (fake *fakeStore) deleteVault(vaultID uuid.UUID) {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+
+	fake.deleted[vaultID] = true
 }
 
 func (fake *fakeStore) createVault(owner string) uuid.UUID {
@@ -169,6 +180,10 @@ func (fake *fakeStore) VaultMembers(_ context.Context, vaultID uuid.UUID, users 
 		}
 	}
 
+	if fake.deleted[vaultID] {
+		return members, store.ErrVaultDeleted
+	}
+
 	return members, nil
 }
 
@@ -179,6 +194,10 @@ func (fake *fakeStore) role(vaultID, user uuid.UUID) (store.Role, error) {
 	role, ok := fake.members[vaultID][user]
 	if !ok {
 		return "", store.ErrVaultNotFound
+	}
+
+	if fake.deleted[vaultID] {
+		return "", store.ErrVaultDeleted
 	}
 
 	return role, nil
@@ -759,6 +778,55 @@ func TestRemovedMemberStopsReceivingNotifications(t *testing.T) {
 	fixture.store.setMember(vaultID, "bob", store.RoleViewer)
 	fixture.store.commit(t, vaultID)
 	bob.expectVaultChangedAfter(fixture, otherVault)
+}
+
+func TestDeletedVaultEndsMembersSubscriptionsAsDeleted(t *testing.T) {
+	fixture := newFixture(t, fixtureOptions{})
+	vaultID := fixture.store.createVault("alice")
+	otherVault := fixture.store.createVault("bob")
+	fixture.store.setMember(vaultID, "bob", store.RoleViewer)
+
+	alice := fixture.connect(t, "alice")
+	alice.subscribe(1, vaultID)
+
+	bob := fixture.connect(t, "bob")
+	bob.subscribe(1, vaultID)
+	bob.subscribe(2, otherVault)
+	bob.expectVaultChangedAfter(fixture, vaultID)
+	alice.read()
+
+	// DeleteVault announces the deletion at the vault's head_seq.
+	fixture.store.deleteVault(vaultID)
+	fixture.store.commit(t, vaultID)
+
+	for _, member := range []*client{alice, bob} {
+		frame := member.read()
+		require.NotNil(t, frame.GetError(), "expected an error frame, got %v", frame)
+		assert.Equal(t, vaultsyncv1.ErrorCode_ERROR_CODE_NOT_FOUND, frame.GetError().GetCode())
+		assert.Equal(t, vaultsyncv1.ErrorReason_ERROR_REASON_VAULT_DELETED, frame.GetError().GetReason())
+		assert.Equal(t, vaultID.String(), frame.GetError().GetVaultId())
+		assert.Zero(t, frame.GetRequestId())
+	}
+
+	// Subscribing again is refused the same way.
+	bob.send(subscribeFrame(3, vaultID))
+	frame := bob.read()
+	require.NotNil(t, frame.GetError(), "expected an error frame, got %v", frame)
+	assert.Equal(t, vaultsyncv1.ErrorCode_ERROR_CODE_NOT_FOUND, frame.GetError().GetCode())
+	assert.Equal(t, vaultsyncv1.ErrorReason_ERROR_REASON_VAULT_DELETED, frame.GetError().GetReason())
+	assert.Equal(t, uint64(3), frame.GetRequestId())
+
+	// A non-member still cannot tell the deleted vault from a missing one.
+	mallory := fixture.connect(t, "mallory")
+	mallory.send(subscribeFrame(4, vaultID))
+	notMember := mallory.read()
+	require.NotNil(t, notMember.GetError(), "expected an error frame, got %v", notMember)
+	assert.Equal(t, vaultsyncv1.ErrorCode_ERROR_CODE_NOT_FOUND, notMember.GetError().GetCode())
+	assert.Equal(t, vaultsyncv1.ErrorReason_ERROR_REASON_UNSPECIFIED, notMember.GetError().GetReason())
+
+	mallory.send(subscribeFrame(5, uuid.New()))
+	missing := mallory.read()
+	assert.Equal(t, missing.GetError().GetMessage(), notMember.GetError().GetMessage())
 }
 
 func TestFailedMembershipLookupDeliversNothing(t *testing.T) {

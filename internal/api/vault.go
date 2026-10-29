@@ -15,6 +15,7 @@ import (
 	vaultsyncv1 "github.com/solidDoWant/vault-sync/gen/vaultsync/v1"
 	"github.com/solidDoWant/vault-sync/gen/vaultsync/v1/vaultsyncv1connect"
 	"github.com/solidDoWant/vault-sync/internal/auth"
+	"github.com/solidDoWant/vault-sync/internal/authz"
 	"github.com/solidDoWant/vault-sync/internal/store"
 	"github.com/solidDoWant/vault-sync/internal/textcheck"
 )
@@ -39,6 +40,7 @@ var pageTokenEncoding = base64.RawURLEncoding
 type VaultStore interface {
 	CreateVault(ctx context.Context, ownerID uuid.UUID, vault store.NewVault, limit int) (store.Vault, error)
 	ListVaults(ctx context.Context, userID, after uuid.UUID, limit int) ([]store.Vault, error)
+	DeleteVault(ctx context.Context, vaultID uuid.UUID) error
 }
 
 // VaultLimits bounds ListVaults responses.
@@ -50,8 +52,10 @@ type VaultLimits struct {
 }
 
 // VaultService implements vaultsync.v1.VaultService for the authenticated
-// caller. Its procedures are not vault-scoped: CreateVault makes the caller
-// the new vault's owner, and ListVaults only returns the caller's vaults.
+// caller. CreateVault and ListVaults are not vault-scoped: CreateVault makes
+// the caller the new vault's owner, and ListVaults only returns the caller's
+// vaults. DeleteVault is vault-scoped and authorized (owners only) by the
+// authz interceptor before it runs.
 type VaultService struct {
 	Vaults VaultStore
 	Limits VaultLimits
@@ -173,6 +177,32 @@ func (service VaultService) ListVaults(ctx context.Context, request *connect.Req
 	}
 
 	return connect.NewResponse(response), nil
+}
+
+// DeleteVault marks the authorized vault deleted.
+func (service VaultService) DeleteVault(ctx context.Context, _ *connect.Request[vaultsyncv1.DeleteVaultRequest]) (*connect.Response[vaultsyncv1.DeleteVaultResponse], error) {
+	membership, ok := authz.MembershipFromContext(ctx)
+	if !ok {
+		service.Logger.ErrorContext(ctx, "DeleteVault reached without an authorized vault")
+
+		return nil, connect.NewError(connect.CodeInternal, errors.New("cannot authorize request"))
+	}
+
+	err := service.Vaults.DeleteVault(ctx, membership.VaultID)
+
+	switch {
+	case errors.Is(err, store.ErrVaultDeleted):
+		// Deleted concurrently, after the authorization.
+		return nil, authz.VaultDeletedError()
+	case errors.Is(err, store.ErrVaultNotFound):
+		return nil, connect.NewError(connect.CodeNotFound, authz.ErrVaultNotFound)
+	case err != nil:
+		service.Logger.ErrorContext(ctx, "cannot delete vault", "error", err)
+
+		return nil, connect.NewError(connect.CodeInternal, errors.New("cannot delete vault"))
+	}
+
+	return connect.NewResponse(&vaultsyncv1.DeleteVaultResponse{}), nil
 }
 
 func decodePageToken(token string) (uuid.UUID, error) {

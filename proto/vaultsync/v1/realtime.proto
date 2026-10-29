@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package vaultsync.v1;
 
+import "vaultsync/v1/errors.proto";
+
 option go_package = "github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyncv1";
 
 // Realtime channel frames (SPEC.md §6.4).
@@ -67,7 +69,10 @@ message ServerFrame {
 // that does not exist, gets an error frame with ERROR_CODE_NOT_FOUND.
 // Membership is checked again before every notification: a member removed
 // from the vault gets an unsolicited NOT_FOUND error frame naming the vault,
-// and its subscription ends. Subscribing to an already subscribed vault
+// and its subscription ends. A member of a deleted vault (DeleteVault),
+// when subscribing or when the vault is deleted, gets a NOT_FOUND error
+// frame with reason ERROR_REASON_VAULT_DELETED instead, and its
+// subscription ends. Subscribing to an already subscribed vault
 // re-checks membership and answers subscribed again.
 message Subscribe {
   // Vault to subscribe to.
@@ -108,6 +113,9 @@ message ErrorFrame {
   string vault_id = 3;
   // Whether the server closes the connection after sending this frame.
   bool fatal = 4;
+  // Why the frame was sent, like the ErrorDetail of an RPC error: set to
+  // ERROR_REASON_VAULT_DELETED when the vault was deleted.
+  ErrorReason reason = 5;
 }
 
 // ErrorCode categorizes realtime errors.

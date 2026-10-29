@@ -5,6 +5,8 @@
 //   - a caller who is not a member, and a vault that does not exist, both get
 //     the same NOT_FOUND error through the same code path (one membership
 //     query), so existence is never revealed;
+//   - a member of a vault an owner deleted gets NOT_FOUND with an
+//     ErrorDetail of reason ERROR_REASON_VAULT_DELETED;
 //   - a viewer calling a write procedure, and an editor or viewer calling a
 //     manage procedure, get PERMISSION_DENIED;
 //   - a request whose message carries a vault_id but whose procedure is not
@@ -25,6 +27,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
 
+	vaultsyncv1 "github.com/solidDoWant/vault-sync/gen/vaultsync/v1"
 	"github.com/solidDoWant/vault-sync/internal/auth"
 	"github.com/solidDoWant/vault-sync/internal/store"
 )
@@ -58,8 +61,9 @@ func (access Access) String() string {
 
 // MembershipStore resolves vault roles. *store.Store implements it.
 type MembershipStore interface {
-	// VaultRole returns userID's role in vaultID, or store.ErrVaultNotFound
-	// when the vault does not exist or the user is not a member.
+	// VaultRole returns userID's role in vaultID, store.ErrVaultNotFound
+	// when the vault does not exist or the user is not a member, or
+	// store.ErrVaultDeleted when the user is a member of a deleted vault.
 	VaultRole(ctx context.Context, vaultID, userID uuid.UUID) (store.Role, error)
 }
 
@@ -87,6 +91,25 @@ func MembershipFromContext(ctx context.Context) (Membership, bool) {
 // ErrVaultNotFound is the error returned to non-members and for vaults that
 // do not exist. Its message is safe to return to the caller.
 var ErrVaultNotFound = errors.New("vault not found")
+
+// ErrVaultDeleted is the error returned to members of a deleted vault. Its
+// message is safe to return to the caller.
+var ErrVaultDeleted = errors.New("vault deleted")
+
+// VaultDeletedError returns the NOT_FOUND error for a member of a deleted
+// vault, with an ErrorDetail of reason ERROR_REASON_VAULT_DELETED.
+func VaultDeletedError() *connect.Error {
+	connectErr := connect.NewError(connect.CodeNotFound, ErrVaultDeleted)
+
+	// NewErrorDetail only fails for a message that cannot be marshaled,
+	// which ErrorDetail always can.
+	detail, err := connect.NewErrorDetail(&vaultsyncv1.ErrorDetail{Reason: vaultsyncv1.ErrorReason_ERROR_REASON_VAULT_DELETED})
+	if err == nil {
+		connectErr.AddDetail(detail)
+	}
+
+	return connectErr
+}
 
 // ParseID parses an identifier in canonical form: a lowercase, hyphenated
 // UUID (SPEC.md §5). Other spellings uuid.Parse accepts (braces, URNs,
@@ -160,6 +183,10 @@ func (interceptor *Interceptor) authorize(ctx context.Context, procedure string,
 	role, err := interceptor.role(ctx, vaultID, user.ID)
 	if errors.Is(err, store.ErrVaultNotFound) {
 		return nil, connect.NewError(connect.CodeNotFound, ErrVaultNotFound)
+	}
+
+	if errors.Is(err, store.ErrVaultDeleted) {
+		return nil, VaultDeletedError()
 	}
 
 	if err != nil {

@@ -39,6 +39,11 @@ enum ErrorReason {
   // vault's epochs (VaultKeyService.ListEpochs), adopts the current one and
   // retries.
   ERROR_REASON_EPOCH_NOT_CURRENT = 6;
+  // NOT_FOUND from any vault-scoped RPC, and in a realtime ErrorFrame: the
+  // caller is a member of the vault, but an owner deleted it (DeleteVault).
+  // It persists unless an operator restores the vault. The client stops
+  // syncing the vault and keeps its local files.
+  ERROR_REASON_VAULT_DELETED = 7;
 }
 
 // ErrorDetail is attached to an error (as a Connect error detail) to give

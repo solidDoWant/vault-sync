@@ -4,13 +4,15 @@
 
 import type { GenEnum, GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2";
 import { enumDesc, fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
+import type { ErrorReason } from "./errors_pb";
+import { file_vaultsync_v1_errors } from "./errors_pb";
 import type { Message } from "@bufbuild/protobuf";
 
 /**
  * Describes the file vaultsync/v1/realtime.proto.
  */
 export const file_vaultsync_v1_realtime: GenFile = /*@__PURE__*/
-  fileDesc("Cht2YXVsdHN5bmMvdjEvcmVhbHRpbWUucHJvdG8SDHZhdWx0c3luYy52MSKRAQoLQ2xpZW50RnJhbWUSEgoKcmVxdWVzdF9pZBgBIAEoBBIsCglzdWJzY3JpYmUYAiABKAsyFy52YXVsdHN5bmMudjEuU3Vic2NyaWJlSAASMAoLdW5zdWJzY3JpYmUYAyABKAsyGS52YXVsdHN5bmMudjEuVW5zdWJzY3JpYmVIAEIHCgVmcmFtZUoFCGQQyAEiwQEKC1NlcnZlckZyYW1lEhIKCnJlcXVlc3RfaWQYASABKAQSMwoNdmF1bHRfY2hhbmdlZBgCIAEoCzIaLnZhdWx0c3luYy52MS5WYXVsdENoYW5nZWRIABIuCgpzdWJzY3JpYmVkGAMgASgLMhgudmF1bHRzeW5jLnYxLlN1YnNjcmliZWRIABIpCgVlcnJvchgEIAEoCzIYLnZhdWx0c3luYy52MS5FcnJvckZyYW1lSABCBwoFZnJhbWVKBQhkEMgBIh0KCVN1YnNjcmliZRIQCgh2YXVsdF9pZBgBIAEoCSIfCgtVbnN1YnNjcmliZRIQCgh2YXVsdF9pZBgBIAEoCSIwCgpTdWJzY3JpYmVkEhAKCHZhdWx0X2lkGAEgASgJEhAKCGhlYWRfc2VxGAIgASgEIi0KDFZhdWx0Q2hhbmdlZBIQCgh2YXVsdF9pZBgBIAEoCRILCgNzZXEYAiABKAQiZQoKRXJyb3JGcmFtZRIlCgRjb2RlGAEgASgOMhcudmF1bHRzeW5jLnYxLkVycm9yQ29kZRIPCgdtZXNzYWdlGAIgASgJEhAKCHZhdWx0X2lkGAMgASgJEg0KBWZhdGFsGAQgASgIKvwBCglFcnJvckNvZGUSGgoWRVJST1JfQ09ERV9VTlNQRUNJRklFRBAAEh8KG0VSUk9SX0NPREVfSU5WQUxJRF9BUkdVTUVOVBABEhgKFEVSUk9SX0NPREVfTk9UX0ZPVU5EEAISIAocRVJST1JfQ09ERV9QRVJNSVNTSU9OX0RFTklFRBADEh4KGkVSUk9SX0NPREVfVU5BVVRIRU5USUNBVEVEEAQSIQodRVJST1JfQ09ERV9SRVNPVVJDRV9FWEhBVVNURUQQBRIaChZFUlJPUl9DT0RFX1VOQVZBSUxBQkxFEAYSFwoTRVJST1JfQ09ERV9JTlRFUk5BTBAHQkBaPmdpdGh1Yi5jb20vc29saWREb1dhbnQvdmF1bHQtc3luYy9nZW4vdmF1bHRzeW5jL3YxO3ZhdWx0c3luY3YxYgZwcm90bzM");
+  fileDesc("Cht2YXVsdHN5bmMvdjEvcmVhbHRpbWUucHJvdG8SDHZhdWx0c3luYy52MSKRAQoLQ2xpZW50RnJhbWUSEgoKcmVxdWVzdF9pZBgBIAEoBBIsCglzdWJzY3JpYmUYAiABKAsyFy52YXVsdHN5bmMudjEuU3Vic2NyaWJlSAASMAoLdW5zdWJzY3JpYmUYAyABKAsyGS52YXVsdHN5bmMudjEuVW5zdWJzY3JpYmVIAEIHCgVmcmFtZUoFCGQQyAEiwQEKC1NlcnZlckZyYW1lEhIKCnJlcXVlc3RfaWQYASABKAQSMwoNdmF1bHRfY2hhbmdlZBgCIAEoCzIaLnZhdWx0c3luYy52MS5WYXVsdENoYW5nZWRIABIuCgpzdWJzY3JpYmVkGAMgASgLMhgudmF1bHRzeW5jLnYxLlN1YnNjcmliZWRIABIpCgVlcnJvchgEIAEoCzIYLnZhdWx0c3luYy52MS5FcnJvckZyYW1lSABCBwoFZnJhbWVKBQhkEMgBIh0KCVN1YnNjcmliZRIQCgh2YXVsdF9pZBgBIAEoCSIfCgtVbnN1YnNjcmliZRIQCgh2YXVsdF9pZBgBIAEoCSIwCgpTdWJzY3JpYmVkEhAKCHZhdWx0X2lkGAEgASgJEhAKCGhlYWRfc2VxGAIgASgEIi0KDFZhdWx0Q2hhbmdlZBIQCgh2YXVsdF9pZBgBIAEoCRILCgNzZXEYAiABKAQikAEKCkVycm9yRnJhbWUSJQoEY29kZRgBIAEoDjIXLnZhdWx0c3luYy52MS5FcnJvckNvZGUSDwoHbWVzc2FnZRgCIAEoCRIQCgh2YXVsdF9pZBgDIAEoCRINCgVmYXRhbBgEIAEoCBIpCgZyZWFzb24YBSABKA4yGS52YXVsdHN5bmMudjEuRXJyb3JSZWFzb24q/AEKCUVycm9yQ29kZRIaChZFUlJPUl9DT0RFX1VOU1BFQ0lGSUVEEAASHwobRVJST1JfQ09ERV9JTlZBTElEX0FSR1VNRU5UEAESGAoURVJST1JfQ09ERV9OT1RfRk9VTkQQAhIgChxFUlJPUl9DT0RFX1BFUk1JU1NJT05fREVOSUVEEAMSHgoaRVJST1JfQ09ERV9VTkFVVEhFTlRJQ0FURUQQBBIhCh1FUlJPUl9DT0RFX1JFU09VUkNFX0VYSEFVU1RFRBAFEhoKFkVSUk9SX0NPREVfVU5BVkFJTEFCTEUQBhIXChNFUlJPUl9DT0RFX0lOVEVSTkFMEAdCQFo+Z2l0aHViLmNvbS9zb2xpZERvV2FudC92YXVsdC1zeW5jL2dlbi92YXVsdHN5bmMvdjE7dmF1bHRzeW5jdjFiBnByb3RvMw", [file_vaultsync_v1_errors]);
 
 /**
  * ClientFrame is a frame sent by the client.
@@ -116,7 +118,10 @@ export const ServerFrameSchema: GenMessage<ServerFrame> = /*@__PURE__*/
  * that does not exist, gets an error frame with ERROR_CODE_NOT_FOUND.
  * Membership is checked again before every notification: a member removed
  * from the vault gets an unsolicited NOT_FOUND error frame naming the vault,
- * and its subscription ends. Subscribing to an already subscribed vault
+ * and its subscription ends. A member of a deleted vault (DeleteVault),
+ * when subscribing or when the vault is deleted, gets a NOT_FOUND error
+ * frame with reason ERROR_REASON_VAULT_DELETED instead, and its
+ * subscription ends. Subscribing to an already subscribed vault
  * re-checks membership and answers subscribed again.
  *
  * @generated from message vaultsync.v1.Subscribe
@@ -249,6 +254,14 @@ export type ErrorFrame = Message<"vaultsync.v1.ErrorFrame"> & {
    * @generated from field: bool fatal = 4;
    */
   fatal: boolean;
+
+  /**
+   * Why the frame was sent, like the ErrorDetail of an RPC error: set to
+   * ERROR_REASON_VAULT_DELETED when the vault was deleted.
+   *
+   * @generated from field: vaultsync.v1.ErrorReason reason = 5;
+   */
+  reason: ErrorReason;
 };
 
 /**

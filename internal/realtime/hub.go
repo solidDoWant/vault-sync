@@ -133,11 +133,13 @@ func setDefault[T int | int64 | float64 | time.Duration](value *T, fallback T) {
 // Store is the database access the hub needs. *store.Store implements it.
 type Store interface {
 	// VaultMembers returns which of userIDs are members of vaultID (none
-	// when the vault does not exist), in one query.
+	// when the vault does not exist), in one query. For a deleted vault it
+	// returns the members together with store.ErrVaultDeleted.
 	VaultMembers(ctx context.Context, vaultID uuid.UUID, userIDs []uuid.UUID) (map[uuid.UUID]bool, error)
 	// MemberHeadSeq returns userID's role in vaultID and the vault's
 	// head_seq, in one query. It returns store.ErrVaultNotFound both when
-	// the vault does not exist and when the user is not a member.
+	// the vault does not exist and when the user is not a member, and
+	// store.ErrVaultDeleted to a member of a deleted vault.
 	MemberHeadSeq(ctx context.Context, vaultID, userID uuid.UUID) (store.Role, int64, error)
 	// HeadSeqs returns the head_seq of each existing vault in vaultIDs.
 	HeadSeqs(ctx context.Context, vaultIDs []uuid.UUID) (map[uuid.UUID]int64, error)
@@ -414,6 +416,11 @@ func (hub *Hub) deliver(ctx context.Context, vaultID uuid.UUID, seq int64) {
 
 		cancel()
 
+		deleted := errors.Is(err, store.ErrVaultDeleted)
+		if deleted {
+			err = nil
+		}
+
 		if err != nil {
 			// Fail closed; the clients' fallback pull catches up.
 			if ctx.Err() == nil {
@@ -424,19 +431,24 @@ func (hub *Hub) deliver(ctx context.Context, vaultID uuid.UUID, seq int64) {
 		}
 
 		for _, userID := range batch {
-			hub.deliverToUser(vaultID, seq, byUser[userID], members[userID])
+			hub.deliverToUser(vaultID, seq, byUser[userID], members[userID], deleted)
 		}
 	}
 }
 
 // deliverToUser sends vault_changed to one user's subscribed connections if
 // the user is still a member of the vault, and otherwise ends their
-// subscriptions with a NOT_FOUND error frame.
-func (hub *Hub) deliverToUser(vaultID uuid.UUID, seq int64, conns []*connection, member bool) {
+// subscriptions with a NOT_FOUND error frame. A member of a deleted vault
+// gets NOT_FOUND with reason ERROR_REASON_VAULT_DELETED.
+func (hub *Hub) deliverToUser(vaultID uuid.UUID, seq int64, conns []*connection, member, deleted bool) {
 	for _, conn := range conns {
-		if !member {
+		if !member || deleted {
 			if hub.unsubscribe(conn, vaultID) {
-				conn.enqueue(notFoundFrame(0, vaultID))
+				if member {
+					conn.enqueue(vaultDeletedFrame(0, vaultID))
+				} else {
+					conn.enqueue(notFoundFrame(0, vaultID))
+				}
 			}
 
 			continue
