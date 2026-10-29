@@ -1,9 +1,13 @@
 package config_test
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -89,6 +93,12 @@ func TestLoadEscrowSettings(t *testing.T) {
 	keyID, err := e2ee.EscrowKeyID(publicKey)
 	require.NoError(t, err)
 
+	signPub, _, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+
+	signingKey := base64.StdEncoding.EncodeToString(signPub)
+	bundle := &e2ee.EscrowBundle{SignPub: signPub, Recipient: recipient}
+
 	classic, err := age.GenerateX25519Identity()
 	require.NoError(t, err)
 
@@ -101,27 +111,52 @@ func TestLoadEscrowSettings(t *testing.T) {
 		{name: "no escrow key, default on", env: withRequired(nil), wantEscrow: api.Escrow{Default: true}},
 		{
 			name:       "escrow key, default on",
-			env:        withRequired(map[string]string{config.EscrowRecipientEnv: recipient}),
-			wantEscrow: api.Escrow{PublicKey: publicKey, KeyID: keyID, Default: true},
+			env:        withRequired(map[string]string{config.EscrowRecipientEnv: recipient, config.EscrowSigningKeyEnv: signingKey}),
+			wantEscrow: api.Escrow{PublicKey: publicKey, KeyID: keyID, Default: true, Bundle: bundle},
 		},
 		{
 			name:       "escrow key, default off",
-			env:        withRequired(map[string]string{config.EscrowRecipientEnv: recipient, config.EscrowDefaultEnv: "false"}),
-			wantEscrow: api.Escrow{PublicKey: publicKey, KeyID: keyID, Default: false},
+			env:        withRequired(map[string]string{config.EscrowRecipientEnv: recipient, config.EscrowSigningKeyEnv: signingKey, config.EscrowDefaultEnv: "false"}),
+			wantEscrow: api.Escrow{PublicKey: publicKey, KeyID: keyID, Default: false, Bundle: bundle},
 		},
 		{
 			name:       "escrow key with a trailing newline, default explicitly on",
-			env:        withRequired(map[string]string{config.EscrowRecipientEnv: recipient + "\n", config.EscrowDefaultEnv: "true"}),
-			wantEscrow: api.Escrow{PublicKey: publicKey, KeyID: keyID, Default: true},
+			env:        withRequired(map[string]string{config.EscrowRecipientEnv: recipient + "\n", config.EscrowSigningKeyEnv: signingKey + "\n", config.EscrowDefaultEnv: "true"}),
+			wantEscrow: api.Escrow{PublicKey: publicKey, KeyID: keyID, Default: true, Bundle: bundle},
+		},
+		{
+			name:      "escrow key without a signing key",
+			env:       withRequired(map[string]string{config.EscrowRecipientEnv: recipient}),
+			assertErr: errorContaining(config.EscrowSigningKeyEnv),
+		},
+		{
+			name:      "signing key without an escrow key",
+			env:       withRequired(map[string]string{config.EscrowSigningKeyEnv: signingKey}),
+			assertErr: errorContaining(config.EscrowRecipientEnv),
+		},
+		{
+			name:      "signing key one byte short",
+			env:       withRequired(map[string]string{config.EscrowRecipientEnv: recipient, config.EscrowSigningKeyEnv: base64.StdEncoding.EncodeToString(signPub[:31])}),
+			assertErr: errorContaining(config.EscrowSigningKeyEnv),
+		},
+		{
+			name:      "signing key one byte long",
+			env:       withRequired(map[string]string{config.EscrowRecipientEnv: recipient, config.EscrowSigningKeyEnv: base64.StdEncoding.EncodeToString(append(slices.Clone(signPub), 0))}),
+			assertErr: errorContaining(config.EscrowSigningKeyEnv),
+		},
+		{
+			name:      "signing key not base64",
+			env:       withRequired(map[string]string{config.EscrowRecipientEnv: recipient, config.EscrowSigningKeyEnv: "not base64!"}),
+			assertErr: errorContaining(config.EscrowSigningKeyEnv),
 		},
 		{
 			name:      "classic X25519 recipient",
-			env:       withRequired(map[string]string{config.EscrowRecipientEnv: classic.Recipient().String()}),
+			env:       withRequired(map[string]string{config.EscrowRecipientEnv: classic.Recipient().String(), config.EscrowSigningKeyEnv: signingKey}),
 			assertErr: errorContaining(config.EscrowRecipientEnv),
 		},
 		{
 			name:      "an identity instead of a recipient",
-			env:       withRequired(map[string]string{config.EscrowRecipientEnv: identity.String()}),
+			env:       withRequired(map[string]string{config.EscrowRecipientEnv: identity.String(), config.EscrowSigningKeyEnv: signingKey}),
 			assertErr: errorContaining(config.EscrowRecipientEnv),
 		},
 		{

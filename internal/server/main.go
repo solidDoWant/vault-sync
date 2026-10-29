@@ -67,6 +67,14 @@ func Main(ctx context.Context, args []string, lookup func(string) (string, bool)
 	}
 
 	queries := store.New(pool)
+
+	escrow, err := LoadEscrowChain(ctx, queries, cfg.Escrow)
+	if err != nil {
+		logger.ErrorContext(ctx, "cannot use the escrow chain", "error", err)
+
+		return 1
+	}
+
 	verifier := auth.NewVerifier(auth.VerifierOptions{
 		IssuerURL: cfg.OIDC.IssuerURL,
 		Audience:  cfg.OIDC.Audience,
@@ -122,7 +130,7 @@ func Main(ctx context.Context, args []string, lookup func(string) (string, bool)
 		Authenticator:            authenticator,
 		OIDCIssuerURL:            cfg.OIDC.IssuerURL,
 		OIDCClientID:             cfg.OIDC.ClientID,
-		Escrow:                   cfg.Escrow,
+		Escrow:                   escrow,
 		Devices:                  queries,
 		Vaults:                   queries,
 		Memberships:              queries,

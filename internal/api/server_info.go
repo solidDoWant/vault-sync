@@ -9,6 +9,7 @@ import (
 
 	vaultsyncv1 "github.com/solidDoWant/vault-sync/gen/vaultsync/v1"
 	"github.com/solidDoWant/vault-sync/gen/vaultsync/v1/vaultsyncv1connect"
+	"github.com/solidDoWant/vault-sync/internal/e2ee"
 	"github.com/solidDoWant/vault-sync/internal/version"
 )
 
@@ -47,6 +48,21 @@ type Escrow struct {
 	// Default is whether a new encrypted vault has escrow unless its owner
 	// turns it off. It is published as false without a PublicKey.
 	Default bool
+	// Bundle is the configured escrow bundle: the escrow signing public key
+	// and the recipient PublicKey was parsed from. Nil when the deployment
+	// has no escrow key.
+	Bundle *e2ee.EscrowBundle
+	// Chain is the deployment's escrow chain, whose head is Bundle. The
+	// server reads and checks it at startup.
+	Chain EscrowChain
+}
+
+// EscrowChain is the deployment's escrow chain (docs/design/encryption.md,
+// "Where the escrow chain lives"), encoded as published: the root escrow
+// bundle and the rotation statements after it.
+type EscrowChain struct {
+	Root      []byte
+	Rotations []*vaultsyncv1.EscrowRotationStatement
 }
 
 // Configured reports whether the deployment has an escrow key.
@@ -68,5 +84,7 @@ func (service ServerInfoService) GetServerInfo(context.Context, *connect.Request
 		EscrowPublicKey:          service.Escrow.PublicKey,
 		EscrowKeyId:              service.Escrow.KeyID,
 		EscrowDefault:            service.Escrow.Configured() && service.Escrow.Default,
+		EscrowRootBundle:         service.Escrow.Chain.Root,
+		EscrowRotations:          service.Escrow.Chain.Rotations,
 	}), nil
 }

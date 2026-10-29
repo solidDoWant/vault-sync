@@ -54,4 +54,26 @@ message GetServerInfoResponse {
   // turns it off (VAULT_SYNC_ESCROW_DEFAULT, on by default). Always false
   // when the server has no escrow key.
   bool escrow_default = 8;
+  // The deployment's escrow chain (docs/design/encryption.md, "Escrow
+  // key"): its root escrow bundle, encoded as in docs/design/crypto.md
+  // ("vault-sync/v1/escrow" || signing public key || lp(age recipient)),
+  // the first bundle the deployment published. Empty when the server has no
+  // escrow key.
+  bytes escrow_root_bundle = 9;
+  // The escrow rotation statements after escrow_root_bundle, in order. The
+  // last one's new_bundle (or the root, with none) is the current escrow
+  // bundle, whose recipient is escrow_public_key. Empty when the server has
+  // no escrow key or has never rotated it.
+  repeated EscrowRotationStatement escrow_rotations = 10;
+}
+
+// EscrowRotationStatement moves the escrow key from one bundle to the next,
+// signed by the previous bundle's escrow signing key (docs/design/crypto.md).
+message EscrowRotationStatement {
+  // SHA-256 of the encoded previous bundle (32 bytes).
+  bytes old_bundle_hash = 1;
+  // The encoded new bundle.
+  bytes new_bundle = 2;
+  // The previous escrow signing key's Ed25519 signature (64 bytes).
+  bytes signature = 3;
 }

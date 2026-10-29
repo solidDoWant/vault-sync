@@ -10,7 +10,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file vaultsync/v1/server_info.proto.
  */
 export const file_vaultsync_v1_server_info: GenFile = /*@__PURE__*/
-  fileDesc("Ch52YXVsdHN5bmMvdjEvc2VydmVyX2luZm8ucHJvdG8SDHZhdWx0c3luYy52MSIWChRHZXRTZXJ2ZXJJbmZvUmVxdWVzdCLhAQoVR2V0U2VydmVySW5mb1Jlc3BvbnNlEg8KB3ZlcnNpb24YASABKAkSGAoQcHJvdG9jb2xfdmVyc2lvbhgCIAEoDRIiChptYXhfcmVhbHRpbWVfc3Vic2NyaXB0aW9ucxgDIAEoDRIXCg9vaWRjX2lzc3Vlcl91cmwYBCABKAkSFgoOb2lkY19jbGllbnRfaWQYBSABKAkSGQoRZXNjcm93X3B1YmxpY19rZXkYBiABKAwSFQoNZXNjcm93X2tleV9pZBgHIAEoCRIWCg5lc2Nyb3dfZGVmYXVsdBgIIAEoCDJvChFTZXJ2ZXJJbmZvU2VydmljZRJaCg1HZXRTZXJ2ZXJJbmZvEiIudmF1bHRzeW5jLnYxLkdldFNlcnZlckluZm9SZXF1ZXN0GiMudmF1bHRzeW5jLnYxLkdldFNlcnZlckluZm9SZXNwb25zZSIAQkBaPmdpdGh1Yi5jb20vc29saWREb1dhbnQvdmF1bHQtc3luYy9nZW4vdmF1bHRzeW5jL3YxO3ZhdWx0c3luY3YxYgZwcm90bzM");
+  fileDesc("Ch52YXVsdHN5bmMvdjEvc2VydmVyX2luZm8ucHJvdG8SDHZhdWx0c3luYy52MSIWChRHZXRTZXJ2ZXJJbmZvUmVxdWVzdCK+AgoVR2V0U2VydmVySW5mb1Jlc3BvbnNlEg8KB3ZlcnNpb24YASABKAkSGAoQcHJvdG9jb2xfdmVyc2lvbhgCIAEoDRIiChptYXhfcmVhbHRpbWVfc3Vic2NyaXB0aW9ucxgDIAEoDRIXCg9vaWRjX2lzc3Vlcl91cmwYBCABKAkSFgoOb2lkY19jbGllbnRfaWQYBSABKAkSGQoRZXNjcm93X3B1YmxpY19rZXkYBiABKAwSFQoNZXNjcm93X2tleV9pZBgHIAEoCRIWCg5lc2Nyb3dfZGVmYXVsdBgIIAEoCBIaChJlc2Nyb3dfcm9vdF9idW5kbGUYCSABKAwSPwoQZXNjcm93X3JvdGF0aW9ucxgKIAMoCzIlLnZhdWx0c3luYy52MS5Fc2Nyb3dSb3RhdGlvblN0YXRlbWVudCJZChdFc2Nyb3dSb3RhdGlvblN0YXRlbWVudBIXCg9vbGRfYnVuZGxlX2hhc2gYASABKAwSEgoKbmV3X2J1bmRsZRgCIAEoDBIRCglzaWduYXR1cmUYAyABKAwybwoRU2VydmVySW5mb1NlcnZpY2USWgoNR2V0U2VydmVySW5mbxIiLnZhdWx0c3luYy52MS5HZXRTZXJ2ZXJJbmZvUmVxdWVzdBojLnZhdWx0c3luYy52MS5HZXRTZXJ2ZXJJbmZvUmVzcG9uc2UiAEJAWj5naXRodWIuY29tL3NvbGlkRG9XYW50L3ZhdWx0LXN5bmMvZ2VuL3ZhdWx0c3luYy92MTt2YXVsdHN5bmN2MWIGcHJvdG8z");
 
 /**
  * GetServerInfoRequest has no parameters.
@@ -105,6 +105,27 @@ export type GetServerInfoResponse = Message<"vaultsync.v1.GetServerInfoResponse"
    * @generated from field: bool escrow_default = 8;
    */
   escrowDefault: boolean;
+
+  /**
+   * The deployment's escrow chain (docs/design/encryption.md, "Escrow
+   * key"): its root escrow bundle, encoded as in docs/design/crypto.md
+   * ("vault-sync/v1/escrow" || signing public key || lp(age recipient)),
+   * the first bundle the deployment published. Empty when the server has no
+   * escrow key.
+   *
+   * @generated from field: bytes escrow_root_bundle = 9;
+   */
+  escrowRootBundle: Uint8Array;
+
+  /**
+   * The escrow rotation statements after escrow_root_bundle, in order. The
+   * last one's new_bundle (or the root, with none) is the current escrow
+   * bundle, whose recipient is escrow_public_key. Empty when the server has
+   * no escrow key or has never rotated it.
+   *
+   * @generated from field: repeated vaultsync.v1.EscrowRotationStatement escrow_rotations = 10;
+   */
+  escrowRotations: EscrowRotationStatement[];
 };
 
 /**
@@ -113,6 +134,42 @@ export type GetServerInfoResponse = Message<"vaultsync.v1.GetServerInfoResponse"
  */
 export const GetServerInfoResponseSchema: GenMessage<GetServerInfoResponse> = /*@__PURE__*/
   messageDesc(file_vaultsync_v1_server_info, 1);
+
+/**
+ * EscrowRotationStatement moves the escrow key from one bundle to the next,
+ * signed by the previous bundle's escrow signing key (docs/design/crypto.md).
+ *
+ * @generated from message vaultsync.v1.EscrowRotationStatement
+ */
+export type EscrowRotationStatement = Message<"vaultsync.v1.EscrowRotationStatement"> & {
+  /**
+   * SHA-256 of the encoded previous bundle (32 bytes).
+   *
+   * @generated from field: bytes old_bundle_hash = 1;
+   */
+  oldBundleHash: Uint8Array;
+
+  /**
+   * The encoded new bundle.
+   *
+   * @generated from field: bytes new_bundle = 2;
+   */
+  newBundle: Uint8Array;
+
+  /**
+   * The previous escrow signing key's Ed25519 signature (64 bytes).
+   *
+   * @generated from field: bytes signature = 3;
+   */
+  signature: Uint8Array;
+};
+
+/**
+ * Describes the message vaultsync.v1.EscrowRotationStatement.
+ * Use `create(EscrowRotationStatementSchema)` to create a new message.
+ */
+export const EscrowRotationStatementSchema: GenMessage<EscrowRotationStatement> = /*@__PURE__*/
+  messageDesc(file_vaultsync_v1_server_info, 2);
 
 /**
  * ServerInfoService exposes server metadata. It is the only unauthenticated
