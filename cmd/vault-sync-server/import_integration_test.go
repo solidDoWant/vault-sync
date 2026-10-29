@@ -3,6 +3,7 @@
 package main_test
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
@@ -11,46 +12,69 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
+	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	vaultsyncv1 "github.com/solidDoWant/vault-sync/gen/vaultsync/v1"
+	"github.com/solidDoWant/vault-sync/gen/vaultsync/v1/vaultsyncv1connect"
+	"github.com/solidDoWant/vault-sync/internal/auth/authtest"
 	"github.com/solidDoWant/vault-sync/internal/config"
 	"github.com/solidDoWant/vault-sync/internal/vaultimport"
 )
 
-// importFolder runs `vault-sync-server import vaultID source` against the
-// deployment and returns its exit code and report.
-func (cluster *deployment) importFolder(t *testing.T, binary, vaultID, source string) (int, vaultimport.Report) {
+// signInCode matches the line the import writes to stderr with the code that
+// approves its sign-in.
+var signInCode = regexp.MustCompile(`code (\S+)$`)
+
+// importFolder runs `vault-sync-server import SERVER_URL vaultID source` as
+// a client of server, approves its device sign-in as subject, and returns its
+// exit code and report. The child gets none of the server's variables: it
+// reaches the vault only through the API.
+func (cluster *deployment) importFolder(t *testing.T, binary string, server *instance, flow *authtest.DeviceFlow,
+	subject, vaultID, source string,
+) (int, vaultimport.Report) {
 	t.Helper()
 
-	var stdout, stderr bytes.Buffer
+	var stdout bytes.Buffer
 
-	command := exec.CommandContext(t.Context(), binary, "import", vaultID, source)
+	command := exec.CommandContext(t.Context(), binary, "import", server.apiURL, vaultID, source)
 
-	command.Env = append(os.Environ(),
-		config.DatabaseURLEnv+"="+cluster.database.DSN,
-		config.S3EndpointEnv+"="+cluster.objects.Endpoint,
-		config.S3RegionEnv+"="+cluster.objects.Region,
-		config.S3BucketEnv+"="+cluster.objects.Bucket,
-		config.S3AccessKeyIDFileEnv+"="+cluster.objects.AccessKeyIDFile,
-		config.S3SecretAccessKeyFileEnv+"="+cluster.objects.SecretAccessKeyFile,
-		config.S3ForcePathStyleEnv+"="+strconv.FormatBool(cluster.objects.ForcePathStyle),
-	)
+	for _, variable := range os.Environ() {
+		if !strings.HasPrefix(variable, "VAULT_SYNC_") {
+			command.Env = append(command.Env, variable)
+		}
+	}
+
 	command.Stdout = &stdout
-	command.Stderr = &stderr
+
+	stderr, err := command.StderrPipe()
+	require.NoError(t, err)
+	require.NoError(t, command.Start())
+
+	var logs strings.Builder
+
+	scanner := bufio.NewScanner(stderr)
+	for scanner.Scan() {
+		line := scanner.Text()
+		logs.WriteString(line + "\n")
+
+		if match := signInCode.FindStringSubmatch(line); match != nil {
+			assert.True(t, flow.ApproveAs(match[1], subject), "approve the import's sign-in")
+		}
+	}
 
 	code := 0
 
 	var exitErr *exec.ExitError
 
-	if err := command.Run(); errors.As(err, &exitErr) {
+	if err := command.Wait(); errors.As(err, &exitErr) {
 		code = exitErr.ExitCode()
 	} else {
-		require.NoError(t, err, "import: %s", stderr.String())
+		require.NoError(t, err, "import: %s", logs.String())
 	}
 
 	var report vaultimport.Report
@@ -58,7 +82,7 @@ func (cluster *deployment) importFolder(t *testing.T, binary, vaultID, source st
 		require.NoError(t, json.Unmarshal(stdout.Bytes(), &report), "import report: %s", stdout.String())
 	}
 
-	t.Logf("import logs:\n%s", stderr.String())
+	t.Logf("import logs:\n%s", logs.String())
 
 	return code, report
 }
@@ -112,8 +136,9 @@ func (client *syncClient) syncAll(t *testing.T, server *instance) map[string]syn
 
 func TestImportSubcommand(t *testing.T) {
 	cluster := newDeployment(t)
+	flow := cluster.issuer.EnableDeviceFlow(t, cluster.key, authtest.DeviceFlowOptions{})
 	binary := buildServer(t)
-	server := cluster.start(t, "server", binary)
+	server := cluster.start(t, "server", binary, config.OIDCClientIDEnv+"="+authtest.DefaultAudience)
 	token := cluster.token(t, "alice")
 
 	t.Run("[AC-23] a device syncs exactly the imported notes, attachments and empty folders", func(t *testing.T) {
@@ -145,7 +170,7 @@ func TestImportSubcommand(t *testing.T) {
 		require.NoError(t, os.MkdirAll(filepath.Join(source, "Attachments", "Empty"), 0o755))
 		require.NoError(t, os.MkdirAll(filepath.Join(source, "Archive", "Empty"), 0o755))
 
-		code, report := cluster.importFolder(t, binary, vault.GetId(), source)
+		code, report := cluster.importFolder(t, binary, server, flow, "alice", vault.GetId(), source)
 		assert.Equal(t, 1, code, "an import that skipped names exits 1")
 		assert.Equal(t, vaultimport.StatusPartial, report.Status)
 		assert.ElementsMatch(t, []string{"unportable:name.md", "Projects/trailing dot."}, skippedPaths(report))
@@ -178,17 +203,63 @@ func TestImportSubcommand(t *testing.T) {
 		source := t.TempDir()
 		require.NoError(t, os.WriteFile(filepath.Join(source, "new.md"), []byte("new"), 0o600))
 
-		code, report := cluster.importFolder(t, binary, vault.GetId(), source)
+		code, report := cluster.importFolder(t, binary, server, flow, "alice", vault.GetId(), source)
 		assert.Equal(t, 1, code)
 		assert.Equal(t, vaultimport.StatusFailed, report.Status)
 		assert.Contains(t, report.Error, "not empty")
 		assert.Equal(t, []string{"existing.md"}, keysOf(device.syncAll(t, server)))
 	})
 
+	for _, refused := range []struct {
+		name  string
+		role  vaultsyncv1.VaultRole
+		error string
+	}{
+		{name: "a user who is not a member is refused", error: "not a member"},
+		{name: "a viewer is refused", role: vaultsyncv1.VaultRole_VAULT_ROLE_VIEWER, error: "importing needs the editor or owner role"},
+	} {
+		t.Run(refused.name, func(t *testing.T) {
+			vault := createVault(t, server, token, "Not Bob's")
+
+			if refused.role != vaultsyncv1.VaultRole_VAULT_ROLE_UNSPECIFIED {
+				addMember(t, server, token, cluster.token(t, "bob"), vault.GetId(), refused.role)
+			}
+
+			source := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(source, "new.md"), []byte("new"), 0o600))
+
+			code, report := cluster.importFolder(t, binary, server, flow, "bob", vault.GetId(), source)
+			assert.Equal(t, 1, code)
+			assert.Equal(t, vaultimport.StatusFailed, report.Status)
+			assert.Contains(t, report.Error, refused.error)
+
+			device := newSyncClient(t, server, token, vault.GetId())
+			assert.Empty(t, device.syncAll(t, server), "nothing is committed")
+		})
+	}
+
 	t.Run("usage errors exit 2", func(t *testing.T) {
-		code, _ := cluster.importFolder(t, binary, "not-a-vault-id", t.TempDir())
+		code, _ := cluster.importFolder(t, binary, server, flow, "alice", "not-a-vault-id", t.TempDir())
 		assert.Equal(t, 2, code)
 	})
+}
+
+// addMember makes the user of memberToken a member of vaultID with role, by
+// an invitation the owner creates and the user redeems.
+func addMember(t *testing.T, server *instance, ownerToken, memberToken, vaultID string, role vaultsyncv1.VaultRole) {
+	t.Helper()
+
+	memberships := vaultsyncv1connect.NewMembershipServiceClient(httpClient, server.apiURL)
+
+	invitation, err := memberships.CreateInvitation(t.Context(), authorized(&vaultsyncv1.CreateInvitationRequest{
+		VaultId: vaultID, Role: role, TtlSeconds: 3600,
+	}, ownerToken))
+	require.NoError(t, err)
+
+	_, err = memberships.RedeemInvitation(t.Context(), authorized(&vaultsyncv1.RedeemInvitationRequest{
+		Code: invitation.Msg.GetCode(),
+	}, memberToken))
+	require.NoError(t, err)
 }
 
 func skippedPaths(report vaultimport.Report) []string {

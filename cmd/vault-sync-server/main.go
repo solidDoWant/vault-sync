@@ -5,7 +5,7 @@
 // `vault-sync-server export -out DIR` instead writes a plaintext copy of
 // every vault to DIR and exits (docs/export.md, SPEC.md §4).
 //
-// `vault-sync-server import VAULT_ID DIR` loads a folder of Markdown notes
+// `vault-sync-server import SERVER_URL VAULT_ID DIR` loads a folder of Markdown notes
 // and attachments into an empty vault and exits (docs/import.md).
 //
 // `vault-sync-server retention set|unset|list` manages per-vault retention
