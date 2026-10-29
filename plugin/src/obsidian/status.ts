@@ -14,9 +14,28 @@ import { IdentityProviderError } from "../core/auth/oidc";
  * - `idle`: the last pull or push succeeded.
  * - `offline`: the last one could not reach the server.
  * - `error`: the last one failed for another reason (`message` says why).
- * - `device-removed`: this device was removed from the account; sync waits until the user registers it again (#590).
+ * - `device-removed`: this device was removed from the account; sync waits until the user registers it again.
+ * - `not-member`: the user is no longer a member of the connected vault (removed or left); sync is stopped and the files are kept.
+ * - `vault-deleted`: an owner deleted the connected vault; sync is stopped and the files are kept.
  */
-export type SyncState = "signed-out" | "sign-in-required" | "not-connected" | "starting" | "waiting-for-journal" | "syncing" | "idle" | "offline" | "error" | "device-removed";
+export type SyncState =
+  | "signed-out"
+  | "sign-in-required"
+  | "not-connected"
+  | "starting"
+  | "waiting-for-journal"
+  | "syncing"
+  | "idle"
+  | "offline"
+  | "error"
+  | "device-removed"
+  | "not-member"
+  | "vault-deleted";
+
+/** The states in which sync stopped for good until the user acts: they get a notice that stays. */
+export function isStoppedState(state: SyncState): boolean {
+  return state === "device-removed" || state === "not-member" || state === "vault-deleted";
+}
 
 export interface SyncStatus {
   state: SyncState;
@@ -62,6 +81,8 @@ const labels: Record<SyncState, string> = {
   offline: "offline",
   error: "error",
   "device-removed": "device removed",
+  "not-member": "no longer a member",
+  "vault-deleted": "vault deleted",
 };
 
 /** The status bar's text, e.g. `Vault Sync: idle · 2 conflicts`. */
@@ -83,6 +104,8 @@ const icons: Record<SyncState, string> = {
   offline: "wifi-off",
   error: "alert-circle",
   "device-removed": "smartphone",
+  "not-member": "user-x",
+  "vault-deleted": "trash-2",
 };
 
 /**
@@ -111,6 +134,8 @@ export function statusDescription(status: SyncStatus): string {
     offline: "Cannot reach the server. Local changes are kept and pushed once it is reachable again.",
     error: "Sync failed. Local changes are kept and pushed by a later sync.",
     "device-removed": "Sync is stopped.",
+    "not-member": "You are no longer a member of this vault, so sync is stopped. Your files stay in this vault.",
+    "vault-deleted": "An owner deleted this vault on the server, so sync is stopped. Your files stay in this vault.",
   };
   const lines = [detail[status.state]];
   if (status.message !== undefined && status.message !== "") lines.push(status.message);

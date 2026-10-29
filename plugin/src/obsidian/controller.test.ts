@@ -19,7 +19,7 @@ import { currentDeviceId, DeviceListLoads, DeviceRemovals, deviceRows, type Devi
 import { parsePluginData, type PluginData } from "./data";
 import { DeviceNameError } from "./device-name";
 import { SyncSession, type SyncSessionOptions } from "./session";
-import type { SyncStatus } from "./status";
+import { statusText, type SyncStatus } from "./status";
 
 const bytes = (value: string) => new TextEncoder().encode(value);
 
@@ -896,6 +896,98 @@ describe("a viewer device", () => {
     });
     expect(f.controller.readOnly).toBe(false);
     await f.controller.stop();
+  });
+});
+
+describe("a device that loses access to its vault", () => {
+  /** Makes the server answer as it does once the user lost access: the vault is no longer listed and every vault request is NOT_FOUND. */
+  function loseAccess(server: ReturnType<typeof fakeServer>, reason?: ErrorReason): void {
+    const index = server.vaults.findIndex((vault) => vault.id === server.sync.vaultId);
+    server.vaults.splice(index, 1);
+    const details = reason === undefined ? [] : [{ desc: ErrorDetailSchema, value: { reason } }];
+    server.sync.interceptor = () => {
+      throw new ConnectError("vault not found", Code.NotFound, undefined, details);
+    };
+  }
+
+  it.each<[string, ErrorReason | undefined, SyncStatus["state"], string]>([
+    ["removed or left", undefined, "not-member", "Vault Sync: no longer a member"],
+    ["deleted", ErrorReason.VAULT_DELETED, "vault-deleted", "Vault Sync: vault deleted"],
+  ])("stops syncing within one cycle when %s, keeps its files and journal, and shows why", async (_case, reason, state, text) => {
+    const server = fakeServer();
+    server.sync.commit({ documentId: "doc-a", path: "a.md", content: "shared" });
+    const f = fixture(server, connected({ ...settings }, server.sync.vaultId));
+    await f.controller.update();
+    await statusBecomes(f.statuses, "idle");
+
+    loseAccess(server, reason);
+    await f.vault.write("a.md", bytes("edited after the loss"));
+    await f.vault.write("new.md", bytes("a new note"));
+    await f.controller.syncNow();
+
+    const status = await statusBecomes(f.statuses, state);
+    expect(status === undefined ? "" : statusText(status)).toBe(text);
+    expect(f.controller.session).toBeUndefined();
+    expect(f.events.at(-1)).toBe(`stopped ${server.sync.vaultId}`);
+    expect(new TextDecoder().decode(await f.vault.read("a.md"))).toBe("edited after the loss");
+    expect(new TextDecoder().decode(await f.vault.read("new.md"))).toBe("a new note");
+    expect(f.data.vault?.id).toBe(server.sync.vaultId);
+
+    // Nothing restarts it: an update for the same vault shows the loss again.
+    await f.controller.update();
+    expect(f.controller.session).toBeUndefined();
+    expect(f.statuses.at(-1)?.state).toBe(state);
+    expect(f.events.filter((event) => event.startsWith("start"))).toHaveLength(1);
+  });
+
+  it("syncs again once it was disconnected and connected after access came back", async () => {
+    const server = fakeServer();
+    const f = fixture(server, connected({ ...settings }, server.sync.vaultId));
+    await f.controller.update();
+    await statusBecomes(f.statuses, "idle");
+    const vault = server.vaults[0];
+    if (vault === undefined) throw new Error("no vault");
+    loseAccess(server);
+    await f.controller.syncNow();
+    await statusBecomes(f.statuses, "not-member");
+
+    server.vaults.unshift(vault);
+    server.sync.interceptor = undefined;
+    delete f.data.vault;
+    await f.controller.update();
+    connected(f.data, server.sync.vaultId);
+    await f.controller.update();
+    await statusBecomes(f.statuses, "idle");
+    expect(f.controller.session).toBeDefined();
+    await f.controller.stop();
+  });
+
+  it("keeps syncing when the vault is missing from the list but the server still serves it", async () => {
+    const server = fakeServer();
+    const f = fixture(server, connected({ ...settings }, server.sync.vaultId));
+    await f.controller.update();
+    await statusBecomes(f.statuses, "idle");
+    server.vaults.splice(0, 1);
+
+    await f.vault.write("b.md", bytes("pushed"));
+    await f.controller.syncNow();
+
+    await statusBecomes(f.statuses, "idle");
+    expect(server.sync.liveFiles().get("b.md")).toBe("pushed");
+    await f.controller.stop();
+  });
+
+  it("leaves viewer mode when a viewer loses access", async () => {
+    const server = fakeServer({ role: VaultRole.VIEWER });
+    const readOnly: boolean[] = [];
+    const f = fixture(server, connected({ ...settings }, server.sync.vaultId), { onReadOnly: (value) => readOnly.push(value) });
+    await f.controller.update();
+    await statusBecomes(f.statuses, "idle");
+    loseAccess(server);
+    await f.controller.syncNow();
+    await statusBecomes(f.statuses, "not-member");
+    expect(readOnly).toEqual([true, false]);
+    expect(f.controller.readOnly).toBe(false);
   });
 });
 

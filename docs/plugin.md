@@ -63,7 +63,11 @@ Owners also see:
 
 On a viewer's device the plugin reads the role at the start of every sync, so a role change takes effect within one sync, without signing in again. While you are a viewer, notes open read-only in reading view, with a banner saying the vault is shared with you as a viewer, and creating, renaming and deleting files is refused with a notice. The device only pulls: it never uploads or commits anything. A file changed anyway (outside Obsidian, say) is copied to `.vault-sync/local-copies/` at the same path (with a number added when that name is taken), the shared version is restored, and a notice says where your version is. New files are moved there too, and a deleted or renamed file is restored. `.vault-sync/` is never synced. Once you become an editor, the device syncs normally from its next sync; the files in `local-copies` stay where they are.
 
-Editors and viewers see only their role and **Leave vault**. **Leave vault** (also offered to owners, unless they are the last one) ends your membership and disconnects this vault; its files stay. Joining again takes a new invitation.
+Editors and viewers see only their role and **Leave vault**. **Leave vault** (also offered to owners) ends your membership after you confirm it: sync stops, the status shows **no longer a member**, and the files stay. The vault stays connected, so you can disconnect it or wait for a new invitation; joining again takes one. The last owner cannot leave (or be demoted): a notice says that the vault must keep at least one owner. Promote another member to owner first, then leave.
+
+Owners also see **Delete vault**. It asks you to type the vault's name, exactly, before it deletes the vault on the server for every member. The server keeps the data for 30 days, during which only its operator can restore it (`vault-sync-server vault undelete`); the plugin has no undo.
+
+When you lose access to the connected vault (an owner removed you, you left, from this device or another one, or an owner deleted the vault), the device finds out within one sync, from the vault list the plugin reads at the start of every sync. It then stops syncing that vault, keeps every local file and its sync journal as they are, shows a notice, and the status and settings say **no longer a member** or **vault deleted**. Nothing restarts sync for that vault until you disconnect it and connect it again (after access came back) or restart Obsidian.
 
 To join a vault, paste the code into **Join with an invite code** under **Remote vault** and click **Join**. The plugin redeems the code, which uses it up, and connects the open Obsidian vault to the vault you joined. If the open vault already has files, the usual confirmation before combining comes first (see [Connecting a vault](#connecting-a-vault)). A code that is wrong, expired, revoked or already used gets one message saying so, and nothing is connected. If you are already a member of the vault, the code is not used: choose the vault under **Connect to an existing vault** instead. The plugin syncs the whole Obsidian vault it runs in, so to keep a shared vault apart from your own notes, create or open another Obsidian vault first, install vault-sync there and join from it. Invite codes are never logged or stored by the plugin.
 
@@ -129,7 +133,7 @@ The realtime channel only makes changes arrive sooner; sync never depends on it 
 
 ### Status
 
-The status bar (desktop) shows the sync status. Mobile has no status bar, so there a ribbon icon shows it instead: a check mark when idle, an upload cloud while local changes wait to be pushed, a warning triangle while conflicts are unresolved, and its own icon for syncing, offline, error, sign-in needed, device removed and no vault connected. Click the status bar or tap the icon, or run **Vault Sync: Show sync status**, for details. The settings show it too.
+The status bar (desktop) shows the sync status. Mobile has no status bar, so there a ribbon icon shows it instead: a check mark when idle, an upload cloud while local changes wait to be pushed, a warning triangle while conflicts are unresolved, and its own icon for syncing, offline, error, sign-in needed, device removed, no longer a member, vault deleted and no vault connected. Click the status bar or tap the icon, or run **Vault Sync: Show sync status**, for details. The settings show it too.
 
 | Status | Meaning |
 |---|---|
@@ -140,6 +144,8 @@ The status bar (desktop) shows the sync status. Mobile has no status bar, so the
 | `error` | The last sync failed for another reason, or some local files cannot be synced because the server does not accept their names. The details say why and name the file; the [conflict view](#conflicts) lists every such file. |
 | `sign-in needed` | The session ended. Sign in again to resume. |
 | `signed out` / `no vault connected` | Sync is off until you sign in and connect a vault. |
+| `no longer a member` | You were removed from the connected vault or left it. Sync is stopped and your files stay; disconnect the vault in the settings. |
+| `vault deleted` | An owner deleted the connected vault. Sync is stopped and your files stay; disconnect the vault in the settings. |
 | `device removed` | This device was removed from your account on another device. Sync is stopped until you click **Register again** in the settings; local changes are kept and pushed then (see [Devices](#devices)). |
 
 After the status, `N pending` counts local changes that the server has not acknowledged yet, and `N conflicts` counts the conflict copies this device made that still exist. The [conflict view](#conflicts) lists them.

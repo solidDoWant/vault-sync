@@ -17,6 +17,8 @@ describe("statusText", () => {
     ["signed-out", "Vault Sync: signed out"],
     ["starting", "Vault Sync: starting"],
     ["waiting-for-journal", "Vault Sync: waiting for another window"],
+    ["not-member", "Vault Sync: no longer a member"],
+    ["vault-deleted", "Vault Sync: vault deleted"],
   ])("names the %s state", (state, text) => {
     expect(statusText({ state, conflicts: 0, pending: 0 })).toBe(text);
   });

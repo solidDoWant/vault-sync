@@ -6,7 +6,7 @@ import { connectProblem } from "./controller";
 import { type ConnectedVault, type PluginData } from "./data";
 import { DeviceListLoads, DeviceRemovals, type DeviceRow } from "./devices";
 import { quotedVaultLabel, vaultLabel } from "./display-text";
-import { membershipErrorMessage, parseInvitationDays, roleDescription, roleName, roles, type CreatedInvitation, type MemberRow, type Sharing } from "./sharing";
+import { deleteConfirmed, membershipErrorMessage, parseInvitationDays, roleDescription, roleName, roles, type CreatedInvitation, type MemberRow, type Sharing } from "./sharing";
 import type { EncryptionState } from "./encryption";
 import { PassphraseModal, type PassphraseMode } from "./passphrase-modal";
 import { errorMessage, statusDescription, statusText, type SyncStatus } from "./status";
@@ -41,8 +41,10 @@ export interface SettingsHost extends Plugin {
   revokeInvitation(invitationId: string): Promise<void>;
   setMemberRole(userId: string, role: VaultRole): Promise<void>;
   removeMember(userId: string): Promise<void>;
-  /** Leaves the connected vault and disconnects this vault from it. */
+  /** Leaves the connected vault; sync then stops with "no longer a member" and the files stay. */
   leaveVault(): Promise<void>;
+  /** Deletes the connected vault on the server (owners only); sync then stops with "vault deleted" and the files stay. */
+  deleteVault(): Promise<void>;
   /** Redeems an invite code and resolves with the vault joined. */
   joinVault(code: string): Promise<Vault>;
   /** Whether end-to-end encryption is enabled for the account, and unlocked on this device. */
@@ -362,7 +364,11 @@ export class VaultSyncSettingTab extends PluginSettingTab {
       });
     };
     if (sharing.kind === "not-member") {
-      intro.setDesc("You are no longer a member of this vault, so it cannot sync. Disconnect it above; the files stay in this vault.");
+      intro.setDesc(
+        host.syncStatus.state === "vault-deleted"
+          ? "An owner deleted this vault, so it cannot sync. Disconnect it above; the files stay in this vault."
+          : "You are no longer a member of this vault, so it cannot sync. Disconnect it above; the files stay in this vault.",
+      );
       return;
     }
     const role = sharing.kind === "owner" ? VaultRole.OWNER : sharing.role;
@@ -463,12 +469,12 @@ export class VaultSyncSettingTab extends PluginSettingTab {
     }
     new Setting(section)
       .setName("Leave vault")
-      .setDesc("Stops your membership of this vault and disconnects this vault from it. The files stay here. To join again you need a new invitation.")
+      .setDesc("Ends your membership of this vault: sync stops and the files stay here. To join again you need a new invitation.")
       .addButton((button) => {
         button.setButtonText("Leave vault").onClick(() => {
           new ConfirmModal(this.app, {
             title: "Leave this vault?",
-            text: "You stop being a member and this vault stops syncing with it. The files stay in this vault. To join again you need a new invitation from an owner.",
+            text: "You stop being a member and this vault stops syncing. The files stay in this vault. To join again you need a new invitation from an owner.",
             confirm: "Leave vault",
             warning: true,
             onConfirm: () => {
@@ -485,6 +491,34 @@ export class VaultSyncSettingTab extends PluginSettingTab {
         });
         button.buttonEl.addClass("mod-warning");
       });
+    const vaultName = host.connectedVault?.name ?? "";
+    if (sharing.kind === "owner" && vaultName !== "") {
+      new Setting(section)
+        .setName("Delete vault")
+        .setDesc("Deletes this vault on the server for every member: all their devices stop syncing and keep their files. The server keeps the data for 30 days, during which only the server's operator can restore it.")
+        .addButton((button) => {
+          button.setButtonText("Delete vault").onClick(() => {
+            new ConfirmModal(this.app, {
+              title: "Delete this vault?",
+              text: `Every member loses access and every device stops syncing; the files on the devices stay. Type the vault's name, ${vaultName}, to confirm.`,
+              confirm: "Delete vault",
+              warning: true,
+              typeToConfirm: vaultName,
+              onConfirm: () => {
+                host.deleteVault().then(
+                  () => {
+                    this.render();
+                  },
+                  (error: unknown) => {
+                    new Notice(`Vault Sync: could not delete the vault: ${membershipErrorMessage(error)}`);
+                  },
+                );
+              },
+            }).open();
+          });
+          button.buttonEl.addClass("mod-warning");
+        });
+    }
   }
 
   private renderVault(containerEl: HTMLElement): void {
@@ -685,6 +719,8 @@ interface ConfirmOptions {
   onConfirm: () => void;
   /** Called when the modal closes without the confirmation. */
   onCancel?: () => void;
+  /** Text the user must type, exactly, before the confirm button works (deleteConfirmed). */
+  typeToConfirm?: string;
 }
 
 /** A confirmation for a membership change (#34). */
@@ -703,6 +739,17 @@ class ConfirmModal extends Modal {
     const { contentEl, options } = this;
     contentEl.empty();
     contentEl.createEl("p", { text: options.text });
+    let typed = "";
+    let confirmButton: ButtonComponent | undefined;
+    const expected = options.typeToConfirm;
+    if (expected !== undefined) {
+      new Setting(contentEl).addText((text) =>
+        text.setPlaceholder(expected).onChange((value) => {
+          typed = value;
+          confirmButton?.setDisabled(!deleteConfirmed(typed, expected));
+        }),
+      );
+    }
     new Setting(contentEl)
       .addButton((button) =>
         button.setButtonText("Cancel").onClick(() => {
@@ -710,7 +757,10 @@ class ConfirmModal extends Modal {
         }),
       )
       .addButton((button) => {
+        confirmButton = button;
+        button.setDisabled(expected !== undefined);
         button.setButtonText(options.confirm).onClick(() => {
+          if (expected !== undefined && !deleteConfirmed(typed, expected)) return;
           this.confirmed = true;
           this.close();
           options.onConfirm();

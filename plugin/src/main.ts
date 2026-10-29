@@ -22,9 +22,9 @@ import { pathRulesFor } from "./obsidian/platform-rules";
 import { webSocketConnector } from "./obsidian/realtime-socket";
 import { SyncSession, type SyncSessionOptions, type VaultHistory } from "./obsidian/session";
 import { VaultSyncSettingTab, type SettingsHost } from "./obsidian/settings";
-import { createInvitation, joinVault, leaveVault, loadSharing, removeMember, revokeInvitation, setMemberRole, type CreatedInvitation, type Sharing } from "./obsidian/sharing";
+import { createInvitation, deleteVault, joinVault, leaveVault, loadSharing, removeMember, revokeInvitation, setMemberRole, type CreatedInvitation, type Sharing } from "./obsidian/sharing";
 import { SignInCancelledError, SignInModal } from "./obsidian/sign-in-modal";
-import { initialStatus, statusDescription, statusIcon, statusText, type SyncStatus } from "./obsidian/status";
+import { initialStatus, isStoppedState, statusDescription, statusIcon, statusText, type SyncStatus } from "./obsidian/status";
 import { ObsidianVaultAdapter } from "./obsidian/vault-adapter";
 import { keepLocalCopy } from "./obsidian/local-copies";
 import { ViewerMode } from "./obsidian/viewer-mode";
@@ -399,10 +399,20 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
     return removeMember(this.protocolClient(), this.sharedVaultId(), userId);
   }
 
-  /** Leaves the connected vault on the server and disconnects this vault from it; the local files stay. */
+  /**
+   * Leaves the connected vault on the server, then syncs, which finds the
+   * membership gone: sync stops and the status says "no longer a member".
+   * The vault stays connected and the local files stay.
+   */
   async leaveVault(): Promise<void> {
     await leaveVault(this.protocolClient(), this.sharedVaultId());
-    await this.disconnectVault();
+    await this.controller?.syncNow();
+  }
+
+  /** Deletes the connected vault on the server (owners only), then syncs, which stops sync with "vault deleted". The local files stay. */
+  async deleteVault(): Promise<void> {
+    await deleteVault(this.protocolClient(), this.sharedVaultId());
+    await this.controller?.syncNow();
   }
 
   /** Redeems an invite code; resolves with the vault joined, which the caller then connects. */
@@ -491,17 +501,17 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
   }
 
   private showStatus(status: SyncStatus): void {
-    const removed = status.state === "device-removed";
-    const changed = removed !== (this.status.state === "device-removed");
+    const stopped = isStoppedState(status.state);
+    const changed = status.state !== this.status.state && (stopped || isStoppedState(this.status.state));
     this.status = status;
-    if (removed && changed) new Notice(`Vault Sync: ${status.message ?? statusDescription(status)}`, 0);
+    if (stopped && changed) new Notice(`Vault Sync: ${status.message ?? statusDescription(status)}`, 0);
     this.statusBar?.setText(statusText(status));
     this.statusBar?.setAttribute("aria-label", statusDescription(status));
     if (this.statusRibbon !== undefined) {
       setIcon(this.statusRibbon, statusIcon(status));
       this.statusRibbon.setAttribute("aria-label", statusText(status));
     }
-    // The settings offer to register again only while the device is removed.
+    // The settings offer to register again only while the device is removed, and tell why sync stopped.
     if (changed) this.settingTab?.render();
     else this.settingTab?.showStatus();
     this.refreshConflictViews();

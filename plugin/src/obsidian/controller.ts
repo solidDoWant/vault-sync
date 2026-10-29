@@ -58,6 +58,46 @@ export function isDeviceNotFound(error: unknown): boolean {
   );
 }
 
+/** Why the device lost access to the connected vault (docs/design/sharing.md, Losing access). */
+export type AccessLoss = "not-member" | "vault-deleted";
+
+/**
+ * The device lost access to the connected vault: the user was removed or
+ * left (`not-member`), or an owner deleted it (`vault-deleted`). Sync stops;
+ * the local files and the journal are kept.
+ */
+export class VaultAccessLostError extends Error {
+  override readonly name = "VaultAccessLostError";
+  constructor(readonly loss: AccessLoss) {
+    super(loss === "vault-deleted" ? "This vault was deleted on the server." : "You are no longer a member of this vault.");
+  }
+}
+
+/** Whether `error` is the server's NOT_FOUND for a vault an owner deleted (the VAULT_DELETED reason). */
+export function isVaultDeleted(error: unknown): boolean {
+  return (
+    error instanceof ConnectError &&
+    error.code === Code.NotFound &&
+    error.findDetails(ErrorDetailSchema).some((detail) => detail.reason === ErrorReason.VAULT_DELETED)
+  );
+}
+
+/**
+ * Whether the caller lost access to `vaultId`, which ListVaults no longer
+ * lists: a vault-scoped request is NOT_FOUND then, with the VAULT_DELETED
+ * reason for a deleted vault. Undefined when the server still answers it.
+ */
+export async function accessLossOf(client: ProtocolClient, vaultId: string): Promise<AccessLoss | undefined> {
+  try {
+    await client.sync.listChanges({ vaultId, sinceSeq: 0n, pageSize: 1 });
+    return undefined;
+  } catch (error) {
+    if (isVaultDeleted(error)) return "vault-deleted";
+    if (error instanceof ConnectError && error.code === Code.NotFound) return "not-member";
+    throw error;
+  }
+}
+
 /** The account a device registration belongs to. */
 export interface Account {
   serverUrl: string;
@@ -276,6 +316,8 @@ export class SyncController {
   private role: { key: string; readOnly: boolean } | undefined;
   /** What onReadOnly last heard. */
   private reportedReadOnly = false;
+  /** The connected vault the device lost access to, and why; no session starts for it until another vault (or none) is connected. */
+  private lost: { key: string; loss: AccessLoss } | undefined;
 
   constructor(private readonly options: SyncControllerOptions) {}
 
@@ -387,6 +429,11 @@ export class SyncController {
     const wanted = authState === "signed-in" && vault !== undefined ? { vault, key: `${serverBaseUrl(data)}\n${vault.id}` } : undefined;
     if (this.running !== undefined && this.running.key === wanted?.key) return;
     await this.stopRunning();
+    if (vault === undefined || (this.lost !== undefined && this.lost.key !== `${serverBaseUrl(data)}\n${vault.id}`)) this.lost = undefined;
+    if (wanted !== undefined && this.lost?.key === wanted.key) {
+      this.publish({ state: this.lost.loss, conflicts: 0, pending: 0 });
+      return;
+    }
     if (wanted === undefined) {
       this.publish({
         state: authState === "signed-in" ? "not-connected" : authState,
@@ -441,7 +488,7 @@ export class SyncController {
         syncIntervalMs: this.options.syncIntervalMs,
         ...(this.options.pathRules === undefined ? {} : { pathRules: this.options.pathRules }),
         ...(this.options.maxDownloadBytes === undefined ? {} : { maxDownloadBytes: this.options.maxDownloadBytes }),
-        readOnly: () => this.readRole(client, wanted.key, wanted.vault.id, live),
+        readOnly: () => this.readRole(client, wanted.key, wanted.vault.id, generation),
         ...(this.options.keepLocalCopy === undefined ? {} : { keepLocalCopy: this.options.keepLocalCopy }),
         onStatus: (status) => {
           if (this.running?.session === session) this.publish(status);
@@ -477,12 +524,21 @@ export class SyncController {
    * Whether the signed-in user is a `viewer` of vault `vaultId`, from
    * ListVaults; called by the session at the start of every sync cycle
    * (docs/design/sharing.md, Viewer devices). A vault missing from the list
-   * is not read-only here: the server refuses that device's requests anyway.
+   * missing from the list may mean the device lost access (accessLossOf):
+   * then the session is stopped and the cycle fails with
+   * VaultAccessLostError, so nothing is pulled or pushed (Losing access).
    */
-  private async readRole(client: ProtocolClient, key: string, vaultId: string, live: () => boolean): Promise<boolean> {
+  private async readRole(client: ProtocolClient, key: string, vaultId: string, generation: number): Promise<boolean> {
     const member = (await listRemoteVaults(client)).find((candidate) => candidate.id === vaultId);
+    if (member === undefined) {
+      const loss = await accessLossOf(client, vaultId);
+      if (loss !== undefined) {
+        void this.accessLost(key, loss, generation);
+        throw new VaultAccessLostError(loss);
+      }
+    }
     const readOnly = member?.role === VaultRole.VIEWER;
-    if (live()) {
+    if (generation === this.generation) {
       this.role = { key, readOnly };
       this.reportReadOnly();
     }
@@ -538,6 +594,28 @@ export class SyncController {
         data.device = { ...data.device, removed: true };
         await this.options.save();
       }
+      await this.stopRunning();
+      await this.apply(next);
+    });
+    this.queue = run.catch(() => undefined);
+    return run;
+  }
+
+  /**
+   * Stops the session of vault `key` and shows `loss`, unless an update
+   * overtook the session that saw it. Queued, not awaited: the session waits
+   * for the engine, which waits for the call that found the loss.
+   */
+  private accessLost(key: string, loss: AccessLoss, generation: number): Promise<void> {
+    if (generation !== this.generation) return Promise.resolve();
+    this.cancelRetry();
+    const next = ++this.generation;
+    const run = this.queue.then(async () => {
+      if (next !== this.generation) return;
+      this.lost = { key, loss };
+      // A device that lost access is no viewer any more: nothing syncs either way.
+      this.role = undefined;
+      this.reportReadOnly();
       await this.stopRunning();
       await this.apply(next);
     });
