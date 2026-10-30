@@ -14,7 +14,7 @@ import { isVaultError, type VaultAdapter, type VaultEvent } from "../vault/adapt
 import { posixPathRules, unmaterializableReason, type PathRules } from "../vaultpath/platform";
 import { conflictCopyName } from "./conflict-name";
 import { detectChanges, HashCache, isTemporaryPath, kindOfPath, project, replacementPath, replacementTarget, temporaryPath, type Projection, type RenameHint } from "./detect";
-import { applyChange, type ConflictEntry, type Cursor, type DocEntry, type JournalChange, type JournalState, type PendingKind, type PendingOp, type SkippedEntry, type SkipReason, type SyncJournal, type SyncKind } from "./journal";
+import { applyChange, type ConflictEntry, type Cursor, type DocEntry, type JournalChange, type JournalState, type PendingKind, type PendingOp, type SentCommitFields, type SkippedEntry, type SkipReason, type SyncJournal, type SyncKind } from "./journal";
 import { mergeContent } from "./merge-rules";
 
 /** The protocol calls the engine makes. */
@@ -1009,6 +1009,7 @@ export class SyncEngine {
           ? { ...last, path: copy, sent: false, revisionId: uuidv7({ msecs: this.now() }), earlierRevisionIds: [...(last.earlierRevisionIds ?? []), last.revisionId] }
           : { ...last, path: copy };
         delete moved.refused;
+        delete moved.sentFields;
         change.putPending.push(moved);
       } else {
         change.putPending.push({ ...this.newOp(state, uuidv7({ msecs: this.now() }), "create", copy, kindOfPath(copy), occupant.hash, occupant.size), order: order++ });
@@ -1218,6 +1219,7 @@ export class SyncEngine {
       let revision: Revision | undefined;
       let refused: { error: unknown } | undefined;
       // A commit under an epoch a rotation replaced is sealed again under the new one and retried (docs/design/encryption.md, Rotation).
+      let resealed = false;
       for (let attempt = 1; ; attempt++) {
         let contentRef: ContentRefFields | undefined;
         if (op.docKind !== "folder") {
@@ -1241,8 +1243,13 @@ export class SyncEngine {
           if (uploaded === "missing") break;
           contentRef = uploaded;
         }
-        if (!op.sent) {
-          op = { ...op, sent: true };
+        // A retry resends the fields an earlier attempt may have committed (an encrypted path is sealed with a random nonce), so it is the same commit even after a restart; it seals again only when their epoch is no longer current.
+        const fields: SentCommitFields = (!resealed ? op.sentFields : undefined) ?? {
+          ...this.codec.commitFields(op),
+          ...(contentRef === undefined ? {} : { contentRef: { blobId: contentRef.blobId, size: Number(contentRef.size) } }),
+        };
+        if (!op.sent || op.sentFields !== fields) {
+          op = { ...op, sent: true, sentFields: fields };
           await this.record({ putPending: [op] });
         }
         try {
@@ -1254,8 +1261,10 @@ export class SyncEngine {
               baseRevId: base?.baseRevId ?? "",
               kind: documentKind(op.docKind),
               // A folder has no content.
-              ...(contentRef === undefined ? {} : { contentRef }),
-              ...this.codec.commitFields(op),
+              ...(fields.contentRef === undefined ? {} : { contentRef: { blobId: fields.contentRef.blobId, size: BigInt(fields.contentRef.size) } }),
+              path: fields.path,
+              pathKey: fields.pathKey,
+              epoch: fields.epoch,
               deleted: op.kind === "delete",
               deviceId: this.deviceId,
             })
@@ -1264,7 +1273,8 @@ export class SyncEngine {
           break;
         } catch (error) {
           refused = { error };
-          if (attempt >= maxCommitAttempts || !(await this.codec.retryCommit(error))) break;
+          if (attempt >= maxCommitAttempts || !(await this.codec.retryCommit(error, fields.epoch))) break;
+          resealed = true;
         }
       }
       if (revision === undefined && refused === undefined) {
@@ -1277,7 +1287,9 @@ export class SyncEngine {
         if (refusal === undefined) throw refused.error;
         // The server checks a commit's revision id before anything else, so a refused commit was never applied: the operation is unsent again.
         blocked.add(op.documentId);
-        await this.record({ putPending: [{ ...op, sent: false, ...("reason" in refusal ? { refused: refusal.reason } : {}) }] });
+        const unsent: PendingOp = { ...op, sent: false, ...("reason" in refusal ? { refused: refusal.reason } : {}) };
+        delete unsent.sentFields;
+        await this.record({ putPending: [unsent] });
         if ("pull" in refusal) pullAgain = true;
         continue;
       }

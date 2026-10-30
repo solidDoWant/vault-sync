@@ -64,6 +64,14 @@ export interface PendingOp {
    */
   sent: boolean;
   /**
+   * The fields of the last CommitRevision attempt that depend on the vault's
+   * encryption, recorded before it is sent. An encrypted path is sealed with
+   * a random nonce, so a retry resends these bytes to be the same commit,
+   * even after a restart or a conversion; it seals again only when the
+   * server says their epoch is no longer current.
+   */
+  sentFields?: SentCommitFields;
+  /**
    * Revision ids of earlier commits of this document that may have reached
    * the server before rule W moved its file to a conflict copy name (a sent
    * operation whose reply was lost). Such a revision, when it arrives, is
@@ -76,6 +84,15 @@ export interface PendingOp {
    * operation is not retried until the file is renamed.
    */
   refused?: string;
+}
+
+/** What a pending operation's commit sent for its path, epoch and content. */
+export interface SentCommitFields {
+  path: Uint8Array;
+  pathKey: Uint8Array;
+  epoch: number;
+  /** The blob the commit references, with its stored size; none for a folder. */
+  contentRef?: { blobId: Uint8Array; size: number };
 }
 
 /** A conflict copy this device created, for the conflict view. */
