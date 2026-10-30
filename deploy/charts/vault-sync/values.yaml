@@ -1,7 +1,7 @@
 ---
 # vault-sync Helm chart values. docs/deployment.md describes every value and
-# walks through a full deployment; docs/configuration.md describes every
-# VAULT_SYNC_* variable the values below set.
+# walks through a full deployment; docs/admin/configuration-reference.md
+# describes every VAULT_SYNC_* variable the values below set.
 #
 # `config` is this chart's own interface: the chart turns it into the server
 # Deployment ("main"), the export CronJob ("export"), their Services, Secret

@@ -1,5 +1,7 @@
 // Package config loads the server configuration from environment variables
-// (SPEC.md §12). Every variable is documented in docs/configuration.md.
+// (SPEC.md §12). Every variable is documented in
+// docs/admin/configuration-reference.md, generated from the doc comments of
+// the *Env constants below.
 package config
 
 import (
@@ -27,59 +29,477 @@ import (
 	"github.com/solidDoWant/vault-sync/internal/store"
 )
 
-// Environment variable names.
+// Environment variable names. Each constant's doc comment is its entry in
+// docs/admin/configuration-reference.md: a description, then a paragraph
+// starting "Default:". Each const block is one section of that page,
+// headed by the block's doc comment.
+
+// PostgreSQL connection.
 const (
-	ListenAddressEnv               = "VAULT_SYNC_LISTEN_ADDRESS"
-	MetricsListenAddressEnv        = "VAULT_SYNC_METRICS_LISTEN_ADDRESS"
+	// PostgreSQL connection string, as a `postgres://` URL or libpq
+	// keyword/value string. It must not contain `sslcert` or `sslkey`; use the
+	// TLS file variables below instead, so rotated client certificates are
+	// picked up.
+	//
+	// Default: (required)
+	DatabaseURLEnv = "VAULT_SYNC_DATABASE_URL"
+
+	// PEM client certificate for PostgreSQL. Must be set together with
+	// `VAULT_SYNC_DATABASE_TLS_KEY_FILE`. Re-read for every new connection.
+	//
+	// Default: unset
+	DatabaseTLSCertFileEnv = "VAULT_SYNC_DATABASE_TLS_CERT_FILE"
+
+	// PEM private key for the client certificate. Must be set together with
+	// `VAULT_SYNC_DATABASE_TLS_CERT_FILE`. Re-read for every new connection.
+	//
+	// Default: unset
+	DatabaseTLSKeyFileEnv = "VAULT_SYNC_DATABASE_TLS_KEY_FILE"
+
+	// PEM bundle of CAs trusted to sign the PostgreSQL server certificate.
+	// Re-read for every new connection. See the note in
+	// [PostgreSQL TLS](../configuration.md#postgresql-tls) about verification.
+	//
+	// Default: unset
+	DatabaseTLSCAFileEnv = "VAULT_SYNC_DATABASE_TLS_CA_FILE"
+)
+
+// Listeners, request limits, shutdown and logging.
+const (
+	// `host:port` for the API listener (ConnectRPC). This is the port to expose
+	// through the ingress.
+	//
+	// Default: `:8080`
+	ListenAddressEnv = "VAULT_SYNC_LISTEN_ADDRESS"
+
+	// `host:port` for the metrics and health listener (`/metrics`, `/healthz`,
+	// `/readyz`). Must differ from `VAULT_SYNC_LISTEN_ADDRESS`. Do not expose
+	// it to the internet.
+	//
+	// Default: `:9090`
+	MetricsListenAddressEnv = "VAULT_SYNC_METRICS_LISTEN_ADDRESS"
+
+	// `host:port` for the service-wide metrics listener (`/metrics` only, see
+	// [Service-wide metrics](../configuration.md#service-wide-metrics)). Must
+	// differ from `VAULT_SYNC_LISTEN_ADDRESS` and
+	// `VAULT_SYNC_METRICS_LISTEN_ADDRESS`. Do not expose it to the internet.
+	//
+	// Default: `:9091`
 	ServiceMetricsListenAddressEnv = "VAULT_SYNC_SERVICE_METRICS_LISTEN_ADDRESS"
-	ServiceMetricsIntervalEnv      = "VAULT_SYNC_SERVICE_METRICS_INTERVAL"
-	DatabaseURLEnv                 = "VAULT_SYNC_DATABASE_URL"
-	DatabaseTLSCertFileEnv         = "VAULT_SYNC_DATABASE_TLS_CERT_FILE"
-	DatabaseTLSKeyFileEnv          = "VAULT_SYNC_DATABASE_TLS_KEY_FILE"
-	DatabaseTLSCAFileEnv           = "VAULT_SYNC_DATABASE_TLS_CA_FILE"
-	MaxRequestBytesEnv             = "VAULT_SYNC_MAX_REQUEST_BYTES"
-	WriteTimeoutEnv                = "VAULT_SYNC_WRITE_TIMEOUT"
-	MaxConcurrentRPCsPerUserEnv    = "VAULT_SYNC_MAX_CONCURRENT_RPCS_PER_USER"
-	ShutdownDelayEnv               = "VAULT_SYNC_SHUTDOWN_DELAY"
-	ShutdownTimeoutEnv             = "VAULT_SYNC_SHUTDOWN_TIMEOUT"
-	LogLevelEnv                    = "VAULT_SYNC_LOG_LEVEL"
-	OIDCIssuerURLEnv               = "VAULT_SYNC_OIDC_ISSUER_URL"
-	OIDCAudienceEnv                = "VAULT_SYNC_OIDC_AUDIENCE"
-	OIDCClientIDEnv                = "VAULT_SYNC_OIDC_CLIENT_ID"
-	EscrowRecipientEnv             = "VAULT_SYNC_ESCROW_RECIPIENT"
-	EscrowDefaultEnv               = "VAULT_SYNC_ESCROW_DEFAULT"
-	EscrowSigningKeyEnv            = "VAULT_SYNC_ESCROW_SIGNING_KEY"
-	EscrowIdentityFileEnv          = "VAULT_SYNC_ESCROW_IDENTITY_FILE"
-	EscrowJobTokenFileEnv          = "VAULT_SYNC_ESCROW_JOB_TOKEN_FILE"
-	EscrowRetiringKeyIDsEnv        = "VAULT_SYNC_ESCROW_RETIRING_KEY_IDS"
-	EscrowSigningKeyFileEnv        = "VAULT_SYNC_ESCROW_SIGNING_KEY_FILE"
 
-	S3EndpointEnv            = "VAULT_SYNC_S3_ENDPOINT"
-	S3RegionEnv              = "VAULT_SYNC_S3_REGION"
-	S3BucketEnv              = "VAULT_SYNC_S3_BUCKET"
-	S3AccessKeyIDFileEnv     = "VAULT_SYNC_S3_ACCESS_KEY_ID_FILE"
+	// How often each replica refreshes the service-wide metrics from
+	// PostgreSQL. A Go duration from `1s` to `1h`.
+	//
+	// Default: `1m`
+	ServiceMetricsIntervalEnv = "VAULT_SYNC_SERVICE_METRICS_INTERVAL"
+
+	// Maximum size of a request body in bytes, applied both to the bytes on the
+	// wire and to the decompressed message. Allowed range: 16384 to 67108864 (a
+	// response carrying one revision with a maximum-length path, or one vault
+	// with a maximum-length name, must fit; the chunk size check below requires
+	// more in practice). The default matches the 1 MiB inspected-body limit of
+	// the WAF in front of the server. Request bodies are read and decoded
+	// before the bearer token is checked, so unauthenticated callers can make
+	// the server read up to this many bytes per request; keep the limit low.
+	//
+	// Default: `1048576` (1 MiB)
+	MaxRequestBytesEnv = "VAULT_SYNC_MAX_REQUEST_BYTES"
+
+	// How long writing an API response may take, counted from its first byte
+	// until the whole response is written. A response the client has not
+	// finished reading by then is cut off and the connection closed, so a
+	// client that sends a request and then stops reading cannot hold a
+	// connection open. The timeout does not limit how long the server works on
+	// a request before it starts the response: a long `CommitBlob` (composing a
+	// large blob in the object store) is not cut short. The default lets a 1
+	// MiB response reach a client on a link of about 100 kbit/s. Raise it if
+	// you raise `VAULT_SYNC_MAX_REQUEST_BYTES` for slow clients. The timeout
+	// does not apply to the realtime WebSocket once it is open. A Go duration
+	// from `1s` to `1h`.
+	//
+	// Default: `2m`
+	WriteTimeoutEnv = "VAULT_SYNC_WRITE_TIMEOUT"
+
+	// Authenticated RPCs one user may have in flight on this replica at once (1
+	// to 10000). A further call from that user is rejected immediately with
+	// `resource_exhausted`, before any work is done for it, and is not queued;
+	// other users are unaffected. A refused plugin waits, from about a second
+	// up to a minute, before it tries again (see `docs/plugin.md`). An RPC
+	// counts from authentication until its response has been completely
+	// written, so a client that stops reading its responses keeps holding its
+	// calls until `VAULT_SYNC_WRITE_TIMEOUT` cuts them off. The limit is per
+	// replica and keeps no state shared between replicas or after a user's
+	// calls end. The plugin makes one RPC at a time per device, so the default
+	// admits 32 devices of one user syncing on the same replica at once
+	// (matching `VAULT_SYNC_REALTIME_MAX_CONNECTIONS_PER_USER`) while one user
+	// can hold at most 32 response buffers of up to
+	// `VAULT_SYNC_MAX_REQUEST_BYTES` each. `GetServerInfo`, which needs no
+	// authentication, is not counted.
+	//
+	// Default: `32`
+	MaxConcurrentRPCsPerUserEnv = "VAULT_SYNC_MAX_CONCURRENT_RPCS_PER_USER"
+
+	// How long after `SIGTERM` or `SIGINT` `/readyz` fails while the API keeps
+	// serving, so load balancers stop sending traffic before any connection is
+	// refused (see [Startup and
+	// shutdown](../configuration.md#startup-and-shutdown)). A Go duration from
+	// `0s` to `5m`.
+	//
+	// Default: `5s`
+	ShutdownDelayEnv = "VAULT_SYNC_SHUTDOWN_DELAY"
+
+	// The drain timeout: how long in-flight requests may finish after
+	// `VAULT_SYNC_SHUTDOWN_DELAY` before the remaining connections are closed.
+	// A Go duration (`30s`, `1m`); must be positive. Keep the delay plus the
+	// timeout below the pod's `terminationGracePeriodSeconds`.
+	//
+	// Default: `30s`
+	ShutdownTimeoutEnv = "VAULT_SYNC_SHUTDOWN_TIMEOUT"
+
+	// Minimum log level: `debug`, `info`, `warn` or `error`.
+	//
+	// Default: `info`
+	LogLevelEnv = "VAULT_SYNC_LOG_LEVEL"
+)
+
+// Sign-in (OIDC).
+const (
+	// OIDC issuer identifier, for example
+	// `https://auth.example.com/application/o/vault-sync/` for Authentik.
+	// Access tokens' `iss` claim must equal it exactly (including any trailing
+	// slash). The signing keys are discovered from
+	// `<issuer>/.well-known/openid-configuration`. Must be `https`; plain
+	// `http` is accepted only for a loopback host (`localhost`, `127.0.0.1`,
+	// `::1`) for local development.
+	//
+	// Default: (required)
+	OIDCIssuerURLEnv = "VAULT_SYNC_OIDC_ISSUER_URL"
+
+	// Audience that access tokens' `aud` claim must contain; for Authentik, the
+	// client ID of the vault-sync provider. The plugin signs in as that client
+	// with the device flow; see `docs/plugin.md` for the provider setup.
+	//
+	// Default: (required)
+	OIDCAudienceEnv = "VAULT_SYNC_OIDC_AUDIENCE"
+
+	// The public OAuth client ID the plugin signs in as. `GetServerInfo`
+	// advertises it, together with `VAULT_SYNC_OIDC_ISSUER_URL`, to clients
+	// that are not signed in yet, so users only need to enter the server URL.
+	// Set it when the plugin's client differs from `VAULT_SYNC_OIDC_AUDIENCE`
+	// (an identity provider that puts an API audience, not the client ID, in
+	// access tokens). It must be a public client: it is shown to anyone who can
+	// reach the server, so never use a confidential client or put a secret
+	// here. 1 to 255 printable ASCII characters. When unset, the audience is
+	// advertised if it fits those rules, and otherwise no client ID is
+	// advertised and users enter it in the plugin.
+	//
+	// Default: the audience
+	OIDCClientIDEnv = "VAULT_SYNC_OIDC_CLIENT_ID"
+)
+
+// Escrow.
+const (
+	// The deployment's escrow public key (`SPEC.md` §9.4), as an age hybrid
+	// post-quantum recipient (`age1pq1…`, from `age-keygen -pq`).
+	// `GetServerInfo` publishes it, with an id derived from it (`sha256:` and
+	// the hex SHA-256 of the key), and clients wrap every epoch key of an
+	// escrow vault to it. It is public: the escrow private key belongs in the
+	// export job only, never in the server. Set it together with
+	// `VAULT_SYNC_ESCROW_SIGNING_KEY`. When unset, the server has no escrow
+	// key, and creating an escrow vault fails with `failed_precondition`. Any
+	// other value stops the server at startup.
+	//
+	// Default: unset
+	EscrowRecipientEnv = "VAULT_SYNC_ESCROW_RECIPIENT"
+
+	// The escrow signing public key: the standard base64 encoding of the
+	// 32-byte Ed25519 public key held with the escrow identity
+	// (`docs/design/encryption.md`, *Escrow key*). Set together with
+	// `VAULT_SYNC_ESCROW_RECIPIENT`; the pair is the deployment's escrow
+	// bundle. The deployment's escrow chain is stored in PostgreSQL: on first
+	// start with an escrow key the configured bundle becomes the chain's root,
+	// and `GetServerInfo` publishes the root and every escrow rotation
+	// statement. At startup the chain must link (every statement signed by the
+	// escrow signing key before it) and end at the configured bundle; otherwise
+	// the server logs `cannot use the escrow chain` and stops. To rotate the
+	// escrow key, rotate it with the export job first, then update both
+	// variables. One without the other, or a value that is not 32 bytes of
+	// base64, stops the server at startup.
+	//
+	// Default: unset
+	EscrowSigningKeyEnv = "VAULT_SYNC_ESCROW_SIGNING_KEY"
+
+	// Comma-separated ids of escrow keys being rotated away from (each 1 to 255
+	// printable ASCII bytes, as `GetServerInfo` names an escrow key: `sha256:`
+	// and the hex SHA-256 of the key). Every epoch of an escrowed vault has
+	// exactly one escrow slot, and its `recipient_id` must be the current
+	// escrow key's id or one of these; `RotateEpoch`, `AddKeySlots` and
+	// `RemoveMember` refuse any other escrow slot with `invalid_argument`. Set
+	// it to the old key's id while the export job re-wraps the existing escrow
+	// slots during an escrow key rotation, and unset it once no slot names the
+	// old key. Needs `VAULT_SYNC_ESCROW_RECIPIENT`; any other value stops the
+	// server at startup.
+	//
+	// Default: unset
+	EscrowRetiringKeyIDsEnv = "VAULT_SYNC_ESCROW_RETIRING_KEY_IDS"
+
+	// Whether a new end-to-end encrypted vault has escrow unless its owner
+	// turns it off. `GetServerInfo` publishes it, and the plugin uses it as the
+	// default of its escrow toggle. Published as `false` while
+	// `VAULT_SYNC_ESCROW_RECIPIENT` is unset.
+	//
+	// Default: `true`
+	EscrowDefaultEnv = "VAULT_SYNC_ESCROW_DEFAULT"
+
+	// Path to a file holding the static bearer token of the job-only escrow
+	// rotation endpoint (`EscrowJobService`: conditional escrow slot
+	// replacement and appending the next escrow rotation statement,
+	// `docs/design/encryption.md`, *Escrow*). One line, 32 to 4096 characters
+	// without spaces (for example `openssl rand -base64 32`), surrounding
+	// whitespace ignored. The server compares the presented token in constant
+	// time and accepts nothing else there, user (OIDC) tokens included. When
+	// unset, the endpoint is off and refuses every call as `unauthenticated`.
+	// Give the same Secret to the server and the export job only. A file that
+	// is missing, too short or too long stops the server at startup, without
+	// quoting the file.
+	//
+	// Default: unset
+	EscrowJobTokenFileEnv = "VAULT_SYNC_ESCROW_JOB_TOKEN_FILE"
+
+	// **Export only.** Path to the escrow identity file (`age-keygen -pq`
+	// output): one `AGE-SECRET-KEY-PQ-1…` identity per line, blank lines and
+	// `#` comments ignored, at most 64 KiB. Give both identities during an
+	// escrow key rotation. The export decrypts escrowed vaults with it
+	// ([export.md](../export.md)); when unset, it skips every encrypted vault.
+	// A file that is missing, holds no identity or holds anything but age
+	// hybrid identities stops the export at startup, without quoting the file.
+	// Never give it to the server.
+	//
+	// Default: unset
+	EscrowIdentityFileEnv = "VAULT_SYNC_ESCROW_IDENTITY_FILE"
+
+	// **Escrow rotation only** (`export rotate-escrow`,
+	// [export.md](../export.md#rotating-the-escrow-key)). Path to the escrow
+	// signing keys: one standard base64 Ed25519 seed (32 bytes) per line, blank
+	// lines and `#` comments ignored, at most 64 KiB. They are matched to
+	// escrow bundles by their public keys; during a rotation it holds the chain
+	// head's key and the new one. A file that is missing, holds no key or holds
+	// anything else stops the rotation at startup, without quoting the file.
+	// Never give it to the server or to any pod in the cluster: keep the
+	// signing keys offline, and the Helm chart never sets this variable.
+	//
+	// Default: unset
+	EscrowSigningKeyFileEnv = "VAULT_SYNC_ESCROW_SIGNING_KEY_FILE"
+)
+
+// Object store (S3).
+const (
+	// S3 bucket holding every vault's blobs. It must already exist. Required
+	// when any `VAULT_SYNC_S3_*` variable is set. When no `VAULT_SYNC_S3_*`
+	// variable is set, the server starts without an object store, logs a
+	// warning, and every `BlobService` RPC returns `unimplemented`.
+	//
+	// Default: unset
+	S3BucketEnv = "VAULT_SYNC_S3_BUCKET"
+
+	// Base URL of the S3-compatible store, for example
+	// `https://rgw.example.com`. Must be `http` or `https`, without
+	// credentials, query or fragment.
+	//
+	// Default: unset (AWS S3)
+	S3EndpointEnv = "VAULT_SYNC_S3_ENDPOINT"
+
+	// Region of the bucket. Ceph RGW accepts any region by default.
+	//
+	// Default: `us-east-1`
+	S3RegionEnv = "VAULT_SYNC_S3_REGION"
+
+	// File containing the S3 access key id. Required with the bucket.
+	//
+	// Default: unset
+	S3AccessKeyIDFileEnv = "VAULT_SYNC_S3_ACCESS_KEY_ID_FILE"
+
+	// File containing the S3 secret access key. Required with the bucket. Both
+	// credential files are read at startup (failing if missing, empty or larger
+	// than 4 KiB) and again every 10 seconds, so rotated credentials (for
+	// example a swapped Kubernetes Secret) are used without a restart. Their
+	// contents are never logged.
+	//
+	// Default: unset
 	S3SecretAccessKeyFileEnv = "VAULT_SYNC_S3_SECRET_ACCESS_KEY_FILE"
-	S3ForcePathStyleEnv      = "VAULT_SYNC_S3_FORCE_PATH_STYLE"
-	S3TLSCAFileEnv           = "VAULT_SYNC_S3_TLS_CA_FILE"
-	S3IdleTimeoutEnv         = "VAULT_SYNC_S3_IDLE_TIMEOUT"
 
-	BlobMaxChunkBytesEnv      = "VAULT_SYNC_BLOB_MAX_CHUNK_BYTES"
-	BlobMaxSizeBytesEnv       = "VAULT_SYNC_BLOB_MAX_SIZE_BYTES"
+	// `true` addresses the bucket as `<endpoint>/<bucket>` (what Ceph RGW and
+	// most self-hosted stores need); `false` uses virtual-hosted
+	// `<bucket>.<endpoint>`.
+	//
+	// Default: `true`
+	S3ForcePathStyleEnv = "VAULT_SYNC_S3_FORCE_PATH_STYLE"
+
+	// PEM bundle of CAs trusted for the S3 endpoint's certificate instead of
+	// the system roots. Re-read for every new connection. The certificate must
+	// still name the host connected to: a DNS SAN for a host-name endpoint
+	// (`<bucket>.<host>` with virtual-hosted addressing), an IP SAN for an
+	// IP-address endpoint. A certificate that fails verification (wrong host,
+	// untrusted CA, expired), with or without this setting, is not retried: the
+	// request fails on its first attempt and the log shows the certificate
+	// error.
+	//
+	// Default: unset (system roots)
+	S3TLSCAFileEnv = "VAULT_SYNC_S3_TLS_CA_FILE"
+
+	// How long a connection to the object store may make no progress, sending
+	// or receiving nothing, before the request on it fails. The SDK retries a
+	// timed-out request up to twice, so an object store that accepts
+	// connections and then stops answering fails a call after at most about
+	// three timeouts (plus a few seconds of backoff): `PutBlobChunk`,
+	// `DownloadBlob` and `CommitBlob` return `internal` and the client retries,
+	// and a cleanup run logs the failure. The timeout is not a limit on a whole
+	// call: a slow transfer that keeps moving, a long `CommitBlob` of a large
+	// blob, or a long export stream is never cut short. The one exception is
+	// deleting a single object (a blob the retention job collects, a staged
+	// chunk), which carries no body: it is bounded in all, retries included, by
+	// four timeouts, so a store that keeps trickling a response cannot hold the
+	// deletion, and a re-upload of the same blob waiting for it, any longer.
+	// Raise it if the store can legitimately stay silent for longer before
+	// answering (for example while completing a very large multipart upload
+	// without sending keep-alive whitespace), or if the link to it is so slow
+	// that the last few MiB of a request buffered in the network take longer
+	// than this to drain. Pooled connections idle for half the timeout are
+	// closed. A Go duration from `1s` to `1h`.
+	//
+	// Default: `2m`
+	S3IdleTimeoutEnv = "VAULT_SYNC_S3_IDLE_TIMEOUT"
+)
+
+// Blob uploads.
+const (
+	// Largest upload chunk, and the largest range one `DownloadBlob` returns,
+	// for clients using the binary protobuf codec (the plugin). At least 65536.
+	// It plus 1024 bytes of request framing must not exceed
+	// `VAULT_SYNC_MAX_REQUEST_BYTES`, or the server refuses to start. Clients
+	// using the Connect JSON codec, which base64-encodes chunk data, are
+	// advertised (in `BeginBlob`'s `max_chunk_size`) and served smaller chunks,
+	// so their messages fit `VAULT_SYNC_MAX_REQUEST_BYTES` too: 784878 bytes
+	// with the defaults. A binary `DownloadBlob` range is also at most
+	// `VAULT_SYNC_MAX_REQUEST_BYTES` less a thousandth and 512 bytes, room for
+	// gzip's framing of incompressible content; this only shortens ranges when
+	// the chunk size is within a thousandth of the request limit (not with the
+	// defaults).
+	//
+	// Default: `786432` (768 KiB)
+	BlobMaxChunkBytesEnv = "VAULT_SYNC_BLOB_MAX_CHUNK_BYTES"
+
+	// Largest blob (file) that can be uploaded. At most 83886080000 (80 GiB).
+	//
+	// Default: `1073741824` (1 GiB)
+	BlobMaxSizeBytesEnv = "VAULT_SYNC_BLOB_MAX_SIZE_BYTES"
+
+	// Upload sessions that may be in progress at once in one vault (1 to
+	// 10000). A `BeginBlob` that would start another first reclaims the vault's
+	// sessions idle for longer than `VAULT_SYNC_BLOB_UPLOAD_RECLAIM_IDLE`; only
+	// if none can be reclaimed does it get `resource_exhausted`, until a
+	// session completes, is reclaimed or expires.
+	//
+	// Default: `32`
 	BlobMaxUploadsPerVaultEnv = "VAULT_SYNC_BLOB_MAX_UPLOADS_PER_VAULT"
-	BlobUploadTTLEnv          = "VAULT_SYNC_BLOB_UPLOAD_TTL"
-	BlobUploadReclaimIdleEnv  = "VAULT_SYNC_BLOB_UPLOAD_RECLAIM_IDLE"
 
-	RealtimeMaxConnectionsEnv        = "VAULT_SYNC_REALTIME_MAX_CONNECTIONS"
-	RealtimeMaxConnectionsPerUserEnv = "VAULT_SYNC_REALTIME_MAX_CONNECTIONS_PER_USER"
-	RealtimeMaxSubscriptionsEnv      = "VAULT_SYNC_REALTIME_MAX_SUBSCRIPTIONS"
+	// How long an upload session may be idle before the cleanup routine removes
+	// it. A Go duration of at least `10m`. A commit in progress records
+	// activity after every 8 MiB part it composes, so it is never removed,
+	// however long it takes, unless composing a single part takes longer than
+	// the TTL (for example behind a very slow object store); such a commit
+	// fails with `failed_precondition` and the client uploads the blob again.
+	//
+	// Default: `24h`
+	BlobUploadTTLEnv = "VAULT_SYNC_BLOB_UPLOAD_TTL"
 
-	RetentionKeepAllEnv   = "VAULT_SYNC_RETENTION_KEEP_ALL"
+	// How long an upload session must be idle before a new upload in a vault at
+	// `VAULT_SYNC_BLOB_MAX_UPLOADS_PER_VAULT` reclaims it. Clients leave a
+	// session behind whenever an upload is interrupted and the file changes
+	// before the retry (there is no call to abandon one), so without this a
+	// device on a flaky connection would fill the vault's limit and block every
+	// upload in the vault until the upload TTL. An upload in progress records
+	// activity on every chunk, so a session idle this long has been abandoned;
+	// if its client does come back, its next chunk or commit is refused and it
+	// starts that upload again (nothing is lost). Reclaimed sessions' staged
+	// chunks are removed by the cleanup routine below. Reclaiming is
+	// coordinated in PostgreSQL, so it is safe with any number of replicas. A
+	// Go duration of at least `10m` and at most `VAULT_SYNC_BLOB_UPLOAD_TTL`.
+	//
+	// Default: `10m`
+	BlobUploadReclaimIdleEnv = "VAULT_SYNC_BLOB_UPLOAD_RECLAIM_IDLE"
+)
+
+// Retention and history.
+const (
+	// Every revision younger than this is kept (see [Retention and
+	// history](../configuration.md#retention-and-history)). A Go duration of at
+	// least `24h`. Set it very high (for example `876000h`) to keep every
+	// revision forever.
+	//
+	// Default: `2160h` (90 days)
+	RetentionKeepAllEnv = "VAULT_SYNC_RETENTION_KEEP_ALL"
+
+	// Revisions older than `VAULT_SYNC_RETENTION_KEEP_ALL` but younger than
+	// this are thinned to the newest one of each document per UTC day; older
+	// ones to the newest one per ISO week (Monday to Sunday, UTC). A Go
+	// duration not below `VAULT_SYNC_RETENTION_KEEP_ALL`.
+	//
+	// Default: `8760h` (365 days)
 	RetentionKeepDailyEnv = "VAULT_SYNC_RETENTION_KEEP_DAILY"
-	BlobGCGraceEnv        = "VAULT_SYNC_BLOB_GC_GRACE"
+
+	// How long the purge marker of a purged revision is kept after its purge
+	// (see [Retention and history](../configuration.md#retention-and-history)).
+	// A device that has not pulled for longer than this since a purge of the
+	// revision at its cursor resyncs once, merging every note, instead of
+	// pulling on. A Go duration of at least `24h`.
+	//
+	// Default: `8760h` (365 days)
 	PurgeMarkerHorizonEnv = "VAULT_SYNC_RETENTION_PURGE_MARKER_HORIZON"
 
-	RetentionOverrideMinKeepAllEnv   = "VAULT_SYNC_RETENTION_OVERRIDE_MIN_KEEP_ALL"
+	// Read only by `vault-sync-server retention set`: the shortest keep-all a
+	// per-vault override may have (see [Per-vault
+	// overrides](../configuration.md#per-vault-overrides)). A Go duration of at
+	// least `24h`.
+	//
+	// Default: `24h`
+	RetentionOverrideMinKeepAllEnv = "VAULT_SYNC_RETENTION_OVERRIDE_MIN_KEEP_ALL"
+
+	// Read only by `vault-sync-server retention set`: the shortest keep-daily a
+	// per-vault override may have. A Go duration.
+	//
+	// Default: none
 	RetentionOverrideMinKeepDailyEnv = "VAULT_SYNC_RETENTION_OVERRIDE_MIN_KEEP_DAILY"
+
+	// How long a blob that no revision references any more is kept after the
+	// retention purge that removed its last revision, before it is deleted from
+	// PostgreSQL and S3. A Go duration of at least `1h`.
+	//
+	// Default: `24h`
+	BlobGCGraceEnv = "VAULT_SYNC_BLOB_GC_GRACE"
+)
+
+// Realtime channel.
+const (
+	// Open realtime WebSocket connections this replica accepts (1 to 1000000).
+	// Further upgrades get HTTP 503, and the client reconnects, through the
+	// load balancer, to another replica.
+	//
+	// Default: `10000`
+	RealtimeMaxConnectionsEnv = "VAULT_SYNC_REALTIME_MAX_CONNECTIONS"
+
+	// Open realtime connections one user may hold on this replica (1 to 10000).
+	// Further upgrades get HTTP 429. Each device needs one.
+	//
+	// Default: `32`
+	RealtimeMaxConnectionsPerUserEnv = "VAULT_SYNC_REALTIME_MAX_CONNECTIONS_PER_USER"
+
+	// Vaults one realtime connection may subscribe to (1 to 10000). Reported to
+	// clients as `max_realtime_subscriptions` by `GetServerInfo`; a further
+	// `subscribe` gets a `RESOURCE_EXHAUSTED` error frame.
+	//
+	// Default: `128`
+	RealtimeMaxSubscriptionsEnv = "VAULT_SYNC_REALTIME_MAX_SUBSCRIPTIONS"
 )
 
 // Retention bounds; the defaults are retention.DefaultKeepAll,
