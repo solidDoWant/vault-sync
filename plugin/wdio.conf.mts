@@ -16,7 +16,7 @@ import { argon2WorkerDefine } from "./scripts/argon2-worker.js";
 // The Obsidian app version under test. The installer (the Electron binary) is
 // the earliest one compatible with it, so this one line pins both.
 // renovate: datasource=github-releases depName=obsidianmd/obsidian-releases
-const obsidianVersion = "1.14.4";
+const obsidianVersion = "1.14.5";
 export { obsidianVersion };
 
 // The SHA-256 of that version's Android app (Obsidian-<version>.apk in the
