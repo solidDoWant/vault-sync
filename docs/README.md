@@ -51,8 +51,9 @@ docs/user/
 docs/admin/
   requirements.md          What the server needs: Kubernetes, PostgreSQL 14 or later, S3, OIDC, TLS, sizing.
   install.md               Install with Helm, step by step, and a first sign-in check.
-  configuration.md         Every environment variable, and the server's endpoints.
-  chart-values.md          Every Helm chart value.
+  configuration.md         How the server is configured: the groups of settings, the endpoints.
+  configuration-reference.md  Every environment variable. Generated from the code.
+  chart-values.md          Every Helm chart value. Generated from the chart.
   identity-provider.md     What the sign-in provider must offer, and a worked Authentik example.
   postgresql-and-s3.md     The database and the bucket: setup, TLS, permissions, what lives where.
   backup-and-restore.md    Backups, the plaintext export job, import, restoring a server,
@@ -60,7 +61,8 @@ docs/admin/
   encryption.md            Encryption for operators: what the server holds, the escrow key,
                            rotating it, recovery with age, the threat model.
   history-and-retention.md The retention policy, per-vault overrides, storage growth.
-  monitoring.md            Metrics, service-wide metrics, Grafana dashboards.
+  monitoring.md            What to scrape, service-wide metrics, Grafana dashboards.
+  metrics-reference.md     Every metric. Generated from the code.
   alerts.md                One runbook per alert: what it means, what to check, what to do.
   upgrades.md              Upgrading, rolling upgrades, high availability.
   security.md              The security model: authentication, authorization, limits, what an
@@ -115,7 +117,7 @@ A topic that matters to more than one reader appears on more than one page, at a
 - **Link down, don't repeat.** Say what this reader needs, then link "for more detail" to the next reader's page. User pages link to admin pages, admin pages to developer pages, developer pages to `SPEC.md` and `docs/design/`.
 - **Every fact has one home per reader.** A fact may appear on several readers' pages at different depths, but only once for each reader.
 - **Plain English.** Pages for users, admins and the owner follow SimpleEnglish (Plain mode). Developer pages use plain English too, but keep exact terms. Agent files are exempt.
-- **Settings and values are reference tables.** Admin reference pages keep one table row per variable, metric, chart value or alert. Scripts and tests read these tables, so keep their format.
+- **Reference tables are generated.** The tables of environment variables, metrics and chart values are generated from the code and the chart, and CI fails when they are out of date. Do not edit them by hand. Change the doc comment, the metric help text or the `values.yaml` comment instead. The alert runbooks are written by hand, with one heading per alert. Scripts read those headings, so keep their format.
 
 ## Glossaries
 
@@ -126,8 +128,29 @@ There is **one glossary per reader**: `docs/user/glossary.md`, `docs/admin/gloss
 - `SPEC.md` stays the normative reference for developers and agents.
 - It keeps its section numbers. Code, tests and reviews cite them.
 - User and admin material moves out to the new pages. For example, the operations detail in §12 moves to the admin pages, and SPEC keeps the rules.
-- Decision history moves to `docs/dev/decisions.md`: the "(decision, #NNN)" notes, the issue numbers and the rejected alternatives. Each entry there names the SPEC section it belongs to. SPEC keeps the rule and loses the story.
+- Server and client details that a test or a test vector already checks move next to the code. They go into the proto comments, the package docs or the test names. SPEC keeps the rule in one line and names the test. The migration map names the test for each section.
+- Decision history is deleted: the "(decision, #NNN)" notes, the issue numbers and the rejected alternatives. Git and the issues keep it. Only decisions that still bind move to `docs/dev/decisions.md`, each with its reason and the SPEC section it belongs to. The migration map lists them.
 - A separate issue rewrites SPEC in plain English. It must not change any rule.
+
+## Word budgets
+
+Each reader gets a word budget for the pages that people write by hand. Generated reference pages do not count. CI checks the budgets, so the docs cannot grow again one section at a time.
+
+| Reader | Pages that count | Budget | Today | Projected after the rewrite |
+|---|---|---|---|---|
+| User | `docs/user/` | 8,000 | 0 (about 10,000 in `plugin.md` and `encryption.md`) | 7,700 |
+| Admin | `docs/admin/`, except the generated pages | 12,000 | 0 (about 20,000 in five pages, after the generated tables) | 11,900 |
+| Developer | `docs/dev/` and `SPEC.md` | 15,000 | 21,400 (`SPEC.md` only) | 13,600 (`SPEC.md` 7,000, `docs/dev/` 6,600) |
+| Developer design | `docs/design/` | 19,000 | 20,800 | 19,000 |
+| Developer testing | `docs/testing/` | 6,000 | 13,900 | 5,800 |
+| Agent | `CLAUDE.md`, `docs/agents/`, `.claude/agents/` | 10,000 | 11,900 | 10,000 |
+
+The user, admin and agent budgets are the owner's numbers. The developer budget of 15,000 is the owner's number for `docs/dev/` and `SPEC.md`. Two budgets are new:
+
+- The engine design in `docs/design/` gets its own budget of 19,000 words. The design is fixed, and each part of it is the reason for a rule in the code. The rewrite deletes only issue numbers, old alternatives and text that repeats the test vectors. It cannot get the design under 15,000 words without changing rules.
+- The test guides in `docs/testing/` get their own budget of 6,000 words. Most of their words describe test files and CI jobs, and those move next to the code or are deleted.
+
+The projected numbers are the sums of the targets per page and per section in [`docs/agents/docs-migration.md`](agents/docs-migration.md). The admin projection is close to its budget. Most of it is the backup and export page and the 17 alert runbooks, which cannot be generated. The acceptance checklists in `docs/acceptance/` are not in any budget, because only the owner writes them. The agent files need about 1,900 fewer words. No rewrite issue owns that cut yet. The temporary `docs/agents/docs-migration.md` and the vendored `.claude/skills/` do not count.
 
 ## Moved pages and redirects
 
