@@ -6,6 +6,7 @@ import type { Invitation, Member } from "../gen/vaultsync/v1/membership_pb";
 import { VaultEncryption, VaultRole, type Vault } from "../gen/vaultsync/v1/types_pb";
 import type { ProtocolClient } from "../core/protocol/client";
 import { createEncryptedInvitation, leaveEncryptedVault, parseInviteLink, redeemEncryptedInvitation, revokeEncryptedInvitation, setEncryptedMemberRole, type EncryptedMembershipContext, type RedeemContext } from "../core/keys/encrypted-membership";
+import type { ConversionMember } from "../core/keys/convert-vault";
 import type { VaultKeyManager } from "../core/keys/vault-keys";
 import { reencryptHistory, type RekeyResult } from "../core/sync/rekey";
 import { readMemberLog, type LogTrust } from "../core/keys/verified-log";
@@ -158,6 +159,24 @@ export function vaultFingerprint(genesisHash: Uint8Array): string {
 export function memberKeyText(member: MemberRow, keys: VaultKeys | undefined): string | undefined {
   if (keys?.kind !== "verified") return undefined;
   return member.fingerprint === undefined ? "No key for this member in the verified membership log." : `Key fingerprint: ${member.fingerprint}`;
+}
+
+/**
+ * What the conversion dialog says about a member of the plaintext vault to
+ * convert: the fingerprint of the key the server reports for them, which the
+ * owner compares with the member outside Vault Sync, or that they have not
+ * set up encryption yet (which blocks the conversion).
+ */
+export function conversionMemberText(member: ConversionMember): string {
+  return member.fingerprint === undefined ? "Has not set up end-to-end encryption yet, so the vault cannot be converted." : `Key fingerprint: ${member.fingerprint}`;
+}
+
+/**
+ * Whether the owner may send the conversion: every member has a key whose
+ * fingerprint is shown, and the owner confirmed they compared them all.
+ */
+export function conversionConfirmable(members: readonly ConversionMember[], compared: boolean): boolean {
+  return compared && members.length > 0 && members.every((member) => member.fingerprint !== undefined);
 }
 
 /** What the Sharing section says about an encrypted vault's fingerprint, or why no fingerprints are shown. */
