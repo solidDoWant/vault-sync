@@ -341,3 +341,92 @@ describe("an owner rotating an escrowed vault's key", () => {
     expect(created.server.slotsOf(2).filter((slot) => slot.recipientKind === KeyRecipientKind.ESCROW).map((slot) => slot.recipientId)).toEqual([escrow.recipient.keyId]);
   });
 });
+
+describe("an owner of a vault escrowed under a rotated-away escrow key", () => {
+  /**
+   * A vault created with escrow under `old`, after the deployment rotated
+   * its escrow key to `current` with a statement signed by `old`: the
+   * server publishes the chain, and the owner's device accepted it and
+   * moved its pin to `current`.
+   */
+  async function rotatedAway() {
+    const old = escrowKey(9);
+    const created = await create(old.recipient);
+    const current = escrowKey(10);
+    const rotation = signEscrowRotation(old.signSeed, old.recipient.bundle, current.recipient.bundle);
+    created.server.escrowRotations = [rotation];
+    const pin = new MemoryEscrowPin(old.recipient.bundle);
+    const offer = await escrowOffer(serverInfo(current, old.encodedBundle, [statement(rotation)]), pin);
+    if (offer.recipient === undefined) throw new Error("no escrow offered");
+    return { created, current, escrow: offer.recipient, rotations: [rotation] };
+  }
+
+  /** The owner's key manager on a device that verified nothing yet, following the published chain `rotations`. */
+  function manager(created: Awaited<ReturnType<typeof create>>, escrow: EscrowKey, rotations: EscrowRotation[]) {
+    const { client, owner, store, vault } = created;
+    return new VaultKeyManager({
+      vaultId: vault.id,
+      userKey: owner,
+      owner: true,
+      keys: client.vaultKeys,
+      membership: client.membership,
+      store,
+      escrow,
+      trust: { userKey: owner, log: client.vaultKeys, anchors: client.userKeys, verifiedLogs: new MemoryVerifiedLogStore(), escrowRotations: rotations },
+    });
+  }
+
+  /** The escrow slots of `epoch`, opened with the escrow key `key`: each must open and match the epoch's commitment. */
+  async function escrowSlotsOpen(created: Awaited<ReturnType<typeof create>>, epoch: number, key: ReturnType<typeof escrowKey>) {
+    const slots = created.server.slotsOf(epoch).filter((slot) => slot.recipientKind === KeyRecipientKind.ESCROW);
+    expect(slots.map((slot) => slot.recipientId)).toEqual([key.recipient.keyId]);
+    const commitment = created.server.epochs.find((stored) => stored.epoch === epoch)?.commitment;
+    if (commitment === undefined) throw new Error(`no epoch ${String(epoch)}`);
+    for (const slot of slots) {
+      const epochKey = await openKeySlot(key.pair.privateKey, slot.wrappedKey, { vaultId: created.vault.id, epoch, recipientKind: "escrow", recipientId: slot.recipientId });
+      verifyKeyCommitment(epochKey, commitment, created.vault.id, epoch);
+    }
+  }
+
+  it("rotates the vault key, moving the vault's log to the new escrow key and wrapping the new epoch to it", async () => {
+    const { created, current, escrow, rotations } = await rotatedAway();
+
+    await manager(created, escrow, rotations).rotate();
+
+    expect(created.server.currentEpoch).toBe(2);
+    await escrowSlotsOpen(created, 2, current);
+    expect(created.server.logState().escrow).toEqual(current.recipient.bundle);
+    // A device that verifies the vault from its anchor accepts the moved log and the new epoch.
+    const state = await manager(created, escrow, rotations).sync();
+    expect(state.status).toBe("ready");
+    expect(state.currentEpoch).toBe(2);
+  });
+
+  it("removes a member, first moving the vault's log to the new escrow key", async () => {
+    const { created, current, escrow, rotations } = await rotatedAway();
+    const member = { ...generateKeyPair(), signSeed: new Uint8Array(32).fill(2), userId: "0190a5b4-0000-7000-8000-000000000102" };
+    created.server.seedMember(member, VaultRole.EDITOR, created.owner);
+
+    await manager(created, escrow, rotations).removeMember(member.userId);
+
+    expect(created.server.members.has(member.userId)).toBe(false);
+    expect(created.server.logState().members.has(member.userId)).toBe(false);
+    expect(created.server.currentEpoch).toBe(3);
+    await escrowSlotsOpen(created, 2, current);
+    await escrowSlotsOpen(created, 3, current);
+    expect(created.server.slotsOf(3).map((slot) => slot.recipientId)).not.toContain(member.userId);
+    const state = await manager(created, escrow, rotations).sync();
+    expect(state.status).toBe("ready");
+    expect(state.currentEpoch).toBe(3);
+  });
+
+  it("[P4-22] still refuses to rotate to an escrow key the published chain does not link to the log's", async () => {
+    const { created, escrow } = await rotatedAway();
+    const rotations = created.server.count("RotateEpoch");
+
+    await expect(manager(created, escrow, []).rotate()).rejects.toThrow(/names another escrow key/);
+
+    expect(created.server.count("RotateEpoch")).toBe(rotations);
+    expect(created.server.currentEpoch).toBe(1);
+  });
+});

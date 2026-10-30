@@ -309,7 +309,7 @@ func (service VaultKeyService) RotateEpoch(ctx context.Context, request *connect
 
 	membership, _ := authz.MembershipFromContext(ctx)
 
-	signed, err := parseSignedEpoch(membership.VaultID, request.Msg.GetRecord(), request.Msg.GetEscrowEntry())
+	signed, err := parseSignedEpoch(membership.VaultID, request.Msg.GetRecord(), request.Msg.GetEscrowEntry(), service.Escrow.replayOptions())
 	if err != nil {
 		return nil, err
 	}

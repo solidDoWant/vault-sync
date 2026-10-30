@@ -197,9 +197,12 @@ func TestLoadEscrowChain(t *testing.T) {
 			if test.assertErr == nil {
 				assert.Equal(t, test.wantChain.Root, escrow.Chain.Root)
 				assert.Len(t, escrow.Chain.Rotations, len(test.wantChain.Rotations))
+				// Log replays take the same statements, parsed.
+				require.Len(t, escrow.Rotations, len(test.wantChain.Rotations))
 
 				for index, statement := range test.wantChain.Rotations {
 					assert.True(t, proto.Equal(statement, escrow.Chain.Rotations[index]), "statement %d", index)
+					assert.Equal(t, statement.GetSignature(), escrow.Rotations[index].Signature, "statement %d", index)
 				}
 			}
 		})

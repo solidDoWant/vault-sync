@@ -37,6 +37,7 @@ import {
   makeInviteAnchor,
   signPublicKey,
   verifyInviteAnchor,
+  type EscrowRotation,
 } from "../e2ee/identity";
 import {
   openKeySlot,
@@ -310,6 +311,8 @@ export interface RedeemContext {
   anchors: AnchorListClient;
   /** What this device has verified; the vault's log is verified from the invite link's anchor. */
   verifiedLogs: VerifiedLogStore;
+  /** The escrow chain the server publishes, which the vault's log is verified with. */
+  escrowRotations?: readonly EscrowRotation[];
 }
 
 /** An invite link whose anchor does not belong to the invitation the server holds under its `<id>`. */
@@ -364,6 +367,7 @@ export async function redeemEncryptedInvitation(
       vaultId,
       anchor.genesisHash,
       link.id,
+      context.escrowRotations,
     );
     await addAnchor(context.anchors, userKey, context.verifiedLogs, {
       vaultId,

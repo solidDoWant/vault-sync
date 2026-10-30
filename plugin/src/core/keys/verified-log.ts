@@ -132,7 +132,8 @@ export async function verifyLog(
 
 /**
  * Reads the vault's log (a newcomer with the `<id>` of its invite code) and
- * verifies it from `genesisHash` ({@link verifyLog}).
+ * verifies it from `genesisHash` ({@link verifyLog}), following the
+ * published escrow chain `escrowRotations`.
  */
 export async function readVerifiedLog(
   client: LogReadClient,
@@ -140,8 +141,9 @@ export async function readVerifiedLog(
   vaultId: string,
   genesisHash: Uint8Array,
   invitationId = "",
+  escrowRotations?: readonly EscrowRotation[],
 ): Promise<VerifiedLog> {
-  return verifyLog(store, vaultId, await readLog(client, vaultId, invitationId), genesisHash);
+  return verifyLog(store, vaultId, await readLog(client, vaultId, invitationId), genesisHash, escrowRotations);
 }
 
 /**
@@ -162,10 +164,15 @@ export interface LogTrust {
   log: LogReadClient;
   anchors: AnchorListClient;
   verifiedLogs: VerifiedLogStore;
+  /**
+   * The escrow chain the server publishes (GetServerInfo): an escrow entry
+   * moving the vault to a later key of the chain verifies only with it.
+   */
+  escrowRotations?: readonly EscrowRotation[];
 }
 
 /** A member's read of the vault's log, verified from the user's anchor list. */
 export async function readMemberLog(trust: LogTrust, vaultId: string): Promise<VerifiedLog> {
   const genesisHash = await memberAnchor(trust.anchors, trust.userKey, trust.verifiedLogs, vaultId);
-  return readVerifiedLog(trust.log, trust.verifiedLogs, vaultId, genesisHash);
+  return readVerifiedLog(trust.log, trust.verifiedLogs, vaultId, genesisHash, "", trust.escrowRotations);
 }

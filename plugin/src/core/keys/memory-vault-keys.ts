@@ -25,9 +25,9 @@ import type { LogEntry } from "../../gen/vaultsync/v1/types_pb";
 import { equalBytes, randomBytes } from "@noble/ciphers/utils.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { base64urlnopad } from "@scure/base";
-import { bundleOf, invitationKeyPair, inviteSignSeed, signPublicKey, uuidString } from "../e2ee/identity";
+import { bundleOf, invitationKeyPair, inviteSignSeed, signPublicKey, uuidString, type EscrowRotation } from "../e2ee/identity";
 import { uuidBytes } from "../e2ee/keyslot";
-import { EntryType, LogError, genesisPayload, idPayload, invitePayload, redeemPayload, replayLog, verifyEpochRecord, type Entry, type LogState } from "../e2ee/memberlog";
+import { EntryType, LogError, genesisPayload, idPayload, invitePayload, redeemPayload, replayLog, verifyEpochRecord, type Entry, type LogState, type ReplayOptions } from "../e2ee/memberlog";
 import { logRole } from "./encrypted-membership";
 import { fromLogEntry, genesisEntry, nextEntry, toLogEntry } from "./member-log";
 import type { UserKeyPair } from "./user-key";
@@ -80,6 +80,8 @@ export class MemoryVaultKeyServer {
   rotationPending = true;
   /** Whether the vault has escrow: its epochs may carry one escrow slot. */
   escrow = false;
+  /** The deployment's escrow chain, which the server replays the log with. */
+  escrowRotations: EscrowRotation[] = [];
   /** Whether CreateVault created the vault (it can be created once). */
   created = false;
   /** Users' public keys (UserKeyService), which CreateVault's caller is listed with. */
@@ -122,9 +124,13 @@ export class MemoryVaultKeyServer {
   /** The vault's id: the one CreateVault's caller chose, once it created the vault. */
   constructor(public vaultId: string) {}
 
+  private replayOptions(): ReplayOptions {
+    return { escrowRotations: this.escrowRotations };
+  }
+
   /** The membership after the whole log, replayed as the server checks it. */
   logState(): LogState {
-    const states = replayLog(this.vaultId, this.log);
+    const states = replayLog(this.vaultId, this.log, this.replayOptions());
     const last = states.at(-1);
     if (last === undefined) throw new Error("empty log");
     return last;
@@ -148,7 +154,7 @@ export class MemoryVaultKeyServer {
     if (entry.type !== type) throw new ConnectError("the entry does not record this change", Code.InvalidArgument);
     let states: LogState[];
     try {
-      states = replayLog(this.vaultId, [...this.log, entry]);
+      states = replayLog(this.vaultId, [...this.log, entry], this.replayOptions());
     } catch (error) {
       if (error instanceof LogError) throw new ConnectError(`the entry does not verify: ${error.message}`, Code.InvalidArgument);
       throw error;
@@ -318,7 +324,7 @@ export class MemoryVaultKeyServer {
             if (request.membersEntry !== undefined) log.push(fromLogEntry(this.vaultId, request.membersEntry));
             let state: LogState | undefined;
             try {
-              state = replayLog(this.vaultId, log).at(-1);
+              state = replayLog(this.vaultId, log, this.replayOptions()).at(-1);
             } catch (error) {
               throw new ConnectError(`the log does not verify: ${error instanceof Error ? error.message : String(error)}`, Code.InvalidArgument);
             }
@@ -360,7 +366,24 @@ export class MemoryVaultKeyServer {
             const nextEpoch = this.checkNextEpoch(request.nextEpoch);
             await this.hold();
             this.checkEpochCurrent(nextEpoch);
-            this.checkRecord(nextEpoch, request.record, this.log, undefined);
+            if (request.escrowEntry === undefined) {
+              this.checkRecord(nextEpoch, request.record, this.log, undefined);
+            } else {
+              // The escrow entry is appended with the epoch, whose record names it.
+              const escrowEntry = request.escrowEntry;
+              const previous = this.escrow;
+              const after = this.appendEntryChecked(escrowEntry, EntryType.escrow, () => true, () => {
+                const entry = fromLogEntry(this.vaultId, escrowEntry);
+                this.escrow = replayLog(this.vaultId, [...this.log, entry], this.replayOptions()).at(-1)?.escrow !== undefined;
+                try {
+                  this.checkRecord(nextEpoch, request.record, [...this.log, entry], entry.seq);
+                } catch (error) {
+                  this.escrow = previous;
+                  throw error;
+                }
+              });
+              this.escrow = after.escrow !== undefined;
+            }
             const epoch = this.applyNextEpoch(userId, nextEpoch, request.record);
             return { epoch: { epoch: epoch.epoch, commitment: epoch.commitment, creatorUserId: epoch.creator } };
           },
@@ -565,7 +588,7 @@ export class MemoryVaultKeyServer {
     const previous = this.epochs.find((stored) => stored.epoch === nextEpoch.expectedEpoch)?.commitment ?? new Uint8Array(32);
     const recipients = record.recipients.map((recipient) => ({ kind: recipient.kind, id: recipient.recipientId, keyHash: recipient.keyHash }));
     try {
-      verifyEpochRecord(this.vaultId, replayLog(this.vaultId, log), {
+      verifyEpochRecord(this.vaultId, replayLog(this.vaultId, log, this.replayOptions()), {
         vaultId: this.vaultId,
         epoch: nextEpoch.expectedEpoch + 1,
         commitment: nextEpoch.commitment,

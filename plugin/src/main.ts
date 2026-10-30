@@ -13,7 +13,8 @@ import { deviceVerifiedLogStore, loadDeviceSecrets, refreshTokenLost, savePlugin
 import { oidcConfig, parsePluginData, persistRefreshToken, serialized, serverBaseUrl, signInProblem, type ConnectedVault, type IdentityProvider, type PluginData } from "./obsidian/data";
 import { currentDeviceId, deviceRows, listDevices, removeOtherDevice, type DeviceRow } from "./obsidian/devices";
 import { discoverIdentityProvider } from "./obsidian/discovery";
-import { createEncryptedVault, escrowOffer, type EscrowOffer } from "./core/keys/encrypted-vault";
+import { createEncryptedVault, escrowOffer, publishedEscrowRotations, type EscrowOffer } from "./core/keys/encrypted-vault";
+import type { EscrowRotation } from "./core/e2ee/identity";
 import { conversionMembers, convertVault, type ConversionMember } from "./core/keys/convert-vault";
 import { changePassphraseOnDevice, enableOnDevice, encryptionState, forgetEncryptionKeys, pluginDataEpochKeyStore, pluginDataEscrowPin, unlockedUserKey, unlockOnDevice, type EncryptionOptions, type EncryptionState } from "./obsidian/encryption";
 import { HistoryModal } from "./obsidian/history-modal";
@@ -449,7 +450,12 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
     const options = this.encryptionOptions();
     const userKey = await unlockedUserKey(options);
     const account = await currentAccount(this.data, options.accessToken);
-    return { userKey, log: client.vaultKeys, anchors: client.userKeys, verifiedLogs: deviceVerifiedLogStore(this.app, account) };
+    return { userKey, log: client.vaultKeys, anchors: client.userKeys, verifiedLogs: deviceVerifiedLogStore(this.app, account), escrowRotations: await this.escrowRotations() };
+  }
+
+  /** The escrow chain the server publishes, which encrypted vaults' membership logs are verified with. */
+  private async escrowRotations(): Promise<EscrowRotation[]> {
+    return publishedEscrowRotations(await this.protocolClient().serverInfo.getServerInfo({}));
   }
 
   /** Creates an invitation to the connected vault; its code is shown once and never stored. */
@@ -562,7 +568,14 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
       const options = this.encryptionOptions();
       const userKey = await unlockedUserKey(options);
       const account = await currentAccount(this.data, options.accessToken);
-      return { userKey, membership: client.membership, log: client.vaultKeys, anchors: client.userKeys, verifiedLogs: deviceVerifiedLogStore(this.app, account) };
+      return {
+        userKey,
+        membership: client.membership,
+        log: client.vaultKeys,
+        anchors: client.userKeys,
+        verifiedLogs: deviceVerifiedLogStore(this.app, account),
+        escrowRotations: await this.escrowRotations(),
+      };
     });
   }
 

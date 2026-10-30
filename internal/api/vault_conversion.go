@@ -62,7 +62,7 @@ func (service VaultKeyService) ConvertVault(ctx context.Context, request *connec
 		logEntries[index] = e2eeEntry(membership.VaultID, entry)
 	}
 
-	states, err := e2ee.ReplayLog(membership.VaultID.String(), logEntries, e2ee.ReplayOptions{})
+	states, err := e2ee.ReplayLog(membership.VaultID.String(), logEntries, service.Escrow.replayOptions())
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errLogEntryRefused)
 	}
@@ -76,7 +76,7 @@ func (service VaultKeyService) ConvertVault(ctx context.Context, request *connec
 		return nil, invalidArgument("next_epoch.expected_epoch must be 0: a converted vault starts at epoch 1")
 	}
 
-	signed, err := parseSignedEpoch(membership.VaultID, message.GetRecord(), nil)
+	signed, err := parseSignedEpoch(membership.VaultID, message.GetRecord(), nil, service.Escrow.replayOptions())
 	if err != nil {
 		return nil, err
 	}
