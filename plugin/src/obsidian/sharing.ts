@@ -10,7 +10,7 @@ import type { ConversionMember } from "../core/keys/convert-vault";
 import type { VaultKeyManager } from "../core/keys/vault-keys";
 import { reencryptHistory, type RekeyResult } from "../core/sync/rekey";
 import { readMemberLog, type LogTrust } from "../core/keys/verified-log";
-import { fingerprint, formatFingerprint } from "../core/e2ee/identity";
+import { escrowEqual, escrowFingerprint, fingerprint, formatFingerprint, type EscrowBundle } from "../core/e2ee/identity";
 import { listRemoteVaults } from "./controller";
 import { isolated, shownName } from "./display-text";
 import { errorMessage } from "./status";
@@ -73,8 +73,25 @@ export interface MemberRow {
  * An encrypted vault's keys as the Sharing section shows them: the vault
  * fingerprint (its genesis hash) once the membership log verified from the
  * user's anchor list, or why it could not be read (such as a locked key).
+ * With escrow on, also the escrow fingerprints ({@link EscrowFingerprints}).
  */
-export type VaultKeys = { kind: "verified"; vaultFingerprint: string } | { kind: "unavailable"; reason: string };
+export type VaultKeys = { kind: "verified"; vaultFingerprint: string; escrow?: EscrowFingerprints } | { kind: "unavailable"; reason: string };
+
+/**
+ * The escrow key of an escrowed vault as its encryption details show it
+ * (docs/design/encryption.md, "Escrow fingerprint"): the fingerprint of the
+ * escrow bundle the vault's verified log names and, only when this device
+ * pinned a different bundle for the server, the pinned bundle's fingerprint.
+ */
+export interface EscrowFingerprints {
+  vault: string;
+  pinned?: string;
+}
+
+/** An escrow bundle's fingerprint as the plugin shows it: both keys of the pair, in groups of four characters. */
+export function escrowKeyFingerprint(bundle: EscrowBundle): string {
+  return formatFingerprint(escrowFingerprint(bundle));
+}
 
 /** One pending invitation as the Sharing section lists it. */
 export interface InvitationRow {
@@ -106,10 +123,16 @@ export type FormatDate = (date: Date) => string;
  * When the log cannot be read or does not verify, the lists are still shown,
  * without fingerprints, together with the reason.
  */
-export async function loadSharing(client: ProtocolClient, vaultId: string, formatDate: FormatDate, trust?: () => Promise<LogTrust>): Promise<Sharing> {
+export async function loadSharing(
+  client: ProtocolClient,
+  vaultId: string,
+  formatDate: FormatDate,
+  trust?: () => Promise<LogTrust>,
+  pinnedEscrow?: () => Promise<EscrowBundle | undefined>,
+): Promise<Sharing> {
   const vault = (await listRemoteVaults(client)).find((listed) => listed.id === vaultId);
   if (vault === undefined) return { kind: "not-member" };
-  const encrypted = vault.encryption === VaultEncryption.E2EE && trust !== undefined ? await verifiedKeys(vaultId, trust) : undefined;
+  const encrypted = vault.encryption === VaultEncryption.E2EE && trust !== undefined ? await verifiedKeys(vaultId, trust, pinnedEscrow) : undefined;
   const keys = encrypted === undefined ? {} : { keys: encrypted.keys };
   if (vault.role !== VaultRole.OWNER) return { kind: "member", role: vault.role, ...keys };
   const [members, invitations] = await Promise.all([client.membership.listMembers({ vaultId }), client.membership.listInvitations({ vaultId })]);
@@ -126,8 +149,15 @@ export async function loadSharing(client: ProtocolClient, vaultId: string, forma
   };
 }
 
-/** The vault fingerprint and the members' key fingerprints from the vault's verified log, or why they are unavailable. */
-async function verifiedKeys(vaultId: string, trust: () => Promise<LogTrust>): Promise<{ keys: VaultKeys; fingerprints: ReadonlyMap<string, string> }> {
+/**
+ * The vault fingerprint, the escrow fingerprints and the members' key
+ * fingerprints from the vault's verified log, or why they are unavailable.
+ */
+async function verifiedKeys(
+  vaultId: string,
+  trust: () => Promise<LogTrust>,
+  pinnedEscrow: (() => Promise<EscrowBundle | undefined>) | undefined,
+): Promise<{ keys: VaultKeys; fingerprints: ReadonlyMap<string, string> }> {
   try {
     const { states } = await readMemberLog(await trust(), vaultId);
     const genesis = states[0];
@@ -135,10 +165,17 @@ async function verifiedKeys(vaultId: string, trust: () => Promise<LogTrust>): Pr
     if (genesis === undefined || head === undefined) throw new Error("the vault's membership log is empty");
     const fingerprints = new Map<string, string>();
     for (const [userId, member] of head.members) fingerprints.set(userId, formatFingerprint(fingerprint(member.bundle)));
-    return { keys: { kind: "verified", vaultFingerprint: vaultFingerprint(genesis.hash) }, fingerprints };
+    const escrow = head.escrow === undefined ? {} : { escrow: await escrowFingerprints(head.escrow, pinnedEscrow) };
+    return { keys: { kind: "verified", vaultFingerprint: vaultFingerprint(genesis.hash), ...escrow }, fingerprints };
   } catch (error) {
     return { keys: { kind: "unavailable", reason: errorMessage(error) }, fingerprints: new Map() };
   }
+}
+
+async function escrowFingerprints(named: EscrowBundle, pinnedEscrow: (() => Promise<EscrowBundle | undefined>) | undefined): Promise<EscrowFingerprints> {
+  const pinned = await pinnedEscrow?.();
+  const shown = escrowKeyFingerprint(named);
+  return pinned === undefined || escrowEqual(pinned, named) ? { vault: shown } : { vault: shown, pinned: escrowKeyFingerprint(pinned) };
 }
 
 /**
@@ -179,11 +216,26 @@ export function conversionConfirmable(members: readonly ConversionMember[], comp
   return compared && members.length > 0 && members.every((member) => member.fingerprint !== undefined);
 }
 
-/** What the Sharing section says about an encrypted vault's fingerprint, or why no fingerprints are shown. */
+/**
+ * What the Sharing section says about an encrypted vault's fingerprint and,
+ * with escrow, its escrow key's fingerprints, or why no fingerprints are
+ * shown.
+ */
 export function vaultKeysText(keys: VaultKeys): string {
-  return keys.kind === "verified"
-    ? `Vault fingerprint: ${keys.vaultFingerprint}. Compare fingerprints with the other members outside Vault Sync; the server cannot forge them. An operator restoring the vault from escrow needs this vault fingerprint.`
-    : `Key fingerprints are not shown: ${keys.reason}`;
+  if (keys.kind !== "verified") return `Key fingerprints are not shown: ${keys.reason}`;
+  const text = `Vault fingerprint: ${keys.vaultFingerprint}. Compare fingerprints with the other members outside Vault Sync; the server cannot forge them. An operator restoring the vault from escrow needs this vault fingerprint.`;
+  if (keys.escrow === undefined) return text;
+  const pinned = keys.escrow.pinned === undefined ? "" : ` Escrow key fingerprint pinned on this device: ${keys.escrow.pinned}.`;
+  return `${text} Escrow key fingerprint of this vault: ${keys.escrow.vault}.${pinned} Compare it with the one your admin publishes.`;
+}
+
+/**
+ * What the escrow choice of a new encrypted vault says about the escrow key:
+ * the fingerprint of the bundle this device pinned, which the new vault's
+ * genesis names, for comparing with the one the admin publishes.
+ */
+export function newVaultEscrowText(pinned: EscrowBundle): string {
+  return `Escrow key fingerprint: ${escrowKeyFingerprint(pinned)}. Compare it with the one your admin publishes.`;
 }
 
 export function memberRow(member: Member, formatDate: FormatDate): MemberRow {

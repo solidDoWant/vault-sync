@@ -7,15 +7,17 @@ import { InvitationSchema, ListInvitationsResponseSchema, MemberSchema, Membersh
 import { VaultEncryption, VaultRole, VaultSchema, type Vault } from "../gen/vaultsync/v1/types_pb";
 import { ListVaultsResponseSchema, VaultService } from "../gen/vaultsync/v1/vault_pb";
 import { createProtocolClient, type ProtocolClient } from "../core/protocol/client";
-import { generateKeyPair } from "../core/e2ee/hybrid";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
+import { ageRecipient, generateKeyPair } from "../core/e2ee/hybrid";
 import { createEncryptedInvitation } from "../core/keys/encrypted-membership";
-import { createEncryptedVault } from "../core/keys/encrypted-vault";
+import { createEncryptedVault, escrowOffer, MemoryEscrowPin, type EscrowKey } from "../core/keys/encrypted-vault";
 import { MemoryVaultKeyServer } from "../core/keys/memory-vault-keys";
 import type { UserKeyPair } from "../core/keys/user-key";
 import { MemoryEpochKeyStore } from "../core/keys/vault-keys";
 import { MemoryVerifiedLogStore, type LogTrust } from "../core/keys/verified-log";
 import { addAnchor } from "../core/keys/anchor-list";
-import { bundleOf, fingerprint, formatFingerprint } from "../core/e2ee/identity";
+import { bundleOf, encodeEscrowBundle, escrowFingerprint, fingerprint, formatFingerprint, signPublicKey } from "../core/e2ee/identity";
 import { entryHash } from "../core/e2ee/memberlog";
 import {
   AlreadyMemberError,
@@ -36,6 +38,7 @@ import {
   conversionMemberText,
   vaultFingerprint,
   vaultKeysText,
+  newVaultEscrowText,
   type Sharing,
 } from "./sharing";
 
@@ -400,7 +403,7 @@ describe("key fingerprints in an encrypted vault", () => {
   const editorKey: UserKeyPair = { ...generateKeyPair(), signSeed: new Uint8Array(32).fill(4), userId: editorId };
 
   /** An encrypted vault created by an owner with an editor, as `caller` reads it, with the trust its log is verified from. */
-  async function encryptedVault(caller: "owner" | "editor") {
+  async function encryptedVault(caller: "owner" | "editor", escrow?: EscrowKey) {
     const owner: UserKeyPair = { ...generateKeyPair(), signSeed: new Uint8Array(32).fill(3), userId: ownerId };
     const server = new MemoryVaultKeyServer(vaultId);
     server.userKeys.set(owner.userId, owner.publicKey);
@@ -408,7 +411,7 @@ describe("key fingerprints in an encrypted vault", () => {
     const ownerClient = createProtocolClient({ transport: server.transport(owner.userId) });
     const ownerLogs = new MemoryVerifiedLogStore();
     const store = new MemoryEpochKeyStore();
-    const vault = await createEncryptedVault({ name: "Secret", escrow: undefined, userKey: owner, vaults: ownerClient.vaults, anchors: ownerClient.userKeys, verifiedLogs: ownerLogs, keys: ownerClient.vaultKeys, membership: ownerClient.membership, store: () => store });
+    const vault = await createEncryptedVault({ name: "Secret", escrow, userKey: owner, vaults: ownerClient.vaults, anchors: ownerClient.userKeys, verifiedLogs: ownerLogs, keys: ownerClient.vaultKeys, membership: ownerClient.membership, store: () => store });
     server.seedMember(editorKey, VaultRole.EDITOR, owner);
     const callerKey = caller === "owner" ? owner : editorKey;
     if (caller === "editor") {
@@ -465,6 +468,37 @@ describe("key fingerprints in an encrypted vault", () => {
     expect(sharing.keys).toEqual({ kind: "unavailable", reason: "Unlock end-to-end encryption on this device first." });
   });
 
+  it("shows an escrowed vault's escrow fingerprint from its verified log, alone when this device pinned the same escrow key", async () => {
+    const escrow = escrowKey(5);
+    const { id, client, trust } = await encryptedVault("editor", escrow.recipient);
+
+    const sharing = await loadSharing(client, id, formatDate, trust, () => Promise.resolve(escrow.recipient.bundle));
+
+    expect(sharing.kind === "member" && sharing.keys?.kind === "verified" ? sharing.keys.escrow : "no keys").toEqual({ vault: shownEscrowFingerprint(escrow) });
+  });
+
+  it("shows both the vault's and the pinned escrow fingerprint, each labelled, when this device pinned another escrow key", async () => {
+    const escrow = escrowKey(5);
+    const pinned = escrowKey(6);
+    const { id, client, trust } = await encryptedVault("owner", escrow.recipient);
+
+    const sharing = owned(await loadSharing(client, id, formatDate, trust, () => Promise.resolve(pinned.recipient.bundle)));
+
+    expect(sharing.keys?.kind === "verified" ? sharing.keys.escrow : "no keys").toEqual({ vault: shownEscrowFingerprint(escrow), pinned: shownEscrowFingerprint(pinned) });
+    const text = sharing.keys === undefined ? "" : vaultKeysText(sharing.keys);
+    expect(text).toContain(`Escrow key fingerprint of this vault: ${shownEscrowFingerprint(escrow)}.`);
+    expect(text).toContain(`Escrow key fingerprint pinned on this device: ${shownEscrowFingerprint(pinned)}.`);
+  });
+
+  it("shows no escrow fingerprint for a vault without escrow", async () => {
+    const { id, client, trust } = await encryptedVault("owner");
+
+    const sharing = owned(await loadSharing(client, id, formatDate, trust, () => Promise.resolve(escrowKey(6).recipient.bundle)));
+
+    expect(sharing.keys?.kind === "verified" ? sharing.keys.escrow : "no keys").toBeUndefined();
+    expect(sharing.keys === undefined ? "" : vaultKeysText(sharing.keys)).not.toContain("Escrow");
+  });
+
   it("shows no fingerprints in a plaintext vault", async () => {
     const server = fakeServer();
 
@@ -509,6 +543,19 @@ describe("converting a plaintext vault", () => {
   });
 });
 
+describe("the escrow fingerprint when a vault is created", () => {
+  it("is the fingerprint of the escrow key this device pinned, which the new vault's genesis names", async () => {
+    const pinned = escrowKey(7);
+    const pin = new MemoryEscrowPin(pinned.recipient.bundle);
+
+    const offer = await escrowOffer({ escrowPublicKey: pinned.recipient.publicKey, escrowKeyId: pinned.recipient.keyId, escrowDefault: true, escrowRootBundle: pinned.encodedBundle, escrowRotations: [] }, pin);
+    if (offer.recipient === undefined) throw new Error("no escrow offered");
+
+    expect(newVaultEscrowText(offer.recipient.bundle)).toBe(`Escrow key fingerprint: ${shownEscrowFingerprint(pinned)}. Compare it with the one your admin publishes.`);
+    expect(shownEscrowFingerprint(pinned)).toMatch(/^[0-9A-HJKMNP-TV-Z]{4}( [0-9A-HJKMNP-TV-Z]{4}){7}$/u);
+  });
+});
+
 describe("the vault fingerprint", () => {
   it("is the whole genesis hash as 64 hex digits in groups of four", () => {
     const hash = Uint8Array.from({ length: 32 }, (_, index) => index * 8);
@@ -516,3 +563,19 @@ describe("the vault fingerprint", () => {
     expect(vaultFingerprint(hash)).toBe("0008 1018 2028 3038 4048 5058 6068 7078 8088 9098 a0a8 b0b8 c0c8 d0d8 e0e8 f0f8");
   });
 });
+
+/** A deployment's escrow key pair whose signing seed is filled with `signByte`, and its published recipient. */
+function escrowKey(signByte: number) {
+  const pair = generateKeyPair();
+  const recipient: EscrowKey = {
+    keyId: `sha256:${bytesToHex(sha256(pair.publicKey))}`,
+    publicKey: pair.publicKey,
+    bundle: { signPub: signPublicKey(new Uint8Array(32).fill(signByte)), recipient: ageRecipient(pair.publicKey) },
+  };
+  return { recipient, encodedBundle: encodeEscrowBundle(recipient.bundle) };
+}
+
+/** An escrow key's fingerprint as the admin's command prints it: the escrow fingerprint's first 20 bytes in Crockford base32, in groups of four. */
+function shownEscrowFingerprint(key: { recipient: EscrowKey }): string {
+  return formatFingerprint(escrowFingerprint(key.recipient.bundle));
+}
