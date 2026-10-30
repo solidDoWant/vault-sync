@@ -17,6 +17,7 @@ import { IdentityProviderError } from "../core/auth/oidc";
  * - `device-removed`: this device was removed from the account; sync waits until the user registers it again.
  * - `not-member`: the user is no longer a member of the connected vault (removed or left); sync is stopped and the files are kept.
  * - `vault-deleted`: an owner deleted the connected vault; sync is stopped and the files are kept.
+ * - `verification-failed`: the server sent key or membership data of the end-to-end encrypted vault that doesn't verify; sync of the vault is stopped and the files are kept (docs/design/encryption.md, "Hard stop").
  */
 export type SyncState =
   | "signed-out"
@@ -30,11 +31,12 @@ export type SyncState =
   | "error"
   | "device-removed"
   | "not-member"
-  | "vault-deleted";
+  | "vault-deleted"
+  | "verification-failed";
 
 /** The states in which sync stopped for good until the user acts: they get a notice that stays. */
 export function isStoppedState(state: SyncState): boolean {
-  return state === "device-removed" || state === "not-member" || state === "vault-deleted";
+  return state === "device-removed" || state === "not-member" || state === "vault-deleted" || state === "verification-failed";
 }
 
 export interface SyncStatus {
@@ -83,6 +85,7 @@ const labels: Record<SyncState, string> = {
   "device-removed": "device removed",
   "not-member": "no longer a member",
   "vault-deleted": "vault deleted",
+  "verification-failed": "stopped: key data doesn't verify",
 };
 
 /** The status bar's text, e.g. `Vault Sync: idle · 2 conflicts`. */
@@ -106,6 +109,7 @@ const icons: Record<SyncState, string> = {
   "device-removed": "smartphone",
   "not-member": "user-x",
   "vault-deleted": "trash-2",
+  "verification-failed": "shield-alert",
 };
 
 /**
@@ -136,6 +140,7 @@ export function statusDescription(status: SyncStatus): string {
     "device-removed": "Sync is stopped.",
     "not-member": "You are no longer a member of this vault, so sync is stopped. Your files stay in this vault.",
     "vault-deleted": "An owner deleted this vault on the server, so sync is stopped. Your files stay in this vault.",
+    "verification-failed": "The server sent key or membership data that doesn't verify, so sync of this vault is stopped. Your files stay in this vault.",
   };
   const lines = [detail[status.state]];
   if (status.message !== undefined && status.message !== "") lines.push(status.message);

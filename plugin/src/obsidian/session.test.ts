@@ -4,6 +4,8 @@ import { describe, expect, it, vi } from "vitest";
 import { createProtocolClient } from "../core/protocol/client";
 import type { RealtimeTimers } from "../core/realtime/client";
 import { InMemoryRealtimeServer } from "../core/realtime/memory";
+import { LogVerificationError } from "../core/keys/verified-log";
+import type { VaultKeyring } from "../core/sync/codec";
 import { MemorySyncJournal } from "../core/sync/journal";
 import { InMemoryServer } from "../core/sync/memory-server";
 import { InMemoryVault } from "../core/vault/memory";
@@ -75,6 +77,32 @@ describe("SyncSession", () => {
       ]),
     );
     expect(await statusBecomes(statuses, "idle")).toEqual({ state: "idle", pending: 0, conflicts: 0 });
+    await session.stop();
+  });
+
+  it("stops syncing an encrypted vault whose key data doesn't verify, keeps its files, and says why", async () => {
+    const server = new InMemoryServer({ encrypted: true });
+    server.currentEpoch = 1;
+    const refused = new LogVerificationError(server.vaultId, "the membership log is shorter than this device has verified");
+    let refreshes = 0;
+    const keys: VaultKeyring = {
+      refresh: () => {
+        refreshes++;
+        return Promise.reject(refused);
+      },
+      epochKey: () => undefined,
+    };
+    const { session, vault, statuses } = setup({ keys }, server);
+    await vault.write("a.md", encoder.encode("kept"));
+
+    await session.start();
+
+    const stopped = await statusBecomes(statuses, "verification-failed");
+    expect(stopped?.message).toBe(refused.message);
+    await session.syncNow();
+    expect(refreshes).toBe(1);
+    expect(await files(vault)).toEqual({ "a.md": "kept" });
+    expect(server.liveFiles()).toEqual(new Map());
     await session.stop();
   });
 

@@ -2,7 +2,9 @@ import { RealtimeClient, type RealtimeClientOptions } from "../core/realtime/cli
 import { SyncEngine, type RefusedName, type SyncApi, type TooLargeFile } from "../core/sync/engine";
 import { commitRestore, documentHistory, readRevision, type HistoryEntry, type HistoryPage } from "../core/sync/history";
 import type { SkippedEntry, SyncJournal } from "../core/sync/journal";
+import type { VaultKeyring } from "../core/sync/codec";
 import type { RemoteRevision } from "../core/sync/remote";
+import { LogVerificationError } from "../core/keys/verified-log";
 import { v7 as uuidv7 } from "uuid";
 import type { VaultAdapter } from "../core/vault/adapter";
 import type { PathRules } from "../core/vaultpath/platform";
@@ -46,6 +48,12 @@ export interface SyncSessionOptions {
   /** Keeps a local version a read-only device does not push (SyncEngineOptions.keepLocalCopy). */
   keepLocalCopy?: (path: string, content: Uint8Array) => Promise<void>;
   /**
+   * The vault's epoch keys, in an end-to-end encrypted vault (SyncEngineOptions.keys).
+   * A verification failure of its key or membership data stops the session's
+   * sync for good: the status is `verification-failed`.
+   */
+  keys?: VaultKeyring;
+  /**
    * The realtime channel (SPEC.md §6.4). When set, the started session
    * subscribes to the vault and syncs after every (re)subscribe and every
    * notification of it. The fallback timer runs either way.
@@ -54,7 +62,7 @@ export interface SyncSessionOptions {
 }
 
 export interface SessionStatus {
-  state: "syncing" | "idle" | "offline" | "error";
+  state: "syncing" | "idle" | "offline" | "error" | "verification-failed";
   /** Local changes the server has not acknowledged: the journal's pending operations. */
   pending: number;
   /** Conflict copies this device created that are still on disk. */
@@ -214,6 +222,7 @@ export class SyncSession {
       ...(options.maxDownloadBytes === undefined ? {} : { maxFileBytes: options.maxDownloadBytes }),
       ...(options.readOnly === undefined ? {} : { readOnly: options.readOnly }),
       ...(options.keepLocalCopy === undefined ? {} : { keepLocalCopy: options.keepLocalCopy }),
+      ...(options.keys === undefined ? {} : { keys: options.keys }),
       onChange: () => {
         void this.report();
       },
@@ -268,6 +277,7 @@ export class SyncSession {
     if (engine.status === "syncing") return { state: "syncing", ...this.counts };
     if (engine.status === "error") {
       const failure = engine.lastError;
+      if (failure instanceof LogVerificationError) return { state: "verification-failed", ...this.counts, message: errorMessage(failure) };
       return { state: isOffline(failure) ? "offline" : "error", ...this.counts, message: errorMessage(failure) };
     }
     const [first] = problems?.refused ?? [];

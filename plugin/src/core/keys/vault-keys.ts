@@ -184,6 +184,15 @@ export class VaultKeyManager {
   }
 
   /**
+   * {@link sync}, as the sync engine's keyring (codec.ts `VaultKeyring`):
+   * resolves with the vault's current epoch. A {@link LogVerificationError}
+   * reaches the engine, which stops syncing the vault for good.
+   */
+  async refresh(): Promise<number> {
+    return (await this.sync()).currentEpoch;
+  }
+
+  /**
    * Brings this device's epoch keys up to date: unwraps and checks every
    * slot of the user's it does not hold yet, and on an owner device creates
    * the next epoch when the vault is rotation-pending and grants missing

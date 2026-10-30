@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { discoverOidc, IdentityProviderError, refreshAccessToken, type HttpClient, type OidcEndpoints } from "../core/auth/oidc";
 import { createProtocolClient } from "../core/protocol/client";
 import { InMemoryServer } from "../core/sync/memory-server";
-import { isOffline, statusDescription, statusIcon, statusText, type SyncState } from "./status";
+import { isOffline, isStoppedState, statusDescription, statusIcon, statusText, type SyncState } from "./status";
 
 describe("statusText", () => {
   it.each<[SyncState, string]>([
@@ -19,6 +19,7 @@ describe("statusText", () => {
     ["waiting-for-journal", "Vault Sync: waiting for another window"],
     ["not-member", "Vault Sync: no longer a member"],
     ["vault-deleted", "Vault Sync: vault deleted"],
+    ["verification-failed", "Vault Sync: stopped: key data doesn't verify"],
   ])("names the %s state", (state, text) => {
     expect(statusText({ state, conflicts: 0, pending: 0 })).toBe(text);
   });
@@ -30,6 +31,13 @@ describe("statusText", () => {
 });
 
 describe("statusDescription", () => {
+  it("says a verification failure stopped the vault's sync and kept its files, with what failed", () => {
+    const text = statusDescription({ state: "verification-failed", conflicts: 0, pending: 1, message: "the membership log forks" });
+    expect(text).toContain("The server sent key or membership data that doesn't verify, so sync of this vault is stopped. Your files stay in this vault.");
+    expect(text).toContain("the membership log forks");
+    expect(isStoppedState("verification-failed")).toBe(true);
+  });
+
   it("includes the error's message", () => {
     expect(
       statusDescription({
