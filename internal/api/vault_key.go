@@ -68,6 +68,8 @@ type VaultKeyStore interface {
 	RotateEpoch(ctx context.Context, creatorID uuid.UUID, next store.NextEpoch) (store.Epoch, error)
 	AddKeySlots(ctx context.Context, creatorID uuid.UUID, slots []store.KeySlot) (int, error)
 	ListLogEntries(ctx context.Context, after int64, limit int) ([]store.LogEntry, error)
+	ReplaceRevisionCiphertext(ctx context.Context, replacement store.RevisionCiphertext) (bool, error)
+	RetireEpoch(ctx context.Context, epoch int32) error
 }
 
 // KeysOf returns the VaultKeyService.Keys of a store.
@@ -126,6 +128,8 @@ func KeyError(err error) error {
 		return connect.NewError(connect.CodeFailedPrecondition, store.ErrNotEncrypted)
 	case errors.Is(err, store.ErrSelfRemoval):
 		return connect.NewError(connect.CodeFailedPrecondition, store.ErrSelfRemoval)
+	case errors.Is(err, store.ErrFirstEpochKept), errors.Is(err, store.ErrEpochInUse):
+		return connect.NewError(connect.CodeFailedPrecondition, err)
 	case errors.Is(err, store.ErrNextEpochRequired),
 		errors.Is(err, store.ErrUnexpectedNextEpoch),
 		errors.Is(err, store.ErrInvalidRecipients),
@@ -355,6 +359,101 @@ func (service VaultKeyService) AddKeySlots(ctx context.Context, request *connect
 	return connect.NewResponse(&vaultsyncv1.AddKeySlotsResponse{Added: uint32(max(added, 0))}), nil //nolint:gosec // bounded by MaxAddKeySlots.
 }
 
+// ReplaceRevisionCiphertext moves one stored revision's path and content
+// to a newer epoch, if it is still at from_epoch and to_epoch is current.
+func (service VaultKeyService) ReplaceRevisionCiphertext(ctx context.Context, request *connect.Request[vaultsyncv1.ReplaceRevisionCiphertextRequest]) (*connect.Response[vaultsyncv1.ReplaceRevisionCiphertextResponse], error) {
+	vault, _, err := service.vault(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	replacement, err := parseRevisionCiphertext(request.Msg)
+	if err != nil {
+		return nil, err
+	}
+
+	replaced, err := vault.ReplaceRevisionCiphertext(ctx, replacement)
+
+	switch {
+	case err == nil:
+	case errors.Is(err, store.ErrNotEncrypted):
+		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+	case errors.Is(err, store.ErrNotFound):
+		return nil, connect.NewError(connect.CodeNotFound, errors.New("the vault has no such revision"))
+	case errors.Is(err, store.ErrBlobNotComplete):
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("content_ref is not a complete blob in this vault; upload it first"))
+	case errors.Is(err, store.ErrCiphertextShape), errors.Is(err, store.ErrBlobSizeMismatch):
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	default:
+		return nil, service.internal(ctx, "cannot replace revision ciphertext", err)
+	}
+
+	return connect.NewResponse(&vaultsyncv1.ReplaceRevisionCiphertextResponse{Replaced: replaced}), nil
+}
+
+// parseRevisionCiphertext validates a ReplaceRevisionCiphertextRequest's
+// bounds.
+func parseRevisionCiphertext(message *vaultsyncv1.ReplaceRevisionCiphertextRequest) (store.RevisionCiphertext, error) {
+	revisionID, err := authz.ParseID(message.GetRevisionId())
+	if err != nil {
+		return store.RevisionCiphertext{}, invalidArgument("revision_id: %w", err)
+	}
+
+	if message.GetToEpoch() > math.MaxInt32 || message.GetFromEpoch() >= message.GetToEpoch() {
+		return store.RevisionCiphertext{}, invalidArgument("from_epoch must be below to_epoch, and to_epoch at most %d", math.MaxInt32)
+	}
+
+	path := message.GetPath()
+	if len(path) == 0 || len(path) > MaxEncryptedPathBytes {
+		return store.RevisionCiphertext{}, invalidArgument("path must be 1 to %d bytes of ciphertext", MaxEncryptedPathBytes)
+	}
+
+	replacement := store.RevisionCiphertext{
+		RevisionID: revisionID,
+		FromEpoch:  int32(message.GetFromEpoch()), //nolint:gosec // below to_epoch, checked against MaxInt32 above.
+		ToEpoch:    int32(message.GetToEpoch()),   //nolint:gosec // checked against MaxInt32 above.
+		Path:       string(path),
+	}
+
+	if content := message.GetContentRef(); content != nil {
+		if err := checkBlobID(content.GetBlobId()); err != nil {
+			return store.RevisionCiphertext{}, err
+		}
+
+		if content.GetSize() > math.MaxInt64 {
+			return store.RevisionCiphertext{}, invalidArgument("content_ref.size is out of range")
+		}
+
+		replacement.ContentRef = content.GetBlobId()
+		replacement.ContentSize = int64(content.GetSize())
+	}
+
+	return replacement, nil
+}
+
+// RetireEpoch retires an epoch that no stored revision uses.
+func (service VaultKeyService) RetireEpoch(ctx context.Context, request *connect.Request[vaultsyncv1.RetireEpochRequest]) (*connect.Response[vaultsyncv1.RetireEpochResponse], error) {
+	vault, _, err := service.vault(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	epoch := request.Msg.GetEpoch()
+	if epoch < 1 || epoch > math.MaxInt32 {
+		return nil, invalidArgument("epoch must be 1 to %d", math.MaxInt32)
+	}
+
+	if err := vault.RetireEpoch(ctx, int32(epoch)); err != nil { //nolint:gosec // checked against MaxInt32 above.
+		if mapped := KeyError(err); mapped != nil {
+			return nil, mapped
+		}
+
+		return nil, service.internal(ctx, "cannot retire epoch", err)
+	}
+
+	return connect.NewResponse(&vaultsyncv1.RetireEpochResponse{}), nil
+}
+
 // ParseNextEpoch validates a NextEpoch's bounds and that its escrow slot, if
 // any, names an escrow key escrow accepts (not its other recipients, which
 // the store checks against the vault's members).
@@ -550,5 +649,6 @@ func epochMessage(epoch store.Epoch) *vaultsyncv1.KeyEpoch {
 		CreatorUserId: epoch.CreatedBy.String(),
 		CreateTime:    timestamppb.New(epoch.CreatedAt),
 		Record:        decodeEpochRecord(epoch.Record),
+		Retired:       epoch.Retired,
 	}
 }

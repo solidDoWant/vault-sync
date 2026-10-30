@@ -117,6 +117,18 @@ func (recorder *keyRecorder) ListLogEntries(_ context.Context, after int64, limi
 	return entries, recorder.err
 }
 
+func (recorder *keyRecorder) ReplaceRevisionCiphertext(context.Context, store.RevisionCiphertext) (bool, error) {
+	recorder.calls++
+
+	return true, recorder.err
+}
+
+func (recorder *keyRecorder) RetireEpoch(context.Context, int32) error {
+	recorder.calls++
+
+	return recorder.err
+}
+
 var keyCaller = auth.User{ID: uuid.MustParse("01920000-0000-7000-8000-000000000001"), Identity: auth.Identity{Issuer: "https://issuer.example", Subject: "alice"}}
 
 // keyEscrow is the escrow key of keyService: its current id, and a retiring

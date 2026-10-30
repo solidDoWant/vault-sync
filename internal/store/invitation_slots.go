@@ -44,10 +44,11 @@ type InvitationSlots struct {
 }
 
 // checkOneSlotPerEpoch returns ErrInvalidRecipients unless slots hold
-// exactly one slot for each epoch 1..current, all for recipient (kind, id).
-// A slot for an epoch the vault does not have yet is ErrEpochNotFound; a
-// missing epoch is missing.
-func checkOneSlotPerEpoch(slots []KeySlot, current int32, kind RecipientKind, id string) (missing bool, err error) {
+// exactly one slot for each epoch 1..current that is not retired, all for
+// recipient (kind, id). A slot for a retired epoch is accepted but not
+// required; the caller drops it (withoutRetired). A slot for an epoch the
+// vault does not have yet is ErrEpochNotFound; a missing epoch is missing.
+func checkOneSlotPerEpoch(slots []KeySlot, current int32, retired map[int32]bool, kind RecipientKind, id string) (missing bool, err error) {
 	seen := make(map[int32]bool, len(slots))
 
 	for _, slot := range slots {
@@ -66,7 +67,13 @@ func checkOneSlotPerEpoch(slots []KeySlot, current int32, kind RecipientKind, id
 		seen[slot.Epoch] = true
 	}
 
-	return int32(len(seen)) != current, nil //nolint:gosec // bounded by the request size.
+	for epoch := int32(1); epoch <= current; epoch++ {
+		if !seen[epoch] && !retired[epoch] {
+			return true, nil
+		}
+	}
+
+	return false, nil
 }
 
 // deleteOrphanInvitationSlots deletes the vault's invitation key slots
@@ -130,7 +137,7 @@ func (store *Store) GetInvitationSlots(ctx context.Context, idHash []byte) (Invi
 		}
 
 		rows, err = tx.Query(ctx, `
-			SELECT epoch, commitment, record, created_by, created_at FROM vault_key_epochs
+			SELECT epoch, commitment, record, created_by, created_at, retired_at IS NOT NULL FROM vault_key_epochs
 			WHERE vault_id = $1 ORDER BY epoch`, invitation.VaultID)
 		if err != nil {
 			return fmt.Errorf("list epochs: %w", err)
@@ -139,7 +146,7 @@ func (store *Store) GetInvitationSlots(ctx context.Context, idHash []byte) (Invi
 		found.Epochs, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (Epoch, error) {
 			var epoch Epoch
 
-			err := row.Scan(&epoch.Epoch, &epoch.Commitment, &epoch.Record, &epoch.CreatedBy, &epoch.CreatedAt)
+			err := row.Scan(&epoch.Epoch, &epoch.Commitment, &epoch.Record, &epoch.CreatedBy, &epoch.CreatedAt, &epoch.Retired)
 
 			return epoch, err
 		})

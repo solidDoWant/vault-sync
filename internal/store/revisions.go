@@ -531,24 +531,7 @@ func (vault *VaultStore) checkContent(ctx context.Context, tx pgx.Tx, revision N
 		return ErrContentKind
 	}
 
-	var size int64
-
-	err := tx.QueryRow(ctx, `
-		SELECT size FROM blobs WHERE vault_id = $1 AND blob_id = $2 AND state = $3 FOR KEY SHARE`,
-		vault.vaultID, revision.ContentRef, BlobComplete).Scan(&size)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrBlobNotComplete
-	}
-
-	if err != nil {
-		return fmt.Errorf("look up blob: %w", err)
-	}
-
-	if size != revision.ContentSize {
-		return ErrBlobSizeMismatch
-	}
-
-	return nil
+	return checkCompleteBlob(ctx, tx, vault.vaultID, revision.ContentRef, revision.ContentSize)
 }
 
 // sameRevisionFields compares every field of a retried commit with the

@@ -51,6 +51,12 @@ const (
 	// VaultKeyServiceListLogEntriesProcedure is the fully-qualified name of the VaultKeyService's
 	// ListLogEntries RPC.
 	VaultKeyServiceListLogEntriesProcedure = "/vaultsync.v1.VaultKeyService/ListLogEntries"
+	// VaultKeyServiceReplaceRevisionCiphertextProcedure is the fully-qualified name of the
+	// VaultKeyService's ReplaceRevisionCiphertext RPC.
+	VaultKeyServiceReplaceRevisionCiphertextProcedure = "/vaultsync.v1.VaultKeyService/ReplaceRevisionCiphertext"
+	// VaultKeyServiceRetireEpochProcedure is the fully-qualified name of the VaultKeyService's
+	// RetireEpoch RPC.
+	VaultKeyServiceRetireEpochProcedure = "/vaultsync.v1.VaultKeyService/RetireEpoch"
 )
 
 // VaultKeyServiceClient is a client for the vaultsync.v1.VaultKeyService service.
@@ -113,6 +119,41 @@ type VaultKeyServiceClient interface {
 	// that is malformed, unknown, expired, revoked, redeemed or for another
 	// vault.
 	ListLogEntries(context.Context, *connect.Request[v1.ListLogEntriesRequest]) (*connect.Response[v1.ListLogEntriesResponse], error)
+	// ReplaceRevisionCiphertext moves one stored revision from from_epoch to
+	// to_epoch: it replaces the revision's sealed path and its content
+	// reference with ones the owner's re-key job sealed under to_epoch
+	// (docs/design/encryption.md, "Re-encrypting history"). It changes
+	// nothing else: not the revision's id, seq, document or tombstone flag,
+	// not the document's path_key, and not which revision is current. The
+	// content it replaces is released, so the blob garbage collector deletes
+	// it once no revision references it.
+	//
+	// It is conditional, under the vault row lock that commits and rotations
+	// take: the rewrite is applied only while the revision is still at
+	// from_epoch and to_epoch is the vault's current epoch. Otherwise it is
+	// skipped and the response says so (replaced = false): the job restarts
+	// with the newer target. A retry of an applied rewrite is skipped too.
+	//
+	// Errors: INVALID_ARGUMENT for out-of-bounds fields, from_epoch not below
+	// to_epoch, content_ref given for a revision without content or missing
+	// for one with content, or a content size that differs from the stored
+	// blob's; NOT_FOUND for a revision the vault does not have;
+	// FAILED_PRECONDITION for a content_ref that is not a complete blob in
+	// the vault, and for a plaintext vault.
+	ReplaceRevisionCiphertext(context.Context, *connect.Request[v1.ReplaceRevisionCiphertextRequest]) (*connect.Response[v1.ReplaceRevisionCiphertextResponse], error)
+	// RetireEpoch retires an epoch that no stored revision uses: it deletes
+	// the epoch's key slots, for every recipient, and marks it retired. The
+	// epoch's commitment and signed record stay (ListEpochs), so devices can
+	// still verify the chain of epoch records. A retired epoch needs no
+	// slots: ListMissingSlots skips it, and AddKeySlots, CreateInvitation
+	// and RedeemInvitation accept slots for it but do not store them.
+	// Retiring an epoch already retired succeeds and changes nothing.
+	//
+	// Errors: INVALID_ARGUMENT for epoch 0 or an epoch the vault does not
+	// have; FAILED_PRECONDITION for epoch 1 (its key derives every path_key,
+	// docs/design/encryption.md), for the vault's current epoch, while any
+	// revision still uses the epoch, and for a plaintext vault.
+	RetireEpoch(context.Context, *connect.Request[v1.RetireEpochRequest]) (*connect.Response[v1.RetireEpochResponse], error)
 }
 
 // NewVaultKeyServiceClient constructs a client for the vaultsync.v1.VaultKeyService service. By
@@ -162,17 +203,31 @@ func NewVaultKeyServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(vaultKeyServiceMethods.ByName("ListLogEntries")),
 			connect.WithClientOptions(opts...),
 		),
+		replaceRevisionCiphertext: connect.NewClient[v1.ReplaceRevisionCiphertextRequest, v1.ReplaceRevisionCiphertextResponse](
+			httpClient,
+			baseURL+VaultKeyServiceReplaceRevisionCiphertextProcedure,
+			connect.WithSchema(vaultKeyServiceMethods.ByName("ReplaceRevisionCiphertext")),
+			connect.WithClientOptions(opts...),
+		),
+		retireEpoch: connect.NewClient[v1.RetireEpochRequest, v1.RetireEpochResponse](
+			httpClient,
+			baseURL+VaultKeyServiceRetireEpochProcedure,
+			connect.WithSchema(vaultKeyServiceMethods.ByName("RetireEpoch")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
 // vaultKeyServiceClient implements VaultKeyServiceClient.
 type vaultKeyServiceClient struct {
-	listKeySlots     *connect.Client[v1.ListKeySlotsRequest, v1.ListKeySlotsResponse]
-	listEpochs       *connect.Client[v1.ListEpochsRequest, v1.ListEpochsResponse]
-	listMissingSlots *connect.Client[v1.ListMissingSlotsRequest, v1.ListMissingSlotsResponse]
-	rotateEpoch      *connect.Client[v1.RotateEpochRequest, v1.RotateEpochResponse]
-	addKeySlots      *connect.Client[v1.AddKeySlotsRequest, v1.AddKeySlotsResponse]
-	listLogEntries   *connect.Client[v1.ListLogEntriesRequest, v1.ListLogEntriesResponse]
+	listKeySlots              *connect.Client[v1.ListKeySlotsRequest, v1.ListKeySlotsResponse]
+	listEpochs                *connect.Client[v1.ListEpochsRequest, v1.ListEpochsResponse]
+	listMissingSlots          *connect.Client[v1.ListMissingSlotsRequest, v1.ListMissingSlotsResponse]
+	rotateEpoch               *connect.Client[v1.RotateEpochRequest, v1.RotateEpochResponse]
+	addKeySlots               *connect.Client[v1.AddKeySlotsRequest, v1.AddKeySlotsResponse]
+	listLogEntries            *connect.Client[v1.ListLogEntriesRequest, v1.ListLogEntriesResponse]
+	replaceRevisionCiphertext *connect.Client[v1.ReplaceRevisionCiphertextRequest, v1.ReplaceRevisionCiphertextResponse]
+	retireEpoch               *connect.Client[v1.RetireEpochRequest, v1.RetireEpochResponse]
 }
 
 // ListKeySlots calls vaultsync.v1.VaultKeyService.ListKeySlots.
@@ -203,6 +258,16 @@ func (c *vaultKeyServiceClient) AddKeySlots(ctx context.Context, req *connect.Re
 // ListLogEntries calls vaultsync.v1.VaultKeyService.ListLogEntries.
 func (c *vaultKeyServiceClient) ListLogEntries(ctx context.Context, req *connect.Request[v1.ListLogEntriesRequest]) (*connect.Response[v1.ListLogEntriesResponse], error) {
 	return c.listLogEntries.CallUnary(ctx, req)
+}
+
+// ReplaceRevisionCiphertext calls vaultsync.v1.VaultKeyService.ReplaceRevisionCiphertext.
+func (c *vaultKeyServiceClient) ReplaceRevisionCiphertext(ctx context.Context, req *connect.Request[v1.ReplaceRevisionCiphertextRequest]) (*connect.Response[v1.ReplaceRevisionCiphertextResponse], error) {
+	return c.replaceRevisionCiphertext.CallUnary(ctx, req)
+}
+
+// RetireEpoch calls vaultsync.v1.VaultKeyService.RetireEpoch.
+func (c *vaultKeyServiceClient) RetireEpoch(ctx context.Context, req *connect.Request[v1.RetireEpochRequest]) (*connect.Response[v1.RetireEpochResponse], error) {
+	return c.retireEpoch.CallUnary(ctx, req)
 }
 
 // VaultKeyServiceHandler is an implementation of the vaultsync.v1.VaultKeyService service.
@@ -265,6 +330,41 @@ type VaultKeyServiceHandler interface {
 	// that is malformed, unknown, expired, revoked, redeemed or for another
 	// vault.
 	ListLogEntries(context.Context, *connect.Request[v1.ListLogEntriesRequest]) (*connect.Response[v1.ListLogEntriesResponse], error)
+	// ReplaceRevisionCiphertext moves one stored revision from from_epoch to
+	// to_epoch: it replaces the revision's sealed path and its content
+	// reference with ones the owner's re-key job sealed under to_epoch
+	// (docs/design/encryption.md, "Re-encrypting history"). It changes
+	// nothing else: not the revision's id, seq, document or tombstone flag,
+	// not the document's path_key, and not which revision is current. The
+	// content it replaces is released, so the blob garbage collector deletes
+	// it once no revision references it.
+	//
+	// It is conditional, under the vault row lock that commits and rotations
+	// take: the rewrite is applied only while the revision is still at
+	// from_epoch and to_epoch is the vault's current epoch. Otherwise it is
+	// skipped and the response says so (replaced = false): the job restarts
+	// with the newer target. A retry of an applied rewrite is skipped too.
+	//
+	// Errors: INVALID_ARGUMENT for out-of-bounds fields, from_epoch not below
+	// to_epoch, content_ref given for a revision without content or missing
+	// for one with content, or a content size that differs from the stored
+	// blob's; NOT_FOUND for a revision the vault does not have;
+	// FAILED_PRECONDITION for a content_ref that is not a complete blob in
+	// the vault, and for a plaintext vault.
+	ReplaceRevisionCiphertext(context.Context, *connect.Request[v1.ReplaceRevisionCiphertextRequest]) (*connect.Response[v1.ReplaceRevisionCiphertextResponse], error)
+	// RetireEpoch retires an epoch that no stored revision uses: it deletes
+	// the epoch's key slots, for every recipient, and marks it retired. The
+	// epoch's commitment and signed record stay (ListEpochs), so devices can
+	// still verify the chain of epoch records. A retired epoch needs no
+	// slots: ListMissingSlots skips it, and AddKeySlots, CreateInvitation
+	// and RedeemInvitation accept slots for it but do not store them.
+	// Retiring an epoch already retired succeeds and changes nothing.
+	//
+	// Errors: INVALID_ARGUMENT for epoch 0 or an epoch the vault does not
+	// have; FAILED_PRECONDITION for epoch 1 (its key derives every path_key,
+	// docs/design/encryption.md), for the vault's current epoch, while any
+	// revision still uses the epoch, and for a plaintext vault.
+	RetireEpoch(context.Context, *connect.Request[v1.RetireEpochRequest]) (*connect.Response[v1.RetireEpochResponse], error)
 }
 
 // NewVaultKeyServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -310,6 +410,18 @@ func NewVaultKeyServiceHandler(svc VaultKeyServiceHandler, opts ...connect.Handl
 		connect.WithSchema(vaultKeyServiceMethods.ByName("ListLogEntries")),
 		connect.WithHandlerOptions(opts...),
 	)
+	vaultKeyServiceReplaceRevisionCiphertextHandler := connect.NewUnaryHandler(
+		VaultKeyServiceReplaceRevisionCiphertextProcedure,
+		svc.ReplaceRevisionCiphertext,
+		connect.WithSchema(vaultKeyServiceMethods.ByName("ReplaceRevisionCiphertext")),
+		connect.WithHandlerOptions(opts...),
+	)
+	vaultKeyServiceRetireEpochHandler := connect.NewUnaryHandler(
+		VaultKeyServiceRetireEpochProcedure,
+		svc.RetireEpoch,
+		connect.WithSchema(vaultKeyServiceMethods.ByName("RetireEpoch")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/vaultsync.v1.VaultKeyService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case VaultKeyServiceListKeySlotsProcedure:
@@ -324,6 +436,10 @@ func NewVaultKeyServiceHandler(svc VaultKeyServiceHandler, opts ...connect.Handl
 			vaultKeyServiceAddKeySlotsHandler.ServeHTTP(w, r)
 		case VaultKeyServiceListLogEntriesProcedure:
 			vaultKeyServiceListLogEntriesHandler.ServeHTTP(w, r)
+		case VaultKeyServiceReplaceRevisionCiphertextProcedure:
+			vaultKeyServiceReplaceRevisionCiphertextHandler.ServeHTTP(w, r)
+		case VaultKeyServiceRetireEpochProcedure:
+			vaultKeyServiceRetireEpochHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -355,4 +471,12 @@ func (UnimplementedVaultKeyServiceHandler) AddKeySlots(context.Context, *connect
 
 func (UnimplementedVaultKeyServiceHandler) ListLogEntries(context.Context, *connect.Request[v1.ListLogEntriesRequest]) (*connect.Response[v1.ListLogEntriesResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("vaultsync.v1.VaultKeyService.ListLogEntries is not implemented"))
+}
+
+func (UnimplementedVaultKeyServiceHandler) ReplaceRevisionCiphertext(context.Context, *connect.Request[v1.ReplaceRevisionCiphertextRequest]) (*connect.Response[v1.ReplaceRevisionCiphertextResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("vaultsync.v1.VaultKeyService.ReplaceRevisionCiphertext is not implemented"))
+}
+
+func (UnimplementedVaultKeyServiceHandler) RetireEpoch(context.Context, *connect.Request[v1.RetireEpochRequest]) (*connect.Response[v1.RetireEpochResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("vaultsync.v1.VaultKeyService.RetireEpoch is not implemented"))
 }

@@ -26,10 +26,11 @@ option go_package = "github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyn
 //
 // ListKeySlots, ListEpochs and ListLogEntries are open to every member, and
 // ListLogEntries also to the holder of a pending invitation's id; ListMissingSlots,
-// RotateEpoch and AddKeySlots are owner-only (PERMISSION_DENIED for editors
+// RotateEpoch, AddKeySlots, ReplaceRevisionCiphertext and RetireEpoch are owner-only (PERMISSION_DENIED for editors
 // and viewers). A caller who is not a member gets NOT_FOUND, as for a vault
 // that does not exist. On a plaintext vault the lists are empty, and
-// RotateEpoch and AddKeySlots are FAILED_PRECONDITION.
+// RotateEpoch, AddKeySlots, ReplaceRevisionCiphertext and RetireEpoch are
+// FAILED_PRECONDITION.
 service VaultKeyService {
   // ListKeySlots lists the caller's own key slots in the vault, in
   // ascending epoch order, or with recipient_kind KEY_RECIPIENT_KIND_ESCROW
@@ -94,6 +95,43 @@ service VaultKeyService {
   // that is malformed, unknown, expired, revoked, redeemed or for another
   // vault.
   rpc ListLogEntries(ListLogEntriesRequest) returns (ListLogEntriesResponse) {}
+
+  // ReplaceRevisionCiphertext moves one stored revision from from_epoch to
+  // to_epoch: it replaces the revision's sealed path and its content
+  // reference with ones the owner's re-key job sealed under to_epoch
+  // (docs/design/encryption.md, "Re-encrypting history"). It changes
+  // nothing else: not the revision's id, seq, document or tombstone flag,
+  // not the document's path_key, and not which revision is current. The
+  // content it replaces is released, so the blob garbage collector deletes
+  // it once no revision references it.
+  //
+  // It is conditional, under the vault row lock that commits and rotations
+  // take: the rewrite is applied only while the revision is still at
+  // from_epoch and to_epoch is the vault's current epoch. Otherwise it is
+  // skipped and the response says so (replaced = false): the job restarts
+  // with the newer target. A retry of an applied rewrite is skipped too.
+  //
+  // Errors: INVALID_ARGUMENT for out-of-bounds fields, from_epoch not below
+  // to_epoch, content_ref given for a revision without content or missing
+  // for one with content, or a content size that differs from the stored
+  // blob's; NOT_FOUND for a revision the vault does not have;
+  // FAILED_PRECONDITION for a content_ref that is not a complete blob in
+  // the vault, and for a plaintext vault.
+  rpc ReplaceRevisionCiphertext(ReplaceRevisionCiphertextRequest) returns (ReplaceRevisionCiphertextResponse) {}
+
+  // RetireEpoch retires an epoch that no stored revision uses: it deletes
+  // the epoch's key slots, for every recipient, and marks it retired. The
+  // epoch's commitment and signed record stay (ListEpochs), so devices can
+  // still verify the chain of epoch records. A retired epoch needs no
+  // slots: ListMissingSlots skips it, and AddKeySlots, CreateInvitation
+  // and RedeemInvitation accept slots for it but do not store them.
+  // Retiring an epoch already retired succeeds and changes nothing.
+  //
+  // Errors: INVALID_ARGUMENT for epoch 0 or an epoch the vault does not
+  // have; FAILED_PRECONDITION for epoch 1 (its key derives every path_key,
+  // docs/design/encryption.md), for the vault's current epoch, while any
+  // revision still uses the epoch, and for a plaintext vault.
+  rpc RetireEpoch(RetireEpochRequest) returns (RetireEpochResponse) {}
 }
 
 // KeyRecipientKind is whom a key slot wraps an epoch key to.
@@ -145,6 +183,9 @@ message KeyEpoch {
   // The owner's signed epoch record (docs/design/crypto.md), as RotateEpoch
   // or RemoveMember stored it. Unset for an epoch created without one.
   EpochRecord record = 5;
+  // Whether the epoch is retired (RetireEpoch): no revision uses it and it
+  // has no key slots.
+  bool retired = 6;
 }
 
 // EpochRecipient is one recipient of a signed epoch record.
@@ -327,3 +368,42 @@ message ListLogEntriesResponse {
   // Token for the next page; empty when there are no more.
   string next_page_token = 2;
 }
+
+// ReplaceRevisionCiphertextRequest re-encrypts one stored revision.
+message ReplaceRevisionCiphertextRequest {
+  // The vault. The caller must be an owner.
+  string vault_id = 1;
+  // The revision, a canonical lowercase UUID.
+  string revision_id = 2;
+  // The epoch the revision must still be at, as the caller read it.
+  uint32 from_epoch = 3;
+  // The epoch the new ciphertext is sealed under, which must still be the
+  // vault's current epoch. Greater than from_epoch.
+  uint32 to_epoch = 4;
+  // The revision's path sealed under to_epoch: 1 to MaxEncryptedPathBytes
+  // bytes of ciphertext, as CommitRevisionRequest.path.
+  bytes path = 5;
+  // The revision's content sealed under to_epoch, a complete blob in the
+  // vault with this size. Exactly when the revision has content (a folder
+  // has none).
+  ContentRef content_ref = 6;
+}
+
+// ReplaceRevisionCiphertextResponse says whether the rewrite was applied.
+message ReplaceRevisionCiphertextResponse {
+  // True when the revision now holds the new ciphertext; false when the
+  // rewrite was skipped because the revision is no longer at from_epoch or
+  // to_epoch is no longer current.
+  bool replaced = 1;
+}
+
+// RetireEpochRequest retires one epoch of the vault.
+message RetireEpochRequest {
+  // The vault. The caller must be an owner.
+  string vault_id = 1;
+  // The epoch to retire: 2 or more, below the current epoch.
+  uint32 epoch = 2;
+}
+
+// RetireEpochResponse is empty.
+message RetireEpochResponse {}
