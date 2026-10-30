@@ -45,7 +45,7 @@ config:
       # `<cluster>-ca` Secret, key ca.crt). Mounted at
       # /etc/vault-sync/database-ca and passed as
       # VAULT_SYNC_DATABASE_TLS_CA_FILE. Setting it turns on full verification
-      # (docs/configuration.md, PostgreSQL TLS).
+      # (docs/admin/postgresql-and-s3.md, PostgreSQL TLS).
       caCert:
         secretKeyRef:
           name: ""
@@ -85,8 +85,8 @@ config:
         name: ""
         key: ca.crt
 
-  # oidc configures access-token validation (docs/configuration.md,
-  # Authentication).
+  # oidc configures access-token validation
+  # (docs/admin/identity-provider.md).
   oidc:
     # issuerUrl is VAULT_SYNC_OIDC_ISSUER_URL (required), for example
     # https://auth.example.com/application/o/vault-sync/ for Authentik.
@@ -99,7 +99,7 @@ config:
     clientId: null
 
   # server holds the API server's tunables. Every null value leaves its
-  # variable unset, so the server default applies (docs/configuration.md).
+  # variable unset, so the server default applies (docs/admin/configuration-reference.md).
   # Byte sizes and counts are integers; durations are Go duration strings
   # such as 30s or 1h30m (values.schema.json checks both).
   # The listen addresses are fixed by the chart: the API on 8080

@@ -14,7 +14,8 @@ import type { DocEntry, JournalChange, JournalState, PendingKind, PendingOp, Syn
  * Every folder is a document too (docs/design/engine.md §2): a folder with no
  * live document is a create (a re-create on its tombstone, if this device
  * kept it), a folder document whose folder is gone is a delete, and a folder
- * rename event keeps the document.
+ * rename event keeps the document. A vacated folder is no create while
+ * the documents that were in it are still there.
  */
 
 /**
@@ -219,6 +220,9 @@ export async function detectChanges(state: JournalState, options: DetectOptions)
   const folderCreates: Observed[] = [];
   for (const path of await options.vault.listFolders()) {
     const id = byPath.get(path);
+    // A vacated folder waits for the documents that were in it to leave; once only new local files are left, they make it a create.
+    const vacated = state.vacated.get(path);
+    if (vacated !== undefined && (id === undefined || !isFolder(id)) && vacated.documentIds.some((documentId) => state.docs.get(documentId)?.path.startsWith(`${path}/`) === true)) continue;
     if (id === undefined || !isFolder(id)) {
       // Rule 3 of the folder rules: a folder this device kept after its document was deleted is created again on the tombstone.
       const tombstoned = [...projections.values()].find((projection) => projection.kind === "folder" && projection.deleted && projection.lastOp === undefined && projection.path === path);

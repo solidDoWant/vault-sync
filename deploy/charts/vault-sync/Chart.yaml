@@ -3,7 +3,7 @@ apiVersion: v2
 name: vault-sync
 description: >-
   vault-sync server (self-hosted Obsidian sync on PostgreSQL and S3) and its
-  plaintext export job. See docs/deployment.md.
+  plaintext export job. See docs/admin/install.md.
 type: application
 home: https://github.com/solidDoWant/vault-sync
 sources:

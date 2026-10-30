@@ -1,8 +1,6 @@
 # Server configuration
 
-`vault-sync-server` is configured entirely by environment variables. An empty variable is treated as unset. On startup the server validates every variable and, if any is missing or invalid, exits with status 1 after logging one `invalid configuration` record whose `problems` field names each offending variable. Secret values (such as the database password) are never echoed.
-
-The `vault-sync-server export` subcommand reads the database, S3 and log-level variables ([configuration-reference.md](admin/configuration-reference.md)), and `VAULT_SYNC_ESCROW_IDENTITY_FILE`, and ignores the rest; see [export.md](export.md). `vault-sync-server export rotate-escrow` reads the database and log-level variables, `VAULT_SYNC_ESCROW_IDENTITY_FILE`, `VAULT_SYNC_ESCROW_SIGNING_KEY_FILE` and `VAULT_SYNC_ESCROW_JOB_TOKEN_FILE`. `vault-sync-server export reset-escrow` reads the database and log-level variables and `VAULT_SYNC_ESCROW_JOB_TOKEN_FILE` ([export.md](export.md#resetting-the-escrow-chain)). `vault-sync-server escrow fingerprint` reads only `VAULT_SYNC_ESCROW_RECIPIENT` and `VAULT_SYNC_ESCROW_SIGNING_KEY`, and only when its flags are not given (see [encryption.md](encryption.md#for-operators-the-escrow-key)).
+How the server reads its configuration, how it checks it, and which variables each subcommand reads moved to [Configuration](admin/configuration.md).
 
 ## Environment variables
 
@@ -13,16 +11,13 @@ The `vault-sync-server export` subcommand reads the database, S3 and log-level v
 Every RPC except `vaultsync.v1.ServerInfoService/GetServerInfo` requires an `Authorization: Bearer` header carrying a JWT access token from the issuer. `GetServerInfo` returns only public data: the build and protocol versions, the realtime subscription limit, the issuer URL and the plugin's client ID. A token is accepted only if:
 
 - it is at most 16 KiB;
-- it is signed with RS256, ES256 or EdDSA (never `none` or an HMAC algorithm) by a key in the issuer's key set;
-- `iss` equals `VAULT_SYNC_OIDC_ISSUER_URL`, `aud` contains `VAULT_SYNC_OIDC_AUDIENCE`, `sub` is present (at most 255 bytes, without control characters), `exp` is present and not in the past (no leeway), and `nbf`, if present, is no more than one minute in the future.
+- its signature and claims meet the checks in [What the provider must offer](admin/identity-provider.md#what-the-provider-must-offer).
 
 Anything else gets the Connect code `unauthenticated` (HTTP 401) with no detail about the reason; the reason is logged at `debug` level. Tokens and claims are never logged.
 
-The issuer's key set is fetched on the first authenticated request, not at startup, so the server starts even when the issuer is unreachable. It is refetched when a token names an unknown key id (key rotation) and when the cached keys are older than one hour (so withdrawn keys stop being trusted), but at most once every 30 seconds, so a flood of tokens with made-up key ids cannot amplify into requests to the issuer. A newly rotated key is therefore accepted at most 30 seconds after the previous fetch. If a refetch fails, the cached keys stay in use. Only one fetch runs at a time, bounded at 10 seconds. While a refetch of hour-old keys is in progress, other requests are verified against the cached keys instead of waiting, so a slow or hanging issuer delays only the request that started the refetch and requests naming an unknown key id.
+The issuer's key set is fetched on the first authenticated request ([Where the server gets the signing keys](admin/identity-provider.md#where-the-server-gets-the-signing-keys)). It is refetched when a token names an unknown key id (key rotation) and when the cached keys are older than one hour (so withdrawn keys stop being trusted), but at most once every 30 seconds, so a flood of tokens with made-up key ids cannot amplify into requests to the issuer. Only one fetch runs at a time, bounded at 10 seconds. While a refetch of hour-old keys is in progress, other requests are verified against the cached keys instead of waiting, so a slow or hanging issuer delays only the request that started the refetch and requests naming an unknown key id.
 
-The discovery document, the `jwks_uri` it names and every redirect are fetched over `https` only. The `jwks_uri` may be on another host than the issuer. Plain `http` is used only when `VAULT_SYNC_OIDC_ISSUER_URL` is itself a loopback `http` URL, and then only to loopback hosts. A redirect is followed only if it stays on the host (and port) of the URL first requested and does not change `https` to `http`, for at most 5 redirects. A redirect to another host is refused, so if your issuer moves its discovery document or keys to another host with a redirect, configure the final issuer URL instead. A refused URL or redirect fails the fetch: before the first successful fetch every token is rejected, and afterwards the cached keys stay in use.
-
-The first authenticated request of a new `(issuer, subject)` pair creates its user.
+The rules for `https` and redirects when the server fetches the discovery document and the keys moved to [Where the server gets the signing keys](admin/identity-provider.md#where-the-server-gets-the-signing-keys). A refused URL or redirect fails the fetch: before the first successful fetch every token is rejected, and afterwards the cached keys stay in use.
 
 ### Authorization
 
@@ -40,22 +35,22 @@ End-to-end encrypted vaults keep one key per epoch, which the server never sees.
 
 ### Blob storage
 
-File contents are stored in the S3 bucket as one object per blob at `vaults/<vault_id>/blobs/<hex(blob_id)>`. Uploads arrive in chunks of at most `VAULT_SYNC_BLOB_MAX_CHUNK_BYTES`, so no request exceeds the WAF's body limit; each chunk is staged as its own object under `vaults/<vault_id>/uploads/<upload_id>/` and `CommitBlob` streams the chunks into the blob's object, verifying the SHA-256 for plaintext vaults before anything becomes visible. Each replica composes at most 4 blobs at once, at most 2 of them for one user, so one user's large commits cannot keep other users' commits waiting; a user's further commits wait their turn. A `CommitBlob` of a blob that the same replica is already committing waits for that commit and returns its result instead of composing the blob again. These limits are fixed and cannot be configured. Every chunk but the last must be at least 64 KiB (or the advertised `max_chunk_size`, if smaller). The server needs `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject`, `s3:ListBucket`, `s3:ListBucketMultipartUploads` and `s3:AbortMultipartUpload` on the bucket. At startup it checks that the bucket is reachable (`HeadBucket`, 30 seconds) and exits with status 1 if not.
+Where blobs and staged chunks live in the bucket, the S3 permissions and the upload cleanup moved to [PostgreSQL and S3](admin/postgresql-and-s3.md#what-lives-where).
 
-Every 5 minutes a cleanup routine removes upload sessions idle for longer than `VAULT_SYNC_BLOB_UPLOAD_TTL` or reclaimed (deleting their staged objects) and aborts multipart uploads under `vaults/` older than the TTL whose blob has no upload session active within the TTL, which an interrupted commit leaves behind and which S3 would otherwise keep, invisibly, forever. Every replica runs the cleanup on the same schedule; concurrent runs are safe, and an upload or object another replica already removed is not an error. Each run removes at most 100 sessions and 10,000 objects, so a backlog is worked off over several runs. A run still going when the next one is due (for example behind an object store that stopped answering) is cut short and logged as a failure, and the next run starts on schedule; the work it left undone is picked up by later runs. Blobs no longer referenced by any revision are deleted by the retention job (below).
+Uploads arrive in chunks of at most `VAULT_SYNC_BLOB_MAX_CHUNK_BYTES`, so no request exceeds the WAF's body limit. Each replica composes at most 4 blobs at once, at most 2 of them for one user, so one user's large commits cannot keep other users' commits waiting; a user's further commits wait their turn. A `CommitBlob` of a blob that the same replica is already committing waits for that commit and returns its result instead of composing the blob again. These limits are fixed and cannot be configured. Every chunk but the last must be at least 64 KiB (or the advertised `max_chunk_size`, if smaller). At startup the server checks that the bucket is reachable (`HeadBucket`, 30 seconds) and exits with status 1 if not.
 
 Requests and responses are bounded by `VAULT_SYNC_MAX_REQUEST_BYTES` in both directions. A response is measured by the bytes sent, after compression when the client accepts it, and one over the limit fails with `RESOURCE_EXHAUSTED`. A maximum-size chunk fits only in the binary protobuf encoding, which the plugin uses; a client using the Connect JSON encoding (base64 bytes, a third larger) must send smaller chunks and request smaller download ranges.
 
 ### Revisions and the change feed
 
-`SyncService` stores document revisions in PostgreSQL. It needs no configuration beyond the database; revisions name their content by blob id, so committing one requires that blob to have been uploaded completely to the same vault first (`failed_precondition` otherwise). The fixed bounds are:
+Page sizes and response limits moved to [PostgreSQL and S3](admin/postgresql-and-s3.md#page-sizes-and-response-limits).
+
+`SyncService` stores document revisions in PostgreSQL. Revisions name their content by blob id, so committing one requires that blob to have been uploaded completely to the same vault first (`failed_precondition` otherwise). The fixed bounds are:
 
 - A path is at most 4096 bytes of UTF-8 without control characters and at most 8192 bytes once normalized (Unicode normalization and case folding can lengthen it). It must stay inside the vault on every client platform, so both `/` and `\` count as separators: it may not start with a separator (including UNC, `\\?\` and `\\.\` prefixes) or with a drive prefix such as `C:`, and no segment may be empty or consist only of dots and spaces (`.`, `..`, `...`). A new path may not contain `\` at all, may not start with any single character followed by a colon (such as `1:x.md` or `é:x.md`, which Windows also reads as a drive), and must be portable: no file or folder name in it contains any of `< > : " | ? *`, starts or ends with a space, ends in a dot, is a Windows reserved name (`CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`, with or without an extension) or is longer than 255 bytes, and the whole path is at most 1024 bytes. A commit that creates a document at such a path, moves one there, or brings a deleted one back there gets `invalid_argument`. Documents committed at such paths before these rules keep their paths and can still be edited, deleted, or renamed to a valid path. Anything else gets `invalid_argument`. The full rule is in `SPEC.md` §6.2.
-- `ListChanges` returns at most 1000 revisions per call (500 if the client does not ask for a page size); `GetDocumentHistory` at most 1000 (default 100). Larger page sizes are reduced, not rejected.
-- A page also ends early where its encoding, in the encoding the client uses (binary protobuf or JSON), would come near `VAULT_SYNC_MAX_REQUEST_BYTES`, which also bounds responses: with 4096-byte paths, about 240 revisions fit the default 1 MiB in binary protobuf (about 175 in JSON). Such a page reports more to come (`has_more`, or a `next_page_token`), so the client continues where it stopped. A page always holds at least one revision when there is one.
 - Paths are unique per vault ignoring case and Unicode normalization, among documents that are not deleted: creating or renaming a document onto a path that differs from a live document's only in case or normalization gets `already_exists`. A file and a folder cannot share a name either, again ignoring case and normalization: while `notes` is a live document, creating or renaming a document to `Notes/c.md` gets `already_exists`, and while `notes/c.md` is live, so does `NOTES`. Deleted documents never collide.
 
-Commits to a vault are serialized by a PostgreSQL row lock on the vault, held for the duration of one short transaction, so any number of server replicas can accept commits for the same vault concurrently: each revision gets the vault's next sequence number with no gaps, and a revision is never visible in the change feed before one with a lower number. Revisions of end-to-end encrypted vaults are rejected (`failed_precondition`), like creating such a vault.
+Revisions of end-to-end encrypted vaults are rejected (`failed_precondition`), like creating such a vault.
 
 ### Retention and history
 
@@ -87,7 +82,7 @@ Shortening a vault's policy purges its newly purgeable revisions over the next r
 
 ### Realtime channel
 
-Clients learn about new revisions through one WebSocket per device at `GET /v1/realtime` on the API listener (SPEC.md §6.4); it carries binary protobuf frames, a few bytes each. Your ingress must allow WebSocket upgrades on that path and should not time out idle connections faster than every 30 seconds (the server pings each client every 30 seconds and disconnects one that does not answer within 10).
+Clients learn about new revisions through one WebSocket per device (SPEC.md §6.4). What your ingress needs for it moved to [Install](admin/install.md#the-ingress).
 
 - **Authentication.** Browser clients (the Obsidian plugin) send the access token as the WebSocket subprotocol `vaultsync.bearer.<token>`, next to `vaultsync.v1`; other clients may send `Authorization: Bearer <token>` instead. The token is never put in the URL, and the server never logs the `Sec-WebSocket-Protocol` header; if your proxy logs request headers, exclude that one. Upgrades are refused with HTTP 401 without a valid token and HTTP 403 from a browser origin other than the Obsidian app origins. When the token expires the server sends an `UNAUTHENTICATED` error frame and closes the connection, and the client reconnects with a fresh token.
 - **Authorization.** Each subscription is checked against the caller's vault membership, and so is every notification before it is sent: a non-member gets `NOT_FOUND`, exactly as for a vault that does not exist, and a member removed from a vault stops receiving its notifications. Before each delivery one membership query per vault covers up to 1,000 subscribed users. If that query fails, the notification is not sent (clients catch up on their next pull).
@@ -96,13 +91,11 @@ Clients learn about new revisions through one WebSocket per device at `GET /v1/r
 
 ### PostgreSQL TLS
 
-TLS is enabled with the DSN's `sslmode`; use `require`, `verify-ca` or `verify-full`. Setting any of the TLS file variables with a DSN whose first connection attempt is plaintext (`sslmode=disable` or `allow`) is rejected at startup. With `sslmode=prefer` (the libpq default when `sslmode` is omitted) and a TLS file set, the plaintext fallback is removed, so the connection never silently downgrades.
-
-**Setting `VAULT_SYNC_DATABASE_TLS_CA_FILE` always turns on full verification**: the server certificate chain is checked against the CA bundle and the host name in the DSN must match the certificate, even when the DSN says `sslmode=require` or `sslmode=verify-ca`. Make sure the DSN's host is a name (or IP) present in the PostgreSQL server certificate. With CloudNativePG, use the `<cluster>-rw` service name the operator puts in the certificate.
+This section moved to [PostgreSQL and S3](admin/postgresql-and-s3.md#postgresql-tls).
 
 ## Endpoints
 
-The API listener serves only the ConnectRPC services under `/vaultsync.v1.*/` and the realtime WebSocket at `/v1/realtime`. Cross-origin requests are allowed only from the Obsidian app origins `app://obsidian.md`, `capacitor://localhost` and `http://localhost`.
+The listeners and their paths moved to [Endpoints](admin/configuration.md#endpoints). On the API listener, cross-origin requests are allowed only from the Obsidian app origins `app://obsidian.md`, `capacitor://localhost` and `http://localhost`.
 
 The metrics listener serves:
 
@@ -112,7 +105,6 @@ The metrics listener serves:
 | `/readyz` | Readiness. Returns 200 when PostgreSQL answers a ping within 2 seconds, and 503 when it does not or while the server is shutting down. Concurrent checks share one ping, so a burst of probes against a slow database holds at most one pool connection. No result is reused after its ping ends, and each replica checks only its own connection pool. |
 | `/metrics` | Prometheus metrics of this replica (see [Metrics](#metrics)). |
 
-The service-wide metrics listener serves only `/metrics`, the [service-wide metrics](#service-wide-metrics).
 
 ## Metrics
 
@@ -126,34 +118,10 @@ These describe the whole deployment rather than one replica, and are served only
 
 ## Startup and shutdown
 
-On startup the server connects to PostgreSQL (exiting with status 1 if it cannot), applies any pending schema migrations, and, if an object store is configured, checks that its bucket is reachable before it starts listening.
+Migrations, the startup order, graceful shutdown and database connection resets moved to [Upgrades and high availability](admin/upgrades.md#migrations) and [PostgreSQL and S3](admin/postgresql-and-s3.md#switchover-and-restarts).
 
-The server requires **PostgreSQL 14 or newer**; on older versions the schema migrations fail and the server exits. Upgrading to the release that adds migration 0003 rebuilds the unique index on live document paths while holding an exclusive lock on the `documents` table, so commits and reads of documents briefly block on every replica until the migration finishes (the time grows with the number of documents). Upgrading to the release that adds migration 0004 builds an index over the folders of live document paths, which blocks commits (but not reads) on every replica until it finishes; the time grows with the number of documents and the depth of their paths. Upgrading to the release that adds migration 0005 builds two indexes on `revisions`, which block commits (but not reads) on every replica until they finish; the time grows with the number of revisions. Upgrading to the release that adds migration 0006 gives every revision an anchor in one transaction that holds an exclusive lock on `revisions` throughout, so commits and pulls (and anything else that reads or writes revisions) block on every replica, of both releases, until it finishes; the time grows with the number of revisions, since it rewrites every one. Migration 0010 (per-vault retention overrides) adds a table and a column to the one-row `retention_scans` table, which only briefly blocks the retention job.
-
-On `SIGTERM` or `SIGINT` it shuts down in this order:
-
-1. `/readyz` starts returning 503 immediately.
-2. For `VAULT_SYNC_SHUTDOWN_DELAY` the API keeps accepting and serving requests, but every response closes its connection, so clients and proxies reconnect, through the load balancer, to another replica. Connections that are idle at the signal stay open until the delay ends, so a request a client sends on one at that moment is still served instead of reset.
-3. The API stops accepting connections, and in-flight requests get up to `VAULT_SYNC_SHUTDOWN_TIMEOUT` to finish. Open realtime WebSockets are closed at this step with close code 1001 ("going away"), so clients reconnect elsewhere and re-subscribe.
-4. The process exits with status 0 after a clean drain, or status 1 if the timeout forced connections closed.
-
-Background jobs (the blob upload cleanup and the hourly retention job) stop at the signal. Work they leave half-done is finished by the next run on any replica.
-
-PostgreSQL connections are checked before every use. A connection the database dropped while it sat idle (a restart, a CloudNativePG switchover) is replaced without the request noticing. A request whose query was already running when its connection broke fails, and the client retries it. Failing over the database itself is the operator's concern.
+On startup the server exits with status 1 if it cannot connect to PostgreSQL. The server requires PostgreSQL 14 or newer; on older versions the schema migrations fail and the server exits.
 
 ## High-availability deployment
 
-The server is designed to run as several identical replicas behind one Service, sharing one PostgreSQL database and one S3 bucket. Terminating any replica, for example to drain a node, must have no client-visible effect:
-
-- Replicas keep no per-client state of their own beyond open realtime connections, whose subscriptions a client re-creates when it reconnects anywhere. Upload sessions, memberships and users live in PostgreSQL, and blob contents live in S3. Any replica can serve any request, including different chunks of one upload and its commit. Caches (the OIDC key set, S3 credentials) are rebuilt by each replica on its own.
-- Background jobs run on every replica. They coordinate only through PostgreSQL, so concurrent runs have the same effect as one run.
-- A replica killed without warning (`SIGKILL`, a node crash) loses only its in-flight requests. Every RPC is safe to retry on another replica, and anything already acknowledged is kept.
-- During a rolling upgrade the previous release and the new one run side by side. The new release's migrations are backward-compatible with the previous release (SPEC.md §12), and an integration test runs both releases against one database. A rule the new release adds holds only once every replica runs it: replicas of a release before migration 0004, for example, still accept a file and a folder of the same name (`notes` and `notes/c.md`) until the rollout completes, and such pairs committed before then stay. Likewise, until every replica runs the release with migration 0012, a retried device registration can still use a second place under the device limit.
-
-Recommended Kubernetes settings (see [deployment.md](deployment.md)). The Helm chart sets the replicas, probes, grace period and rolling-update strategy by default; spreading and the PodDisruptionBudget are cluster or caller policy, which it leaves to you:
-
-- **At least 2 replicas** (`replicas: 2` or more), spread across nodes, for example by the cluster's default topology spread or with your own `topologySpreadConstraints` on `kubernetes.io/hostname`.
-- **A PodDisruptionBudget** with `maxUnavailable: 1` (or `minAvailable: 1`), so a node drain never evicts every replica at once.
-- **Readiness before termination.** Point the readiness probe at `/readyz` on the metrics port, with a short `periodSeconds` (for example 2). `VAULT_SYNC_SHUTDOWN_DELAY` keeps serving while endpoints and proxies (Istio) catch up with the pod's removal, so no `preStop` hook is needed. If you add a `preStop` sleep anyway, it runs before the signal and adds to the delay. Point the liveness probe at `/healthz`, never at `/readyz`.
-- **`terminationGracePeriodSeconds`** above `VAULT_SYNC_SHUTDOWN_DELAY` + `VAULT_SYNC_SHUTDOWN_TIMEOUT` plus a margin. With the defaults (5 s + 30 s), use at least `45`.
-- A rolling-update strategy with `maxUnavailable: 0` and `maxSurge: 1`, so a new pod is ready before an old one is told to stop.
+This section moved to [Upgrades and high availability](admin/upgrades.md#high-availability).

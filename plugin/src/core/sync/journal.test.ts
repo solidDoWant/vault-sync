@@ -85,6 +85,22 @@ describe.each(journals)("the journal %s", (_name, open) => {
     expect([...(await journal.load()).waiting.keys()]).toEqual(["doc-2"]);
   });
 
+  it("keeps the vacated folders until they are deleted", async () => {
+    const journal = await open();
+    await journal.commit({
+      putVacated: [
+        { path: "Projects", documentIds: ["doc-1", "doc-2"] },
+        { path: "Projects/Sub", documentIds: ["doc-2"] },
+      ],
+    });
+    expect([...(await journal.load()).vacated.values()].sort((left, right) => left.path.localeCompare(right.path))).toEqual([
+      { path: "Projects", documentIds: ["doc-1", "doc-2"] },
+      { path: "Projects/Sub", documentIds: ["doc-2"] },
+    ]);
+    await journal.commit({ deleteVacated: ["Projects/Sub"] });
+    expect([...(await journal.load()).vacated.keys()]).toEqual(["Projects"]);
+  });
+
   it("returns copies: changing a loaded state changes nothing stored", async () => {
     const journal = await open();
     await journal.commit({ putDocs: [doc] });

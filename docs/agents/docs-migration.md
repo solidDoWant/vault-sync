@@ -85,7 +85,7 @@ SPEC keeps its section numbers and its rules. The SPEC readability issue applies
 |---|---|---|---|---|---|
 | [ ] 1. Purpose | 90 | keep | stays; summary to `README.md`, `dev/architecture.md` | | 90 |
 | [ ] 2. Design principles | 214 | keep | stays; summary to `dev/contributing.md` | Normative; keep the wording of the rules. Principle 4's bounds are pinned by `internal/server/limits_test.go`, `blob_limits_internal_test.go`, `page_bytes_integration_test.go`, but the principle itself stays. | 214 |
-| [ ] 3. Target environment | 373 | keep | stays (rule); detail to `admin/requirements.md` | Kubernetes, CNPG, Ceph RGW, Authentik, Istio/Coraza as the reference setup. Deployment detail (CNPG client certs, Talos) is admin depth: move to `admin/requirements.md` and cut here. | 200 |
+| [ ] 3. Target environment | 373 | keep | stays (rule); detail to `admin/requirements.md` | Kubernetes, CNPG, Ceph RGW, Authentik, Istio/Coraza as the reference setup. Deployment detail (CNPG client certs, Talos) is admin depth: move to `admin/requirements.md` and cut here. | 200 The detail is copied to `admin/requirements.md`; cutting it here is left for the SPEC rewrite. |
 | [ ] 4. Architecture | 1,327 | move | stays (component list and the three binding rules); overview to `dev/architecture.md` | The `core` no-`obsidian` rule is enforced by `plugin/eslint.config.*` (the `obsidian` import restriction) and `plugin/test/core-import-fence.test.ts`: keep one line, delete the detail. The long `plugin/src/obsidian` and `export` bullets (adapter internals, export credentials) move to the package docs of `plugin/src/obsidian` and `internal/export`. HA rules are pinned by `cmd/vault-sync-server/instances_integration_test.go` and `upgrade_integration_test.go`. Decision history: delete. | 450 |
 | [ ] 4.1 Protocol transport (decision) | 119 | keep | stays (rule); reason to `dev/decisions.md` | Backward compatibility is enforced by `buf breaking` (`make lint`) and `make check-generate`: one line. Rejected alternatives: delete. | 80 |
 | [ ] 5. Data model | 2,226 | move | table stays as one line per entity; overview to `dev/architecture.md`; terms to `dev/glossary.md` (as links) | The column lists restate `internal/store/migrations/`: keep entity, key and one-line purpose, delete column lists (pinned by `internal/store/migrate_integration_test.go`, `internal/server/vaultid_schema_test.go`). "Paths" (≈900 W): keep the rule (path is an attribute, uniqueness on `path_key`), move the normalization steps to the `internal/pathkey` and `internal/vaultpath` package docs (pinned by `internal/pathkey/pathkey_test.go`, `normalize_internal_test.go`, `internal/vaultpath/vaultpath_test.go`, `internal/server/path_*_integration_test.go`, `long_path_integration_test.go`, `path_backslash_integration_test.go`). "Content addressing": keep, pinned by `testdata/crypto/vectors.json`. | 900 |
@@ -123,12 +123,12 @@ SPEC keeps its section numbers and its rules. The SPEC readability issue applies
 | [x] Devices | 279 | keep | `user/devices.md` | |
 | [x] End-to-end encryption (setup, unlock, change passphrase) | 646 | keep | `user/encryption.md`; Argon2id parameters to `dev/` via `docs/design/crypto.md` link only | Follow the passphrase row of the depth table. |
 | [ ] Sync | 610 | keep | `user/syncing.md` | Timeouts and retry detail: move to `plugin/src/core/protocol` module comments. User part done in `user/`; the timeout and retry module comments are left. |
-| [ ] Realtime channel | 192 | keep | `user/syncing.md` (one paragraph: changes arrive in seconds); `admin/install.md` (WebSocket path) | Protocol detail duplicates SPEC §6.4: delete. User part done in `user/`; the WebSocket path in `admin/install.md` is left for the admin docs. |
+| [x] Realtime channel | 192 | keep | `user/syncing.md` (one paragraph: changes arrive in seconds); `admin/install.md` (WebSocket path) | Protocol detail duplicates SPEC §6.4: delete. User part done in `user/`; the WebSocket path in `admin/install.md` is left for the admin docs. Done: the WebSocket path is in `admin/install.md`. |
 | [x] Status | 542 | keep | `user/syncing.md` (icons); `user/troubleshooting.md` (each message) | |
 | [x] Conflicts | 1,084 | keep | `user/conflicts-and-history.md`; "files that are not synced" and name rules to `user/syncing.md` and `user/troubleshooting.md` | Size limits: user page gives the numbers; admin page names `VAULT_SYNC_BLOB_MAX_SIZE_BYTES`. Rule letters (M, W, C) are developer depth: delete here. |
 | [x] Config folder | 42 | keep | `user/syncing.md` (what is not synced); `user/faq.md` | |
 | [x] History and restore | 712 | keep | `user/conflicts-and-history.md`; retention numbers link to `admin/history-and-retention.md` | |
-| [ ] Identity provider setup (Authentik) | 164 | keep | `admin/identity-provider.md` | Admin content, not user. Merge with `deployment.md` "Authentik". |
+| [x] Identity provider setup (Authentik) | 164 | keep | `admin/identity-provider.md` | Admin content, not user. Merge with `deployment.md` "Authentik". Done: `admin/identity-provider.md`. |
 
 ## docs/encryption.md → user + admin (4.3k W)
 
@@ -157,39 +157,39 @@ SPEC keeps its section numbers and its rules. The SPEC readability issue applies
 
 | Section | W | Class | Destination | Notes |
 |---|---|---|---|---|
-| [ ] Intro (env-only config, validation, exit status) | 88 | keep | `admin/configuration.md`; failure messages to `admin/troubleshooting.md` | |
+| [ ] Intro (env-only config, validation, exit status) | 88 | keep | `admin/configuration.md`; failure messages to `admin/troubleshooting.md` | The intro is in `admin/configuration.md`; the failure messages stay here for `admin/troubleshooting.md`. |
 | [x] Environment variables (table) | 2,884 | generate | `admin/configuration-reference.md` (generated) | See Generators. Descriptions move into the constants' doc comments first; `admin/configuration.md` keeps only the grouped concepts below. |
-| [ ] Authentication | 437 | keep | `admin/identity-provider.md`; token checks to `admin/security.md` | |
+| [ ] Authentication | 437 | keep | `admin/identity-provider.md`; token checks to `admin/security.md` | Provider requirements are in `admin/identity-provider.md`; the token checks stay here for `admin/security.md`. |
 | [ ] Authorization | 1,004 | keep | `admin/security.md` (≈300 W) | Per-procedure role lists duplicate SPEC §9.2 and the proto comments: delete. |
-| [ ] Blob storage | 404 | keep | `admin/postgresql-and-s3.md`; size and chunk limits to `admin/security.md` (limits) | |
-| [ ] Revisions and the change feed | 539 | keep | `admin/postgresql-and-s3.md` (≈150 W: page size and response limits as settings) | Protocol detail duplicates SPEC §6.1: delete. |
+| [ ] Blob storage | 404 | keep | `admin/postgresql-and-s3.md`; size and chunk limits to `admin/security.md` (limits) | The layout, permissions and cleanup are in `admin/postgresql-and-s3.md`; the size and chunk limits stay here for `admin/security.md`. |
+| [ ] Revisions and the change feed | 539 | keep | `admin/postgresql-and-s3.md` (≈150 W: page size and response limits as settings) | Protocol detail duplicates SPEC §6.1: delete. Page sizes and response limits are in `admin/postgresql-and-s3.md`; the rest is left to delete. |
 | [ ] Retention and history | 1,375 | keep | `admin/history-and-retention.md` (≈500 W) | Purge mechanics are developer depth (SPEC §11, `internal/retention`): delete here. |
 | [ ] Per-vault overrides | — | keep | `admin/history-and-retention.md` | Subsection of the row above. |
-| [ ] Realtime channel | 439 | keep | `admin/install.md` (ingress); limits to `admin/security.md` | |
-| [ ] PostgreSQL TLS | 125 | keep | `admin/postgresql-and-s3.md` | |
-| [ ] Endpoints | 138 | keep | `admin/configuration.md`; CORS and health detail to `admin/security.md`, `admin/monitoring.md` | |
+| [ ] Realtime channel | 439 | keep | `admin/install.md` (ingress); limits to `admin/security.md` | The ingress needs are in `admin/install.md`; the limits stay here for `admin/security.md`. |
+| [x] PostgreSQL TLS | 125 | keep | `admin/postgresql-and-s3.md` | Done: `admin/postgresql-and-s3.md`. |
+| [ ] Endpoints | 138 | keep | `admin/configuration.md`; CORS and health detail to `admin/security.md`, `admin/monitoring.md` | The listeners are in `admin/configuration.md`; CORS and health detail stay here for `admin/security.md` and `admin/monitoring.md`. |
 | [x] Metrics | 708 | generate | `admin/metrics-reference.md` (generated) | See Generators. `admin/monitoring.md` keeps the concepts (two ports, what to scrape). |
 | [x] Service-wide metrics | 762 | generate | `admin/metrics-reference.md` (generated) | See Generators. Why service-wide metrics are separate (one exporter, not per replica) stays in `admin/monitoring.md`. The table is generated; the paragraph on how the values are refreshed stays in `configuration.md` until `admin/monitoring.md` is written. |
-| [ ] Startup and shutdown | 471 | keep | `admin/requirements.md` (PostgreSQL 14+); `admin/upgrades.md` (migrations, graceful shutdown); `admin/troubleshooting.md` | |
-| [ ] High-availability deployment | 453 | keep | `admin/upgrades.md` (rolling upgrades, HA) | Design detail duplicates SPEC §12 HA rules: delete. |
+| [ ] Startup and shutdown | 471 | keep | `admin/requirements.md` (PostgreSQL 14+); `admin/upgrades.md` (migrations, graceful shutdown); `admin/troubleshooting.md` | Done for `admin/requirements.md` and `admin/upgrades.md`; the failure facts stay here for `admin/troubleshooting.md`. |
+| [x] High-availability deployment | 453 | keep | `admin/upgrades.md` (rolling upgrades, HA) | Design detail duplicates SPEC §12 HA rules: delete. Done: `admin/upgrades.md`. |
 
 ## docs/deployment.md → admin (6.7k W)
 
 | Section | W | Class | Destination | Notes |
 |---|---|---|---|---|
-| [ ] Intro and "What you deploy" | 208 | keep | `admin/install.md`; reference setup to `admin/requirements.md` | |
-| [ ] The image | 82 | keep | `admin/install.md` | |
-| [ ] PostgreSQL (CloudNativePG) | 323 | keep | `admin/postgresql-and-s3.md` | |
-| [ ] S3 (Ceph RGW) | 204 | keep | `admin/postgresql-and-s3.md` | |
-| [ ] Authentik (the device-flow application) | 259 | keep | `admin/identity-provider.md` | Merge with `plugin.md` "Identity provider setup". |
-| [ ] The WAF body limit (Istio and Coraza) | 310 | keep | `admin/install.md`; limit relationship to `admin/security.md` | |
+| [x] Intro and "What you deploy" | 208 | keep | `admin/install.md`; reference setup to `admin/requirements.md` | Done: `admin/install.md`, `admin/requirements.md`. |
+| [x] The image | 82 | keep | `admin/install.md` | Done: `admin/install.md`. |
+| [x] PostgreSQL (CloudNativePG) | 323 | keep | `admin/postgresql-and-s3.md` | Done: `admin/postgresql-and-s3.md`. |
+| [x] S3 (Ceph RGW) | 204 | keep | `admin/postgresql-and-s3.md` | Done: `admin/postgresql-and-s3.md`. |
+| [x] Authentik (the device-flow application) | 259 | keep | `admin/identity-provider.md` | Merge with `plugin.md` "Identity provider setup". Done: `admin/identity-provider.md`. |
+| [ ] The WAF body limit (Istio and Coraza) | 310 | keep | `admin/install.md`; limit relationship to `admin/security.md` | The ingress part is in `admin/install.md`; the limit relationship stays here for `admin/security.md`. |
 | [ ] The export job | 546 | keep | `admin/backup-and-restore.md` | Chart wiring duplicates the chart values: delete. |
-| [ ] Installing the chart | 220 | keep | `admin/install.md` | |
-| [ ] Upgrading | 681 | keep | `admin/upgrades.md` | |
+| [x] Installing the chart | 220 | keep | `admin/install.md` | Done: `admin/install.md`. |
+| [x] Upgrading | 681 | keep | `admin/upgrades.md` | Done: `admin/upgrades.md`. |
 | [ ] Per-vault retention | 139 | keep | `admin/history-and-retention.md` | Merge with `configuration.md` "Per-vault overrides" (duplicate). |
 | [ ] Undeleting a vault | 128 | keep | `admin/backup-and-restore.md`; one line in `user/sharing.md` (ask your admin) | |
 | [ ] Chart values (and Shared settings, PostgreSQL, S3, OIDC, Server, Export, Route, Grafana dashboards, Alerts, Overriding the computed resources) | 2,254 | generate | `admin/chart-values.md` (generated by `helm-docs`) | See Generators. Per-value text moves into `values.yaml` `# --` comments. "Overriding the computed resources" (323 W) explains a concept: keep ≈150 W of it in `admin/install.md` (sizing). |
-| [ ] High availability | 117 | delete | — | Duplicate of `configuration.md` "High-availability deployment", which lands in `admin/upgrades.md`. |
+| [x] High availability | 117 | delete | — | Duplicate of `configuration.md` "High-availability deployment", which lands in `admin/upgrades.md`. Done: every fact is in `admin/upgrades.md`. |
 | [ ] Monitoring | 440 | keep | `admin/monitoring.md` | |
 | [x] Releasing | 707 | keep | `dev/releasing.md` (≈400 W) | Developer content, not admin. Steps that restate `make release` and the release-manager playbook: delete; link them. |
 
