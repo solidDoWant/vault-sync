@@ -3,14 +3,15 @@ import { Modal, Notice, PluginSettingTab, Setting, type App, type ButtonComponen
 import { VaultRole, type Vault } from "../gen/vaultsync/v1/types_pb";
 import type { AuthState } from "../core/auth/tokens";
 import type { ConversionMember } from "../core/keys/convert-vault";
-import type { EscrowOffer } from "../core/keys/encrypted-vault";
+import type { EscrowChange, EscrowOffer } from "../core/keys/encrypted-vault";
 import type { RekeyResult } from "../core/sync/rekey";
 import { connectProblem } from "./controller";
 import { type ConnectedVault, type PluginData } from "./data";
 import { DeviceListLoads, DeviceRemovals, type DeviceRow } from "./devices";
 import { quotedVaultLabel, vaultLabel } from "./display-text";
-import { conversionConfirmable, conversionMemberText, deleteConfirmed, memberKeyText, membershipErrorMessage, newVaultEscrowText, parseInvitationDays, vaultKeysText, roleDescription, roleName, roles, type CreatedInvitation, type MemberRow, type Sharing } from "./sharing";
+import { conversionConfirmable, conversionMemberText, deleteConfirmed, escrowKeyFingerprint, memberKeyText, membershipErrorMessage, newVaultEscrowText, parseInvitationDays, vaultKeysText, roleDescription, roleName, roles, type CreatedInvitation, type MemberRow, type Sharing } from "./sharing";
 import type { EncryptionState } from "./encryption";
+import { ESCROW_CHANGE_STATUS, EscrowResetModal } from "./escrow-reset-modal";
 import { PassphraseModal, type PassphraseMode } from "./passphrase-modal";
 import { errorMessage, statusDescription, statusText, type SyncStatus } from "./status";
 
@@ -32,6 +33,10 @@ export interface SettingsHost extends Plugin {
   createRemoteVault(name: string, encryption?: { escrow: boolean }): Promise<Vault>;
   /** The server's escrow key and default, for a new encrypted vault. */
   escrowOffer(): Promise<EscrowOffer>;
+  /** The user accepted an escrow change in the escrow reset prompt. */
+  acceptEscrowChange(change: EscrowChange): Promise<void>;
+  /** The user declined an escrow change; escrow keeps the pinned key. */
+  declineEscrowChange(change: EscrowChange): Promise<void>;
   connectVault(vault: Vault, confirmed?: boolean): Promise<"connected" | "needs-confirmation">;
   disconnectVault(): Promise<void>;
   /** The signed-in user's devices (#590). */
@@ -89,6 +94,8 @@ const accountDescriptions: Record<AuthState, string> = {
 export class VaultSyncSettingTab extends PluginSettingTab {
   private statusSetting: Setting | undefined;
   private deviceNameText: TextComponent | undefined;
+  /** The new escrow key whose prompt this tab opened by itself, so that two sections showing the change open it once. */
+  private promptedEscrowKey: string | undefined;
   /** Kept across renders, so a list rebuilt while a removal runs cannot send it again. */
   private readonly removals: DeviceRemovals;
   /**
@@ -490,6 +497,14 @@ export class VaultSyncSettingTab extends PluginSettingTab {
     if (sharing.keys !== undefined) {
       new Setting(section).setName("Fingerprints").setDesc(vaultKeysText(sharing.keys)).settingEl.addClass("vault-sync-fingerprint");
     }
+    if (sharing.kind === "owner" && sharing.keys?.kind === "verified" && sharing.keys.escrow !== undefined) {
+      void host.escrowOffer().then(
+        (offer) => {
+          if (offer.change !== undefined) this.showEscrowChange(new Setting(section).setName("Escrow"), offer.change);
+        },
+        () => undefined,
+      );
+    }
     if (sharing.kind === "owner") {
       new Setting(section).setName("Members").setHeading();
       const members = section.createDiv({ cls: "vault-sync-members" });
@@ -833,9 +848,15 @@ export class VaultSyncSettingTab extends PluginSettingTab {
     updateEscrowToggle();
     void host.escrowOffer().then(
       (offer) => {
+        escrowLoaded = true;
+        if (offer.change !== undefined) {
+          escrowToggle?.setValue(false);
+          updateEscrowToggle();
+          this.showEscrowChange(escrowSetting, offer.change);
+          return;
+        }
         escrowAvailable = offer.recipient !== undefined;
         escrow = offer.byDefault;
-        escrowLoaded = true;
         escrowToggle?.setValue(escrow);
         updateEscrowToggle();
         escrowSetting.setDesc(
@@ -848,6 +869,24 @@ export class VaultSyncSettingTab extends PluginSettingTab {
         escrowSetting.setDesc(`Could not load the server's escrow setting: ${errorMessage(error)}`);
       },
     );
+  }
+
+  /**
+   * Shows an open escrow change on `setting`: the status and a button that
+   * opens the escrow reset prompt. The prompt opens by itself once for each
+   * new escrow key, unless the user already declined that key.
+   */
+  private showEscrowChange(setting: Setting, change: EscrowChange): void {
+    const open = () => {
+      openEscrowReset(this.app, this.host, change);
+    };
+    setting.setDesc(`${ESCROW_CHANGE_STATUS} Vaults are created without escrow until you accept the new key.`);
+    setting.addButton((button) => button.setButtonText("Review the change").onClick(open));
+    const offered = escrowKeyFingerprint(change.offered);
+    if (!change.declined && this.promptedEscrowKey !== offered) {
+      this.promptedEscrowKey = offered;
+      open();
+    }
   }
 
   private async connect(vault: Vault): Promise<void> {
@@ -902,6 +941,20 @@ class ConfirmRemoveDeviceModal extends Modal {
 }
 
 /** The warning before a non-empty vault is connected to a non-empty remote vault. */
+/** Opens the escrow reset prompt for `change`; accepting or declining it is saved on this device. */
+function openEscrowReset(app: App, host: SettingsHost, change: EscrowChange): void {
+  new EscrowResetModal(
+    app,
+    change,
+    () => host.acceptEscrowChange(change).catch((error: unknown) => {
+        new Notice(`Vault Sync: could not accept the new escrow key: ${errorMessage(error)}`);
+      }),
+    () => host.declineEscrowChange(change).catch((error: unknown) => {
+        new Notice(`Vault Sync: could not save the decline: ${errorMessage(error)}`);
+      }),
+  ).open();
+}
+
 class ConfirmConnectModal extends Modal {
   constructor(
     app: App,
@@ -1041,9 +1094,11 @@ class ConvertVaultModal extends Modal {
         );
         for (const member of members) new Setting(contentEl).setName(member.displayName === "" ? member.userId : member.displayName).setDesc(conversionMemberText(member));
         let compared = false;
-        let escrow = offer.recipient !== undefined && offer.byDefault;
+        let escrow = offer.recipient !== undefined && offer.change === undefined && offer.byDefault;
         let convertButton: ButtonComponent | undefined;
-        if (offer.recipient !== undefined) {
+        if (offer.change !== undefined) {
+          new Setting(contentEl).setName("Escrow").setDesc(`${ESCROW_CHANGE_STATUS} The vault is converted without escrow until you accept the new key in the Vault Sync settings.`).addToggle((toggle) => toggle.setValue(false).setDisabled(true));
+        } else if (offer.recipient !== undefined) {
           new Setting(contentEl)
             .setName("Escrow")
             .setDesc("Also wrap the vault key to the server operator's escrow key, so that the vault can be recovered and exported without your passphrase.")

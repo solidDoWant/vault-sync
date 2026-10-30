@@ -14,7 +14,7 @@ import { deviceVerifiedLogStore, loadDeviceSecrets, refreshTokenLost, savePlugin
 import { oidcConfig, parsePluginData, persistRefreshToken, serialized, serverBaseUrl, signInProblem, type ConnectedVault, type IdentityProvider, type PluginData } from "./obsidian/data";
 import { currentDeviceId, deviceRows, listDevices, removeOtherDevice, type DeviceRow } from "./obsidian/devices";
 import { discoverIdentityProvider } from "./obsidian/discovery";
-import { createEncryptedVault, escrowOffer, publishedEscrowRotations, type EscrowOffer } from "./core/keys/encrypted-vault";
+import { acceptEscrowChange, createEncryptedVault, declineEscrowChange, escrowOffer, publishedEscrowRotations, type EscrowChange, type EscrowOffer } from "./core/keys/encrypted-vault";
 import type { EscrowRotation } from "./core/e2ee/identity";
 import { conversionMembers, convertVault, type ConversionMember } from "./core/keys/convert-vault";
 import { changePassphraseOnDevice, enableOnDevice, encryptionState, forgetEncryptionKeys, pluginDataEpochKeyStore, pluginDataEscrowPin, unlockedUserKey, unlockOnDevice, type EncryptionOptions, type EncryptionState } from "./obsidian/encryption";
@@ -419,7 +419,31 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
   /** The server's escrow key and default, for the escrow choice of a new encrypted vault. */
   async escrowOffer(): Promise<EscrowOffer> {
     const info = await this.protocolClient().serverInfo.getServerInfo({});
-    return escrowOffer(info, pluginDataEscrowPin(this.data, () => this.saveSettings(), serverBaseUrl(this.data)));
+    return escrowOffer(info, this.escrowPin());
+  }
+
+  /** The user accepted the escrow change in the escrow reset prompt: this device's pin moves to the new escrow key. */
+  async acceptEscrowChange(change: EscrowChange): Promise<void> {
+    await acceptEscrowChange(this.escrowPin(), change);
+    this.settingTab?.render();
+  }
+
+  /** The user declined the escrow change: escrow keeps the pinned key, and the prompt opens by itself again only for another key. */
+  async declineEscrowChange(change: EscrowChange): Promise<void> {
+    await declineEscrowChange(this.escrowPin(), change);
+    this.settingTab?.render();
+  }
+
+  private escrowPin() {
+    return pluginDataEscrowPin(this.data, () => this.saveSettings(), serverBaseUrl(this.data));
+  }
+
+  /** The escrow key a new vault or a conversion wraps to: none while an escrow change is open. */
+  private async newVaultEscrow(): Promise<EscrowOffer["recipient"]> {
+    const offer = await this.escrowOffer();
+    if (offer.change !== undefined) throw new Error("the server's escrow key changed, and this device has not accepted the new key");
+    if (offer.recipient === undefined) throw new Error("this server has no escrow key");
+    return offer.recipient;
   }
 
   /**
@@ -441,8 +465,7 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
     const userKey = await unlockedUserKey(options);
     const account = await currentAccount(this.data, options.accessToken);
     const client = this.protocolClient();
-    const recipient = escrow ? (await this.escrowOffer()).recipient : undefined;
-    if (escrow && recipient === undefined) throw new Error("this server has no escrow key");
+    const recipient = escrow ? await this.newVaultEscrow() : undefined;
     return createEncryptedVault({
       name: name.trim(),
       escrow: recipient,
@@ -484,7 +507,7 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
       this.sharedVaultId(),
       formatDate,
       () => this.logTrust(),
-      () => pluginDataEscrowPin(this.data, () => this.saveSettings(), serverBaseUrl(this.data)).load(),
+      () => this.escrowPin().load(),
     );
   }
 
@@ -540,8 +563,7 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
     const options = this.encryptionOptions();
     const userKey = await unlockedUserKey(options);
     const account = await currentAccount(this.data, options.accessToken);
-    const recipient = escrow ? (await this.escrowOffer()).recipient : undefined;
-    if (escrow && recipient === undefined) throw new Error("this server has no escrow key");
+    const recipient = escrow ? await this.newVaultEscrow() : undefined;
     await convertVault({
       vaultId,
       userKey,

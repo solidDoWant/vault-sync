@@ -9,7 +9,7 @@ import { anchorKey, encodeEscrowBundle, openAnchorList, signEscrowRotation, sign
 import { entryHash, replayLog } from "../e2ee/memberlog";
 import { openKeySlot, verifyKeyCommitment } from "../e2ee/keyslot";
 import { createProtocolClient } from "../protocol/client";
-import { createEncryptedVault, EscrowKeyChangedError, escrowOffer, MemoryEscrowPin, type EscrowKey } from "./encrypted-vault";
+import { acceptEscrowChange, createEncryptedVault, declineEscrowChange, EscrowChainError, escrowOffer, MemoryEscrowPin, type EscrowKey } from "./encrypted-vault";
 import { MemoryVaultKeyServer } from "./memory-vault-keys";
 import { MemoryVerifiedLogStore } from "./verified-log";
 import { MemoryEpochKeyStore, VaultKeyManager } from "./vault-keys";
@@ -257,7 +257,9 @@ describe("escrowOffer pins the escrow key", () => {
     const pinned = escrowKey(9);
     const swapped = escrowKey(10);
     const pin = new MemoryEscrowPin(pinned.recipient.bundle);
-    await expect(escrowOffer(serverInfo(swapped), pin)).rejects.toThrow(EscrowKeyChangedError);
+    const offer = await escrowOffer(serverInfo(swapped), pin);
+    expect(offer.recipient).toEqual(pinned.recipient);
+    expect(offer.change).toEqual({ pinned: pinned.recipient.bundle, offered: swapped.recipient.bundle, declined: false });
     expect(pin.bundle).toEqual(pinned.recipient.bundle);
   });
 
@@ -266,7 +268,7 @@ describe("escrowOffer pins the escrow key", () => {
     const swapped = escrowKey(10);
     const forged = statement(signEscrowRotation(new Uint8Array(32).fill(11), pinned.recipient.bundle, swapped.recipient.bundle));
     const pin = new MemoryEscrowPin(pinned.recipient.bundle);
-    await expect(escrowOffer(serverInfo(swapped, pinned.encodedBundle, [forged]), pin)).rejects.toThrow(/unsigned escrow rotation/);
+    await expect(escrowOffer(serverInfo(swapped, pinned.encodedBundle, [forged]), pin)).rejects.toThrow(EscrowChainError);
     expect(pin.bundle).toEqual(pinned.recipient.bundle);
   });
 
@@ -276,7 +278,9 @@ describe("escrowOffer pins the escrow key", () => {
     const swapped = escrowKey(10);
     const rotation = statement(signEscrowRotation(otherRoot.signSeed, otherRoot.recipient.bundle, swapped.recipient.bundle));
     const pin = new MemoryEscrowPin(pinned.recipient.bundle);
-    await expect(escrowOffer(serverInfo(swapped, otherRoot.encodedBundle, [rotation]), pin)).rejects.toThrow(/unchained escrow key/);
+    const offer = await escrowOffer(serverInfo(swapped, otherRoot.encodedBundle, [rotation]), pin);
+    expect(offer.recipient).toEqual(pinned.recipient);
+    expect(offer.change?.offered).toEqual(swapped.recipient.bundle);
     expect(pin.bundle).toEqual(pinned.recipient.bundle);
   });
 
@@ -285,7 +289,7 @@ describe("escrowOffer pins the escrow key", () => {
     const current = escrowKey(10);
     const forged = statement(signEscrowRotation(new Uint8Array(32).fill(11), root.recipient.bundle, current.recipient.bundle));
     const pin = new MemoryEscrowPin();
-    await expect(escrowOffer(serverInfo(current, root.encodedBundle, [forged]), pin)).rejects.toThrow(EscrowKeyChangedError);
+    await expect(escrowOffer(serverInfo(current, root.encodedBundle, [forged]), pin)).rejects.toThrow(EscrowChainError);
     expect(pin.bundle).toBeUndefined();
   });
 
@@ -300,6 +304,62 @@ describe("escrowOffer pins the escrow key", () => {
     const pin = new MemoryEscrowPin(first.recipient.bundle);
     expect((await escrowOffer(serverInfo(third, first.encodedBundle, rotations), pin)).recipient).toEqual(third.recipient);
     expect(pin.bundle).toEqual(third.recipient.bundle);
+  });
+});
+
+describe("an escrow change without signed rotation statements", () => {
+  it("raises an escrow change for an unchained pair instead of stopping", async () => {
+    const pinned = escrowKey(9);
+    const reset = escrowKey(10);
+    const offer = await escrowOffer(serverInfo(reset), new MemoryEscrowPin(pinned.recipient.bundle));
+    expect(offer.change).toEqual({ pinned: pinned.recipient.bundle, offered: reset.recipient.bundle, declined: false });
+  });
+
+  it("raises no escrow change for a first sight or a chained key", async () => {
+    const first = escrowKey(9);
+    const second = escrowKey(10);
+    expect((await escrowOffer(serverInfo(first), new MemoryEscrowPin())).change).toBeUndefined();
+    const rotation = statement(signEscrowRotation(first.signSeed, first.recipient.bundle, second.recipient.bundle));
+    expect((await escrowOffer(serverInfo(second, first.encodedBundle, [rotation]), new MemoryEscrowPin(first.recipient.bundle))).change).toBeUndefined();
+  });
+
+  it("keeps escrow on the pinned key after a decline, and remembers the declined key", async () => {
+    const pinned = escrowKey(9);
+    const reset = escrowKey(10);
+    const pin = new MemoryEscrowPin(pinned.recipient.bundle);
+    const offer = await escrowOffer(serverInfo(reset), pin);
+    if (offer.change === undefined) throw new Error("no escrow change");
+
+    await declineEscrowChange(pin, offer.change);
+
+    expect(pin.bundle).toEqual(pinned.recipient.bundle);
+    const again = await escrowOffer(serverInfo(reset), pin);
+    expect(again.recipient).toEqual(pinned.recipient);
+    expect(again.change).toEqual({ pinned: pinned.recipient.bundle, offered: reset.recipient.bundle, declined: true });
+  });
+
+  it("asks again after a decline when the server offers another key", async () => {
+    const pinned = escrowKey(9);
+    const pin = new MemoryEscrowPin(pinned.recipient.bundle);
+    const offer = await escrowOffer(serverInfo(escrowKey(10)), pin);
+    if (offer.change === undefined) throw new Error("no escrow change");
+    await declineEscrowChange(pin, offer.change);
+
+    const other = escrowKey(11);
+    expect((await escrowOffer(serverInfo(other), pin)).change).toEqual({ pinned: pinned.recipient.bundle, offered: other.recipient.bundle, declined: false });
+  });
+
+  it("moves the pin to the new key once the user accepts it", async () => {
+    const pinned = escrowKey(9);
+    const reset = escrowKey(10);
+    const pin = new MemoryEscrowPin(pinned.recipient.bundle);
+    const offer = await escrowOffer(serverInfo(reset), pin);
+    if (offer.change === undefined) throw new Error("no escrow change");
+
+    await acceptEscrowChange(pin, offer.change);
+
+    expect(pin.bundle).toEqual(reset.recipient.bundle);
+    expect(await escrowOffer(serverInfo(reset), pin)).toEqual({ recipient: reset.recipient, byDefault: true });
   });
 });
 

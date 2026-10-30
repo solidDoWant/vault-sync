@@ -183,31 +183,49 @@ export function rememberedPassphraseParams(
 }
 
 /**
- * The escrow bundle this device pinned for the server at `serverUrl`, in
- * its plugin data (docs/design/encryption.md, "Escrow key").
+ * The escrow bundle this device pinned for the server at `serverUrl`, and
+ * the unchained bundle its user declined, in its plugin data
+ * (docs/design/encryption.md, "Escrow key", "Escrow reset on a device").
  */
 export function pluginDataEscrowPin(
   data: PluginData,
   save: () => Promise<void>,
   serverUrl: string,
 ): EscrowPin {
+  const stored = () =>
+    data.escrowPins?.find((entry) => entry.serverUrl === serverUrl);
+  const others = () =>
+    (data.escrowPins ?? []).filter((entry) => entry.serverUrl !== serverUrl);
   return {
     load: () => {
-      const stored = data.escrowPins?.find(
-        (entry) => entry.serverUrl === serverUrl,
-      );
+      const pin = stored();
       return Promise.resolve(
-        stored === undefined
+        pin === undefined
           ? undefined
-          : parseEscrowBundle(hexToBytes(stored.bundle)),
+          : parseEscrowBundle(hexToBytes(pin.bundle)),
       );
     },
     save: async (bundle) => {
       data.escrowPins = [
-        ...(data.escrowPins ?? []).filter(
-          (entry) => entry.serverUrl !== serverUrl,
-        ),
+        ...others(),
         { serverUrl, bundle: bytesToHex(encodeEscrowBundle(bundle)) },
+      ];
+      await save();
+    },
+    loadDeclined: () => {
+      const declined = stored()?.declined;
+      return Promise.resolve(
+        declined === undefined
+          ? undefined
+          : parseEscrowBundle(hexToBytes(declined)),
+      );
+    },
+    saveDeclined: async (bundle) => {
+      const pin = stored();
+      if (pin === undefined) throw new Error("no escrow key is pinned on this device");
+      data.escrowPins = [
+        ...others(),
+        { ...pin, declined: bytesToHex(encodeEscrowBundle(bundle)) },
       ];
       await save();
     },

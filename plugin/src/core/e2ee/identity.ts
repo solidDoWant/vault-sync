@@ -188,6 +188,25 @@ export function formatFingerprint(value: Uint8Array): string {
   return (encoded.match(/.{1,4}/g) ?? []).join(" ");
 }
 
+/**
+ * Whether `typed` is the last group of the fingerprint `displayed` shows
+ * (docs/design/encryption.md, "Deliberate confirmation"): with spaces
+ * removed, the typed group takes the place of the displayed last group, and
+ * both strings decode to the same bytes with Crockford base32, whose decoding
+ * ignores case and reads O as 0 and I and L as 1. Anything that does not
+ * decode never matches.
+ */
+export function fingerprintLastGroupMatches(displayed: string, typed: string): boolean {
+  const shown = displayed.replace(/\s+/g, "");
+  const group = typed.replace(/\s+/g, "");
+  if (shown.length !== 32 || group.length !== 4) return false;
+  try {
+    return equalBytes(base32crockford.decode(shown), base32crockford.decode(shown.slice(0, 28) + group));
+  } catch {
+    return false;
+  }
+}
+
 function inviteKey(secret: Uint8Array, vaultId: string, invitationId: string, info: string): Uint8Array {
   requireLength("invitation secret", secret, 16);
   return hkdf(sha256, secret, uuidBytes("vault id", vaultId), concat(label(info), uuidBytes("invitation id", invitationId)), 32);
@@ -348,12 +367,18 @@ export function escrowEqual(left: EscrowBundle, right: EscrowBundle): boolean {
   return equalBytes(left.signPub, right.signPub) && left.recipient === right.recipient;
 }
 
-/** The escrow key id (recipient_id of escrow slots) of an escrow bundle: "sha256:" and the hex SHA-256 of its hybrid public key. */
-export function escrowKeyId(bundle: EscrowBundle): string {
+/** The hybrid public key (1216 bytes) an escrow bundle's age recipient names. */
+export function escrowPublicKey(bundle: EscrowBundle): Uint8Array {
   const decoded = bech32.decode(bundle.recipient as `${string}1${string}`, false);
   if (decoded.prefix !== AGE_RECIPIENT_HRP) throw new Error("e2ee: escrow recipient is not a hybrid age recipient");
   const key = bech32.fromWords(decoded.words);
   requireLength("escrow public key", key, PUBLIC_KEY_SIZE);
+  return key;
+}
+
+/** The escrow key id (recipient_id of escrow slots) of an escrow bundle: "sha256:" and the hex SHA-256 of its hybrid public key. */
+export function escrowKeyId(bundle: EscrowBundle): string {
+  const key = escrowPublicKey(bundle);
   return `sha256:${Array.from(sha256(key), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 

@@ -18,6 +18,7 @@ import {
   bundleOf,
   escrowEqual,
   escrowKeyId,
+  escrowPublicKey,
   escrowReachable,
   parseEscrowBundle,
   verifyEscrowChain,
@@ -42,25 +43,37 @@ export interface EscrowKey extends EscrowRecipient {
 
 /** What the server offers for escrow: its escrow key, if it has one, and whether escrow is on by default. */
 export interface EscrowOffer {
-  /** The escrow key; undefined when the server has none, and escrow cannot be turned on. */
+  /**
+   * The escrow key; undefined when the server has none, and escrow cannot be
+   * turned on. While an escrow change is open, the pinned key.
+   */
   recipient: EscrowKey | undefined;
   /** Whether a new encrypted vault has escrow unless its owner turns it off. */
   byDefault: boolean;
+  /** The open escrow change, if the server's escrow key changed without signed rotation statements from the pin. */
+  change?: EscrowChange;
 }
 
 /**
  * Where a device keeps the deployment's escrow bundle it pinned
- * (docs/design/encryption.md, "Escrow key"): device-local, per server.
+ * (docs/design/encryption.md, "Escrow key"), and the unchained bundle its
+ * user declined ("Escrow reset on a device"): device-local, per server.
  */
 export interface EscrowPin {
   /** The pinned bundle, or undefined before the device first saw one. */
   load(): Promise<EscrowBundle | undefined>;
-  /** Pins `bundle`, replacing the previous pin. */
+  /** Pins `bundle`, replacing the previous pin and forgetting a declined bundle. */
   save(bundle: EscrowBundle): Promise<void>;
+  /** The unchained bundle the user declined last, if any. */
+  loadDeclined(): Promise<EscrowBundle | undefined>;
+  /** Remembers that the user declined `bundle`; the pin stays. */
+  saveDeclined(bundle: EscrowBundle): Promise<void>;
 }
 
 /** An {@link EscrowPin} in memory, for tests. */
 export class MemoryEscrowPin implements EscrowPin {
+  declined: EscrowBundle | undefined;
+
   constructor(public bundle?: EscrowBundle) {}
 
   load(): Promise<EscrowBundle | undefined> {
@@ -69,16 +82,41 @@ export class MemoryEscrowPin implements EscrowPin {
 
   save(bundle: EscrowBundle): Promise<void> {
     this.bundle = bundle;
+    this.declined = undefined;
+    return Promise.resolve();
+  }
+
+  loadDeclined(): Promise<EscrowBundle | undefined> {
+    return Promise.resolve(this.declined);
+  }
+
+  saveDeclined(bundle: EscrowBundle): Promise<void> {
+    this.declined = bundle;
     return Promise.resolve();
   }
 }
 
-/** The server published an escrow key this device cannot reach from its pinned bundle through signed rotation statements. */
-export class EscrowKeyChangedError extends Error {
-  constructor(reason: string) {
-    super(`the server's escrow key changed without a rotation statement signed by the previous escrow key (${reason}); nothing was escrowed to it`);
-    this.name = "EscrowKeyChangedError";
+/** The server published an escrow chain that does not verify: a verification failure, so nothing is escrowed to its keys. */
+export class EscrowChainError extends Error {
+  constructor() {
+    super("the server's escrow chain does not verify: a rotation statement is not signed by the escrow key it replaces; nothing was escrowed to it");
+    this.name = "EscrowChainError";
   }
+}
+
+/**
+ * An escrow change this device has open (docs/design/encryption.md, "Escrow
+ * reset on a device"): the server's escrow bundle is not the pinned one,
+ * and no signed rotation statements lead to it from the pin. Until the user
+ * accepts it, nothing is wrapped to the offered bundle.
+ */
+export interface EscrowChange {
+  /** The bundle this device pinned, which escrow keeps using. */
+  pinned: EscrowBundle;
+  /** The bundle the server publishes now. */
+  offered: EscrowBundle;
+  /** Whether the user declined this offered bundle on this device, so the prompt does not open by itself again. */
+  declined: boolean;
 }
 
 type EscrowInfo = Pick<GetServerInfoResponse, "escrowPublicKey" | "escrowKeyId" | "escrowDefault" | "escrowRootBundle" | "escrowRotations">;
@@ -107,12 +145,14 @@ export function publishedEscrowRotations(info: Pick<GetServerInfoResponse, "escr
  * anything else is refused rather than escrowed to. The current escrow
  * bundle (the last rotation's, or the root bundle) must name the same key.
  *
- * The device pins the current bundle when it first sees it, after checking
- * the published chain from its root. Later, the current bundle must be the
- * pinned one or follow from it through rotation statements, each signed by
- * the key it replaces; the pin then moves to it. Any other change throws
- * {@link EscrowKeyChangedError}, so neither vault creation nor rotation
- * wraps a key to it.
+ * The published chain must verify from its root, each rotation statement
+ * signed by the key it replaces; otherwise it throws
+ * {@link EscrowChainError}. The device pins the current bundle when it first
+ * sees it. Later, when the current bundle follows from the pin through the
+ * chain, the pin moves to it. Any other current bundle is an escrow change
+ * ({@link EscrowChange}): the pin stays, and the offer names the pinned key,
+ * so that nothing is wrapped to the new bundle before the user accepts it
+ * ({@link acceptEscrowChange}).
  */
 export async function escrowOffer(info: EscrowInfo, pin: EscrowPin): Promise<EscrowOffer> {
   if (info.escrowPublicKey.length === 0) return { recipient: undefined, byDefault: false };
@@ -122,20 +162,37 @@ export async function escrowOffer(info: EscrowInfo, pin: EscrowPin): Promise<Esc
   const rotations = publishedEscrowRotations(info);
   const bundle = rotations.at(-1)?.newBundle ?? root;
   if (escrowKeyId(bundle) !== info.escrowKeyId) throw new Error("the server's escrow bundle does not name its escrow key");
+  try {
+    verifyEscrowChain(root, rotations);
+  } catch {
+    throw new EscrowChainError();
+  }
   const pinned = await pin.load();
   if (pinned === undefined) {
-    try {
-      verifyEscrowChain(root, rotations);
-    } catch {
-      throw new EscrowKeyChangedError("the published escrow chain does not verify");
-    }
     await pin.save(bundle);
   } else if (!escrowEqual(pinned, bundle)) {
-    const refusal = escrowReachable(pinned, bundle, rotations);
-    if (refusal !== undefined) throw new EscrowKeyChangedError(refusal);
+    if (escrowReachable(pinned, bundle, rotations) !== undefined) {
+      const declined = await pin.loadDeclined();
+      const change = { pinned, offered: bundle, declined: declined !== undefined && escrowEqual(declined, bundle) };
+      return { recipient: escrowKeyOf(pinned), byDefault: info.escrowDefault, change };
+    }
     await pin.save(bundle);
   }
   return { recipient: { keyId: info.escrowKeyId, publicKey: info.escrowPublicKey, bundle }, byDefault: info.escrowDefault };
+}
+
+function escrowKeyOf(bundle: EscrowBundle): EscrowKey {
+  return { keyId: escrowKeyId(bundle), publicKey: escrowPublicKey(bundle), bundle };
+}
+
+/** The user accepted `change` on this device: the pin moves to the offered bundle. */
+export function acceptEscrowChange(pin: EscrowPin, change: EscrowChange): Promise<void> {
+  return pin.save(change.offered);
+}
+
+/** The user declined `change` on this device: the pin stays, and the prompt opens by itself again only for another bundle. */
+export function declineEscrowChange(pin: EscrowPin, change: EscrowChange): Promise<void> {
+  return pin.saveDeclined(change.offered);
 }
 
 export interface CreateEncryptedVaultOptions {

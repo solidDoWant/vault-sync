@@ -323,4 +323,20 @@ describe("the pinned escrow bundle on a device", () => {
     expect(await pluginDataEscrowPin(restarted, options.save, "https://sync.example").load()).toEqual(bundle);
     expect(await pluginDataEscrowPin(restarted, options.save, "https://other.example").load()).toEqual(other);
   });
+
+  it("remembers a declined escrow bundle across a restart, keeps the pin, and forgets it once the pin moves", async () => {
+    const { data, saved, options } = device(new MemoryUserKeyServer());
+    const pinned = { signPub: signPublicKey(new Uint8Array(32).fill(9)), recipient: ageRecipient(generateKeyPair().publicKey) };
+    const declined = { signPub: signPublicKey(new Uint8Array(32).fill(10)), recipient: ageRecipient(generateKeyPair().publicKey) };
+    await pluginDataEscrowPin(data, options.save, "https://sync.example").save(pinned);
+    await pluginDataEscrowPin(data, options.save, "https://sync.example").saveDeclined(declined);
+
+    const restarted = parsePluginData(JSON.parse(saved.at(-1) ?? "{}"));
+    const pin = pluginDataEscrowPin(restarted, options.save, "https://sync.example");
+    expect(await pin.load()).toEqual(pinned);
+    expect(await pin.loadDeclined()).toEqual(declined);
+
+    await pin.save(declined);
+    expect(await pin.loadDeclined()).toBeUndefined();
+  });
 });
