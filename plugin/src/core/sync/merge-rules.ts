@@ -1,9 +1,12 @@
+import { isBasesPath, mergeBases } from "../merge/bases-merge";
 import { mergeText } from "../merge/text-merge";
 import type { SyncKind } from "./journal";
 
 /** The two sides of a content conflict and how to reach the base (docs/design/engine.md §5, rule M). */
 export interface ContentSides {
   kind: SyncKind;
+  /** The path the merged content is written to; its extension picks the merge strategy within a kind. */
+  path: string;
   local: Uint8Array;
   localHash: string;
   /** The local file's modification time, in ms since the epoch. */
@@ -32,8 +35,9 @@ const encoder = new TextEncoder();
  * side unchanged from the base takes the remote content, as does a local
  * side equal to it. `TEXT` is merged three-way, and when that conflicts the
  * remote version stays at the path and the local one is the copy. `BLOB`:
- * the newer side stays at the path, the remote one on a tie, and the other
- * is the copy.
+ * a Bases (`.base`) file is first merged three-way (mergeBases); otherwise,
+ * or when that merge falls back, the newer side stays at the path, the
+ * remote one on a tie, and the other is the copy.
  */
 export async function mergeContent(sides: ContentSides): Promise<ContentOutcome> {
   const takeRemote: ContentOutcome = { content: sides.remote, copy: null };
@@ -41,7 +45,14 @@ export async function mergeContent(sides: ContentSides): Promise<ContentOutcome>
   // Only the local side changed the content (the remote revision moved or re-created it): no conflict.
   if (sides.remoteHash === sides.baseHash) return { content: sides.local, copy: null };
   const keepRemote: ContentOutcome = { content: sides.remote, copy: sides.local };
-  if (sides.kind === "blob") return sides.localTime > sides.remoteTime ? { content: sides.local, copy: sides.remote } : keepRemote;
+  if (sides.kind === "blob") {
+    if (isBasesPath(sides.path)) {
+      const base = await sides.base();
+      const merged = base === null ? null : mergeBases(base, sides.local, sides.remote);
+      if (merged !== null) return merged === sides.remote ? takeRemote : { content: merged, copy: null };
+    }
+    return sides.localTime > sides.remoteTime ? { content: sides.local, copy: sides.remote } : keepRemote;
+  }
   const local = decode(sides.local);
   const remote = decode(sides.remote);
   if (local === null || remote === null) return keepRemote;

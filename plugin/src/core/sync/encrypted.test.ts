@@ -133,6 +133,24 @@ describe("sync in an end-to-end encrypted vault", () => {
     }
   });
 
+  it("merges edits to different views of one Bases file between devices, with no conflict copy", async () => {
+    const { a, b } = setup();
+    const base = "views:\n  - type: table\n    name: Books\n    limit: 10\n  - type: cards\n    name: Gallery\n";
+    await a.write("Library.base", base);
+    await a.sync();
+    await b.sync();
+    await a.write("Library.base", base.replace("limit: 10", "limit: 200"));
+    await a.sync();
+    await b.write("Library.base", `${base}    order:\n      - file.name\n`);
+    for (let round = 0; round < 3; round++) {
+      await a.sync();
+      await b.sync();
+    }
+    const merged = "views:\n  - type: table\n    name: Books\n    limit: 200\n  - type: cards\n    name: Gallery\n    order:\n      - file.name\n";
+    expect(await b.files()).toEqual({ "Library.base": merged });
+    expect(await a.files()).toEqual({ "Library.base": merged });
+  });
+
   it("syncs an attachment of a few MB arrives byte for byte through ranged transfers", async () => {
     const { a, b } = setup({ maxDownloadBytes: 256 << 10, maxChunkBytes: 256 << 10 });
     const image = new Uint8Array(3 << 20);
