@@ -1,0 +1,12 @@
+-- Converting a plaintext vault to end-to-end encryption in place
+-- (docs/design/encryption.md, "Converting a plaintext vault in place").
+--
+-- conversion_seq is the vault's head_seq at the conversion: the revisions
+-- it already had stay at epoch 0, as plaintext, until the re-key job moves
+-- them, and readers refuse an epoch-0 revision with a later seq. NULL for a
+-- vault that was never converted.
+--
+-- Additive, so the previous release runs unchanged against this schema
+-- during a rolling upgrade (SPEC.md §12): it never names the new column, and
+-- only this release converts vaults.
+ALTER TABLE vaults ADD COLUMN conversion_seq bigint;

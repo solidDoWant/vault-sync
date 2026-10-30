@@ -244,6 +244,7 @@ var VaultProcedures = map[string]authz.Access{
 	vaultsyncv1connect.VaultKeyServiceListStaleRevisionsProcedure:        authz.Manage,
 	vaultsyncv1connect.VaultKeyServiceReplaceRevisionCiphertextProcedure: authz.Manage,
 	vaultsyncv1connect.VaultKeyServiceRetireEpochProcedure:               authz.Manage,
+	vaultsyncv1connect.VaultKeyServiceConvertVaultProcedure:              authz.Manage,
 	// Only owners delete a vault (docs/design/sharing.md).
 	vaultsyncv1connect.VaultServiceDeleteVaultProcedure: authz.Manage,
 }

@@ -101,6 +101,14 @@ func invalidArgument(format string, arguments ...any) error {
 	return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf(format, arguments...))
 }
 
+// vaultEncryptedError refuses a plaintext commit to an end-to-end
+// encrypted vault (docs/design/encryption.md, "Converting a plaintext vault
+// in place").
+func vaultEncryptedError() error {
+	return ReasonError(connect.CodeFailedPrecondition, vaultsyncv1.ErrorReason_ERROR_REASON_VAULT_ENCRYPTED,
+		errors.New("the vault is end-to-end encrypted; unlock the user key, sync the vault's keys, encrypt under the current epoch and retry"))
+}
+
 // pageSize applies the default and the server's cap to a requested size.
 func pageSize(requested uint32, defaultSize, limit int) int {
 	if requested == 0 {
@@ -356,9 +364,17 @@ func (service SyncService) CommitRevision(ctx context.Context, request *connect.
 
 	revision.UserID = user.ID
 
-	encryption, err := vault.Encryption(ctx)
+	state, err := vault.KeyState(ctx)
 	if err != nil {
 		return nil, service.internal(ctx, "cannot commit revision", err)
+	}
+
+	encryption := state.Encryption
+
+	// A plaintext commit to a converted vault: the device has not seen the
+	// vault's conversion yet.
+	if state.Converted && request.Msg.GetEpoch() == 0 {
+		return nil, vaultEncryptedError()
 	}
 
 	if encryption == store.EncryptionNone {
@@ -421,6 +437,8 @@ func (service SyncService) commitError(ctx context.Context, err error) error {
 	case errors.Is(err, store.ErrPathFolderTaken):
 		return connect.NewError(connect.CodeAlreadyExists,
 			errors.New("a live document's path is a folder of this path, or this path is a folder of a live document's (ignoring case and Unicode normalization)"))
+	case errors.Is(err, store.ErrVaultEncrypted):
+		return vaultEncryptedError()
 	case errors.Is(err, store.ErrEpochNotCurrent):
 		return ReasonError(connect.CodeFailedPrecondition, vaultsyncv1.ErrorReason_ERROR_REASON_EPOCH_NOT_CURRENT,
 			errors.New("epoch is not the vault's current key epoch; list the vault's epochs, encrypt under the current one and retry"))

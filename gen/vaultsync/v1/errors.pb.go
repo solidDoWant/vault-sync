@@ -62,6 +62,13 @@ const (
 	// It persists unless an operator restores the vault. The client stops
 	// syncing the vault and keeps its local files.
 	ErrorReason_ERROR_REASON_VAULT_DELETED ErrorReason = 7
+	// FAILED_PRECONDITION from SyncService.CommitRevision: the request is a
+	// plaintext commit (epoch 0), but an owner converted the vault to
+	// end-to-end encryption in place (VaultKeyService.ConvertVault).
+	// The client reloads the vault, unlocks its user key, syncs the vault's
+	// keys, encrypts the pending change under the current epoch and retries
+	// (docs/design/encryption.md, "Converting a plaintext vault in place").
+	ErrorReason_ERROR_REASON_VAULT_ENCRYPTED ErrorReason = 8
 )
 
 // Enum value maps for ErrorReason.
@@ -75,6 +82,7 @@ var (
 		5: "ERROR_REASON_PASSPHRASE_ATTEMPTS_EXHAUSTED",
 		6: "ERROR_REASON_EPOCH_NOT_CURRENT",
 		7: "ERROR_REASON_VAULT_DELETED",
+		8: "ERROR_REASON_VAULT_ENCRYPTED",
 	}
 	ErrorReason_value = map[string]int32{
 		"ERROR_REASON_UNSPECIFIED":                   0,
@@ -85,6 +93,7 @@ var (
 		"ERROR_REASON_PASSPHRASE_ATTEMPTS_EXHAUSTED": 5,
 		"ERROR_REASON_EPOCH_NOT_CURRENT":             6,
 		"ERROR_REASON_VAULT_DELETED":                 7,
+		"ERROR_REASON_VAULT_ENCRYPTED":               8,
 	}
 )
 
@@ -180,7 +189,7 @@ const file_vaultsync_v1_errors_proto_rawDesc = "" +
 	"\vErrorDetail\x121\n" +
 	"\x06reason\x18\x01 \x01(\x0e2\x19.vaultsync.v1.ErrorReasonR\x06reason\x129\n" +
 	"\n" +
-	"retry_time\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\tretryTime*\xb3\x02\n" +
+	"retry_time\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\tretryTime*\xd5\x02\n" +
 	"\vErrorReason\x12\x1c\n" +
 	"\x18ERROR_REASON_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19ERROR_REASON_DEVICE_LIMIT\x10\x01\x12-\n" +
@@ -189,7 +198,8 @@ const file_vaultsync_v1_errors_proto_rawDesc = "" +
 	"\x1dERROR_REASON_WRONG_PASSPHRASE\x10\x04\x12.\n" +
 	"*ERROR_REASON_PASSPHRASE_ATTEMPTS_EXHAUSTED\x10\x05\x12\"\n" +
 	"\x1eERROR_REASON_EPOCH_NOT_CURRENT\x10\x06\x12\x1e\n" +
-	"\x1aERROR_REASON_VAULT_DELETED\x10\aB@Z>github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyncv1b\x06proto3"
+	"\x1aERROR_REASON_VAULT_DELETED\x10\a\x12 \n" +
+	"\x1cERROR_REASON_VAULT_ENCRYPTED\x10\bB@Z>github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyncv1b\x06proto3"
 
 var (
 	file_vaultsync_v1_errors_proto_rawDescOnce sync.Once

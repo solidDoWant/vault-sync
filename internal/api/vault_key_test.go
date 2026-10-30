@@ -142,6 +142,12 @@ func (recorder *keyRecorder) RetireEpoch(context.Context, int32) error {
 	return recorder.err
 }
 
+func (recorder *keyRecorder) ConvertVault(context.Context, uuid.UUID, store.Conversion) (store.Epoch, int64, error) {
+	recorder.calls++
+
+	return store.Epoch{}, 0, recorder.err
+}
+
 var keyCaller = auth.User{ID: uuid.MustParse("01920000-0000-7000-8000-000000000001"), Identity: auth.Identity{Issuer: "https://issuer.example", Subject: "alice"}}
 
 // keyEscrow is the escrow key of keyService: its current id, and a retiring

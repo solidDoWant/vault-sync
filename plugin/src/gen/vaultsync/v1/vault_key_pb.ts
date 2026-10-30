@@ -14,7 +14,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file vaultsync/v1/vault_key.proto.
  */
 export const file_vaultsync_v1_vault_key: GenFile = /*@__PURE__*/
-  fileDesc("Chx2YXVsdHN5bmMvdjEvdmF1bHRfa2V5LnByb3RvEgx2YXVsdHN5bmMudjEixQEKB0tleVNsb3QSDQoFZXBvY2gYASABKA0SNgoOcmVjaXBpZW50X2tpbmQYAiABKA4yHi52YXVsdHN5bmMudjEuS2V5UmVjaXBpZW50S2luZBIUCgxyZWNpcGllbnRfaWQYAyABKAkSEwoLd3JhcHBlZF9rZXkYBCABKAwSFwoPY3JlYXRvcl91c2VyX2lkGAUgASgJEi8KC2NyZWF0ZV90aW1lGAYgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCKzAQoIS2V5RXBvY2gSDQoFZXBvY2gYASABKA0SEgoKY29tbWl0bWVudBgCIAEoDBIXCg9jcmVhdG9yX3VzZXJfaWQYAyABKAkSLwoLY3JlYXRlX3RpbWUYBCABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEikKBnJlY29yZBgFIAEoCzIZLnZhdWx0c3luYy52MS5FcG9jaFJlY29yZBIPCgdyZXRpcmVkGAYgASgIIkYKDkVwb2NoUmVjaXBpZW50EgwKBGtpbmQYASABKA0SFAoMcmVjaXBpZW50X2lkGAIgASgMEhAKCGtleV9oYXNoGAMgASgMInUKC0Vwb2NoUmVjb3JkEg8KB2xvZ19zZXEYASABKAQSEAoIbG9nX2hhc2gYAiABKAwSMAoKcmVjaXBpZW50cxgDIAMoCzIcLnZhdWx0c3luYy52MS5FcG9jaFJlY2lwaWVudBIRCglzaWduYXR1cmUYBCABKAwiXQoJTmV4dEVwb2NoEhYKDmV4cGVjdGVkX2Vwb2NoGAEgASgNEhIKCmNvbW1pdG1lbnQYAiABKAwSJAoFc2xvdHMYAyADKAsyFS52YXVsdHN5bmMudjEuS2V5U2xvdCJBCgtNaXNzaW5nU2xvdBINCgVlcG9jaBgBIAEoDRIPCgd1c2VyX2lkGAIgASgJEhIKCnB1YmxpY19rZXkYAyABKAwihgEKE0xpc3RLZXlTbG90c1JlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkSEQoJcGFnZV9zaXplGAIgASgNEhIKCnBhZ2VfdG9rZW4YAyABKAkSNgoOcmVjaXBpZW50X2tpbmQYBCABKA4yHi52YXVsdHN5bmMudjEuS2V5UmVjaXBpZW50S2luZCJVChRMaXN0S2V5U2xvdHNSZXNwb25zZRIkCgVzbG90cxgBIAMoCzIVLnZhdWx0c3luYy52MS5LZXlTbG90EhcKD25leHRfcGFnZV90b2tlbhgCIAEoCSJMChFMaXN0RXBvY2hzUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRIRCglwYWdlX3NpemUYAiABKA0SEgoKcGFnZV90b2tlbhgDIAEoCSKGAQoSTGlzdEVwb2Noc1Jlc3BvbnNlEiYKBmVwb2NocxgBIAMoCzIWLnZhdWx0c3luYy52MS5LZXlFcG9jaBIXCg9uZXh0X3BhZ2VfdG9rZW4YAiABKAkSFQoNY3VycmVudF9lcG9jaBgDIAEoDRIYChByb3RhdGlvbl9wZW5kaW5nGAQgASgIIlIKF0xpc3RNaXNzaW5nU2xvdHNSZXF1ZXN0EhAKCHZhdWx0X2lkGAEgASgJEhEKCXBhZ2Vfc2l6ZRgCIAEoDRISCgpwYWdlX3Rva2VuGAMgASgJImUKGExpc3RNaXNzaW5nU2xvdHNSZXNwb25zZRIwCg1taXNzaW5nX3Nsb3RzGAEgAygLMhkudmF1bHRzeW5jLnYxLk1pc3NpbmdTbG90EhcKD25leHRfcGFnZV90b2tlbhgCIAEoCSKsAQoSUm90YXRlRXBvY2hSZXF1ZXN0EhAKCHZhdWx0X2lkGAEgASgJEisKCm5leHRfZXBvY2gYAiABKAsyFy52YXVsdHN5bmMudjEuTmV4dEVwb2NoEikKBnJlY29yZBgDIAEoCzIZLnZhdWx0c3luYy52MS5FcG9jaFJlY29yZBIsCgxlc2Nyb3dfZW50cnkYBCABKAsyFi52YXVsdHN5bmMudjEuTG9nRW50cnkiPAoTUm90YXRlRXBvY2hSZXNwb25zZRIlCgVlcG9jaBgBIAEoCzIWLnZhdWx0c3luYy52MS5LZXlFcG9jaCJMChJBZGRLZXlTbG90c1JlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkSJAoFc2xvdHMYAiADKAsyFS52YXVsdHN5bmMudjEuS2V5U2xvdCIkChNBZGRLZXlTbG90c1Jlc3BvbnNlEg0KBWFkZGVkGAEgASgNImcKFUxpc3RMb2dFbnRyaWVzUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRIRCglwYWdlX3NpemUYAiABKA0SEgoKcGFnZV90b2tlbhgDIAEoCRIVCg1pbnZpdGF0aW9uX2lkGAQgASgJIloKFkxpc3RMb2dFbnRyaWVzUmVzcG9uc2USJwoHZW50cmllcxgBIAMoCzIWLnZhdWx0c3luYy52MS5Mb2dFbnRyeRIXCg9uZXh0X3BhZ2VfdG9rZW4YAiABKAkiVAoZTGlzdFN0YWxlUmV2aXNpb25zUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRIRCglwYWdlX3NpemUYAiABKA0SEgoKcGFnZV90b2tlbhgDIAEoCSJ3ChpMaXN0U3RhbGVSZXZpc2lvbnNSZXNwb25zZRIpCglyZXZpc2lvbnMYASADKAsyFi52YXVsdHN5bmMudjEuUmV2aXNpb24SFwoPbmV4dF9wYWdlX3Rva2VuGAIgASgJEhUKDWN1cnJlbnRfZXBvY2gYAyABKA0irAEKIFJlcGxhY2VSZXZpc2lvbkNpcGhlcnRleHRSZXF1ZXN0EhAKCHZhdWx0X2lkGAEgASgJEhMKC3JldmlzaW9uX2lkGAIgASgJEhIKCmZyb21fZXBvY2gYAyABKA0SEAoIdG9fZXBvY2gYBCABKA0SDAoEcGF0aBgFIAEoDBItCgtjb250ZW50X3JlZhgGIAEoCzIYLnZhdWx0c3luYy52MS5Db250ZW50UmVmIjUKIVJlcGxhY2VSZXZpc2lvbkNpcGhlcnRleHRSZXNwb25zZRIQCghyZXBsYWNlZBgBIAEoCCI1ChJSZXRpcmVFcG9jaFJlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkSDQoFZXBvY2gYAiABKA0iFQoTUmV0aXJlRXBvY2hSZXNwb25zZSqVAQoQS2V5UmVjaXBpZW50S2luZBIiCh5LRVlfUkVDSVBJRU5UX0tJTkRfVU5TUEVDSUZJRUQQABIbChdLRVlfUkVDSVBJRU5UX0tJTkRfVVNFUhABEh0KGUtFWV9SRUNJUElFTlRfS0lORF9FU0NST1cQAhIhCh1LRVlfUkVDSVBJRU5UX0tJTkRfSU5WSVRBVElPThADMu4GCg9WYXVsdEtleVNlcnZpY2USVwoMTGlzdEtleVNsb3RzEiEudmF1bHRzeW5jLnYxLkxpc3RLZXlTbG90c1JlcXVlc3QaIi52YXVsdHN5bmMudjEuTGlzdEtleVNsb3RzUmVzcG9uc2UiABJRCgpMaXN0RXBvY2hzEh8udmF1bHRzeW5jLnYxLkxpc3RFcG9jaHNSZXF1ZXN0GiAudmF1bHRzeW5jLnYxLkxpc3RFcG9jaHNSZXNwb25zZSIAEmMKEExpc3RNaXNzaW5nU2xvdHMSJS52YXVsdHN5bmMudjEuTGlzdE1pc3NpbmdTbG90c1JlcXVlc3QaJi52YXVsdHN5bmMudjEuTGlzdE1pc3NpbmdTbG90c1Jlc3BvbnNlIgASVAoLUm90YXRlRXBvY2gSIC52YXVsdHN5bmMudjEuUm90YXRlRXBvY2hSZXF1ZXN0GiEudmF1bHRzeW5jLnYxLlJvdGF0ZUVwb2NoUmVzcG9uc2UiABJUCgtBZGRLZXlTbG90cxIgLnZhdWx0c3luYy52MS5BZGRLZXlTbG90c1JlcXVlc3QaIS52YXVsdHN5bmMudjEuQWRkS2V5U2xvdHNSZXNwb25zZSIAEl0KDkxpc3RMb2dFbnRyaWVzEiMudmF1bHRzeW5jLnYxLkxpc3RMb2dFbnRyaWVzUmVxdWVzdBokLnZhdWx0c3luYy52MS5MaXN0TG9nRW50cmllc1Jlc3BvbnNlIgASaQoSTGlzdFN0YWxlUmV2aXNpb25zEicudmF1bHRzeW5jLnYxLkxpc3RTdGFsZVJldmlzaW9uc1JlcXVlc3QaKC52YXVsdHN5bmMudjEuTGlzdFN0YWxlUmV2aXNpb25zUmVzcG9uc2UiABJ+ChlSZXBsYWNlUmV2aXNpb25DaXBoZXJ0ZXh0Ei4udmF1bHRzeW5jLnYxLlJlcGxhY2VSZXZpc2lvbkNpcGhlcnRleHRSZXF1ZXN0Gi8udmF1bHRzeW5jLnYxLlJlcGxhY2VSZXZpc2lvbkNpcGhlcnRleHRSZXNwb25zZSIAElQKC1JldGlyZUVwb2NoEiAudmF1bHRzeW5jLnYxLlJldGlyZUVwb2NoUmVxdWVzdBohLnZhdWx0c3luYy52MS5SZXRpcmVFcG9jaFJlc3BvbnNlIgBCQFo+Z2l0aHViLmNvbS9zb2xpZERvV2FudC92YXVsdC1zeW5jL2dlbi92YXVsdHN5bmMvdjE7dmF1bHRzeW5jdjFiBnByb3RvMw", [file_google_protobuf_timestamp, file_vaultsync_v1_types]);
+  fileDesc("Chx2YXVsdHN5bmMvdjEvdmF1bHRfa2V5LnByb3RvEgx2YXVsdHN5bmMudjEixQEKB0tleVNsb3QSDQoFZXBvY2gYASABKA0SNgoOcmVjaXBpZW50X2tpbmQYAiABKA4yHi52YXVsdHN5bmMudjEuS2V5UmVjaXBpZW50S2luZBIUCgxyZWNpcGllbnRfaWQYAyABKAkSEwoLd3JhcHBlZF9rZXkYBCABKAwSFwoPY3JlYXRvcl91c2VyX2lkGAUgASgJEi8KC2NyZWF0ZV90aW1lGAYgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCKzAQoIS2V5RXBvY2gSDQoFZXBvY2gYASABKA0SEgoKY29tbWl0bWVudBgCIAEoDBIXCg9jcmVhdG9yX3VzZXJfaWQYAyABKAkSLwoLY3JlYXRlX3RpbWUYBCABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEikKBnJlY29yZBgFIAEoCzIZLnZhdWx0c3luYy52MS5FcG9jaFJlY29yZBIPCgdyZXRpcmVkGAYgASgIIkYKDkVwb2NoUmVjaXBpZW50EgwKBGtpbmQYASABKA0SFAoMcmVjaXBpZW50X2lkGAIgASgMEhAKCGtleV9oYXNoGAMgASgMInUKC0Vwb2NoUmVjb3JkEg8KB2xvZ19zZXEYASABKAQSEAoIbG9nX2hhc2gYAiABKAwSMAoKcmVjaXBpZW50cxgDIAMoCzIcLnZhdWx0c3luYy52MS5FcG9jaFJlY2lwaWVudBIRCglzaWduYXR1cmUYBCABKAwiXQoJTmV4dEVwb2NoEhYKDmV4cGVjdGVkX2Vwb2NoGAEgASgNEhIKCmNvbW1pdG1lbnQYAiABKAwSJAoFc2xvdHMYAyADKAsyFS52YXVsdHN5bmMudjEuS2V5U2xvdCJBCgtNaXNzaW5nU2xvdBINCgVlcG9jaBgBIAEoDRIPCgd1c2VyX2lkGAIgASgJEhIKCnB1YmxpY19rZXkYAyABKAwihgEKE0xpc3RLZXlTbG90c1JlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkSEQoJcGFnZV9zaXplGAIgASgNEhIKCnBhZ2VfdG9rZW4YAyABKAkSNgoOcmVjaXBpZW50X2tpbmQYBCABKA4yHi52YXVsdHN5bmMudjEuS2V5UmVjaXBpZW50S2luZCJVChRMaXN0S2V5U2xvdHNSZXNwb25zZRIkCgVzbG90cxgBIAMoCzIVLnZhdWx0c3luYy52MS5LZXlTbG90EhcKD25leHRfcGFnZV90b2tlbhgCIAEoCSJMChFMaXN0RXBvY2hzUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRIRCglwYWdlX3NpemUYAiABKA0SEgoKcGFnZV90b2tlbhgDIAEoCSKeAQoSTGlzdEVwb2Noc1Jlc3BvbnNlEiYKBmVwb2NocxgBIAMoCzIWLnZhdWx0c3luYy52MS5LZXlFcG9jaBIXCg9uZXh0X3BhZ2VfdG9rZW4YAiABKAkSFQoNY3VycmVudF9lcG9jaBgDIAEoDRIYChByb3RhdGlvbl9wZW5kaW5nGAQgASgIEhYKDmNvbnZlcnNpb25fc2VxGAUgASgEIlIKF0xpc3RNaXNzaW5nU2xvdHNSZXF1ZXN0EhAKCHZhdWx0X2lkGAEgASgJEhEKCXBhZ2Vfc2l6ZRgCIAEoDRISCgpwYWdlX3Rva2VuGAMgASgJImUKGExpc3RNaXNzaW5nU2xvdHNSZXNwb25zZRIwCg1taXNzaW5nX3Nsb3RzGAEgAygLMhkudmF1bHRzeW5jLnYxLk1pc3NpbmdTbG90EhcKD25leHRfcGFnZV90b2tlbhgCIAEoCSKsAQoSUm90YXRlRXBvY2hSZXF1ZXN0EhAKCHZhdWx0X2lkGAEgASgJEisKCm5leHRfZXBvY2gYAiABKAsyFy52YXVsdHN5bmMudjEuTmV4dEVwb2NoEikKBnJlY29yZBgDIAEoCzIZLnZhdWx0c3luYy52MS5FcG9jaFJlY29yZBIsCgxlc2Nyb3dfZW50cnkYBCABKAsyFi52YXVsdHN5bmMudjEuTG9nRW50cnkiPAoTUm90YXRlRXBvY2hSZXNwb25zZRIlCgVlcG9jaBgBIAEoCzIWLnZhdWx0c3luYy52MS5LZXlFcG9jaCJMChJBZGRLZXlTbG90c1JlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkSJAoFc2xvdHMYAiADKAsyFS52YXVsdHN5bmMudjEuS2V5U2xvdCIkChNBZGRLZXlTbG90c1Jlc3BvbnNlEg0KBWFkZGVkGAEgASgNImcKFUxpc3RMb2dFbnRyaWVzUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRIRCglwYWdlX3NpemUYAiABKA0SEgoKcGFnZV90b2tlbhgDIAEoCRIVCg1pbnZpdGF0aW9uX2lkGAQgASgJIloKFkxpc3RMb2dFbnRyaWVzUmVzcG9uc2USJwoHZW50cmllcxgBIAMoCzIWLnZhdWx0c3luYy52MS5Mb2dFbnRyeRIXCg9uZXh0X3BhZ2VfdG9rZW4YAiABKAkiVAoZTGlzdFN0YWxlUmV2aXNpb25zUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRIRCglwYWdlX3NpemUYAiABKA0SEgoKcGFnZV90b2tlbhgDIAEoCSJ3ChpMaXN0U3RhbGVSZXZpc2lvbnNSZXNwb25zZRIpCglyZXZpc2lvbnMYASADKAsyFi52YXVsdHN5bmMudjEuUmV2aXNpb24SFwoPbmV4dF9wYWdlX3Rva2VuGAIgASgJEhUKDWN1cnJlbnRfZXBvY2gYAyABKA0irAEKIFJlcGxhY2VSZXZpc2lvbkNpcGhlcnRleHRSZXF1ZXN0EhAKCHZhdWx0X2lkGAEgASgJEhMKC3JldmlzaW9uX2lkGAIgASgJEhIKCmZyb21fZXBvY2gYAyABKA0SEAoIdG9fZXBvY2gYBCABKA0SDAoEcGF0aBgFIAEoDBItCgtjb250ZW50X3JlZhgGIAEoCzIYLnZhdWx0c3luYy52MS5Db250ZW50UmVmIjUKIVJlcGxhY2VSZXZpc2lvbkNpcGhlcnRleHRSZXNwb25zZRIQCghyZXBsYWNlZBgBIAEoCCI1ChJSZXRpcmVFcG9jaFJlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkSDQoFZXBvY2gYAiABKA0iFQoTUmV0aXJlRXBvY2hSZXNwb25zZSI4Cg9Eb2N1bWVudFBhdGhLZXkSEwoLZG9jdW1lbnRfaWQYASABKAkSEAoIcGF0aF9rZXkYAiABKAwimQIKE0NvbnZlcnRWYXVsdFJlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkSJwoHZ2VuZXNpcxgCIAEoCzIWLnZhdWx0c3luYy52MS5Mb2dFbnRyeRItCg1tZW1iZXJzX2VudHJ5GAMgASgLMhYudmF1bHRzeW5jLnYxLkxvZ0VudHJ5EisKCm5leHRfZXBvY2gYBCABKAsyFy52YXVsdHN5bmMudjEuTmV4dEVwb2NoEikKBnJlY29yZBgFIAEoCzIZLnZhdWx0c3luYy52MS5FcG9jaFJlY29yZBIOCgZlc2Nyb3cYBiABKAgSMAoJcGF0aF9rZXlzGAcgAygLMh0udmF1bHRzeW5jLnYxLkRvY3VtZW50UGF0aEtleSJVChRDb252ZXJ0VmF1bHRSZXNwb25zZRIlCgVlcG9jaBgBIAEoCzIWLnZhdWx0c3luYy52MS5LZXlFcG9jaBIWCg5jb252ZXJzaW9uX3NlcRgCIAEoBCJNChFDb252ZXJzaW9uUmVmdXNlZBIbChNtZW1iZXJzX3dpdGhvdXRfa2V5GAEgAygJEhsKE3BlbmRpbmdfaW52aXRhdGlvbnMYAiADKAkqlQEKEEtleVJlY2lwaWVudEtpbmQSIgoeS0VZX1JFQ0lQSUVOVF9LSU5EX1VOU1BFQ0lGSUVEEAASGwoXS0VZX1JFQ0lQSUVOVF9LSU5EX1VTRVIQARIdChlLRVlfUkVDSVBJRU5UX0tJTkRfRVNDUk9XEAISIQodS0VZX1JFQ0lQSUVOVF9LSU5EX0lOVklUQVRJT04QAzLHBwoPVmF1bHRLZXlTZXJ2aWNlElcKDExpc3RLZXlTbG90cxIhLnZhdWx0c3luYy52MS5MaXN0S2V5U2xvdHNSZXF1ZXN0GiIudmF1bHRzeW5jLnYxLkxpc3RLZXlTbG90c1Jlc3BvbnNlIgASUQoKTGlzdEVwb2NocxIfLnZhdWx0c3luYy52MS5MaXN0RXBvY2hzUmVxdWVzdBogLnZhdWx0c3luYy52MS5MaXN0RXBvY2hzUmVzcG9uc2UiABJjChBMaXN0TWlzc2luZ1Nsb3RzEiUudmF1bHRzeW5jLnYxLkxpc3RNaXNzaW5nU2xvdHNSZXF1ZXN0GiYudmF1bHRzeW5jLnYxLkxpc3RNaXNzaW5nU2xvdHNSZXNwb25zZSIAElQKC1JvdGF0ZUVwb2NoEiAudmF1bHRzeW5jLnYxLlJvdGF0ZUVwb2NoUmVxdWVzdBohLnZhdWx0c3luYy52MS5Sb3RhdGVFcG9jaFJlc3BvbnNlIgASVAoLQWRkS2V5U2xvdHMSIC52YXVsdHN5bmMudjEuQWRkS2V5U2xvdHNSZXF1ZXN0GiEudmF1bHRzeW5jLnYxLkFkZEtleVNsb3RzUmVzcG9uc2UiABJdCg5MaXN0TG9nRW50cmllcxIjLnZhdWx0c3luYy52MS5MaXN0TG9nRW50cmllc1JlcXVlc3QaJC52YXVsdHN5bmMudjEuTGlzdExvZ0VudHJpZXNSZXNwb25zZSIAEmkKEkxpc3RTdGFsZVJldmlzaW9ucxInLnZhdWx0c3luYy52MS5MaXN0U3RhbGVSZXZpc2lvbnNSZXF1ZXN0GigudmF1bHRzeW5jLnYxLkxpc3RTdGFsZVJldmlzaW9uc1Jlc3BvbnNlIgASfgoZUmVwbGFjZVJldmlzaW9uQ2lwaGVydGV4dBIuLnZhdWx0c3luYy52MS5SZXBsYWNlUmV2aXNpb25DaXBoZXJ0ZXh0UmVxdWVzdBovLnZhdWx0c3luYy52MS5SZXBsYWNlUmV2aXNpb25DaXBoZXJ0ZXh0UmVzcG9uc2UiABJUCgtSZXRpcmVFcG9jaBIgLnZhdWx0c3luYy52MS5SZXRpcmVFcG9jaFJlcXVlc3QaIS52YXVsdHN5bmMudjEuUmV0aXJlRXBvY2hSZXNwb25zZSIAElcKDENvbnZlcnRWYXVsdBIhLnZhdWx0c3luYy52MS5Db252ZXJ0VmF1bHRSZXF1ZXN0GiIudmF1bHRzeW5jLnYxLkNvbnZlcnRWYXVsdFJlc3BvbnNlIgBCQFo+Z2l0aHViLmNvbS9zb2xpZERvV2FudC92YXVsdC1zeW5jL2dlbi92YXVsdHN5bmMvdjE7dmF1bHRzeW5jdjFiBnByb3RvMw", [file_google_protobuf_timestamp, file_vaultsync_v1_types]);
 
 /**
  * KeySlot is an epoch key wrapped to one recipient.
@@ -437,6 +437,16 @@ export type ListEpochsResponse = Message<"vaultsync.v1.ListEpochsResponse"> & {
    * @generated from field: bool rotation_pending = 4;
    */
   rotationPending: boolean;
+
+  /**
+   * For a vault converted in place (ConvertVault), the vault's head_seq at
+   * the conversion: only revisions with a seq at most this may be at epoch
+   * 0, and they are plaintext. 0 for a vault that was never converted, or
+   * was converted with no revisions; then no revision may be at epoch 0.
+   *
+   * @generated from field: uint64 conversion_seq = 5;
+   */
+  conversionSeq: bigint;
 };
 
 /**
@@ -904,6 +914,163 @@ export const RetireEpochResponseSchema: GenMessage<RetireEpochResponse> = /*@__P
   messageDesc(file_vaultsync_v1_vault_key, 23);
 
 /**
+ * DocumentPathKey is the end-to-end encrypted path key of one live document.
+ *
+ * @generated from message vaultsync.v1.DocumentPathKey
+ */
+export type DocumentPathKey = Message<"vaultsync.v1.DocumentPathKey"> & {
+  /**
+   * The document, a canonical lowercase UUID.
+   *
+   * @generated from field: string document_id = 1;
+   */
+  documentId: string;
+
+  /**
+   * HMAC-SHA256(path_key_secret, normalize(path)) of the document's current
+   * path, with path_key_secret derived from epoch 1's key
+   * (docs/design/crypto.md): exactly 32 bytes.
+   *
+   * @generated from field: bytes path_key = 2;
+   */
+  pathKey: Uint8Array;
+};
+
+/**
+ * Describes the message vaultsync.v1.DocumentPathKey.
+ * Use `create(DocumentPathKeySchema)` to create a new message.
+ */
+export const DocumentPathKeySchema: GenMessage<DocumentPathKey> = /*@__PURE__*/
+  messageDesc(file_vaultsync_v1_vault_key, 24);
+
+/**
+ * ConvertVaultRequest converts a plaintext vault to end-to-end encryption.
+ *
+ * @generated from message vaultsync.v1.ConvertVaultRequest
+ */
+export type ConvertVaultRequest = Message<"vaultsync.v1.ConvertVaultRequest"> & {
+  /**
+   * The vault. The caller must be an owner.
+   *
+   * @generated from field: string vault_id = 1;
+   */
+  vaultId: string;
+
+  /**
+   * The genesis entry of the vault's membership log (seq 1), signed by the
+   * caller, naming the caller as creator and recording the escrow key
+   * exactly when escrow is set.
+   *
+   * @generated from field: vaultsync.v1.LogEntry genesis = 2;
+   */
+  genesis?: LogEntry | undefined;
+
+  /**
+   * The members entry (seq 2, type 9), signed by the caller, listing every
+   * other member with their role and keys. Unset only when the caller is
+   * the vault's only member.
+   *
+   * @generated from field: vaultsync.v1.LogEntry members_entry = 3;
+   */
+  membersEntry?: LogEntry | undefined;
+
+  /**
+   * Epoch 1: expected_epoch 0, its commitment and a slot for every member
+   * (and the escrow key with escrow).
+   *
+   * @generated from field: vaultsync.v1.NextEpoch next_epoch = 4;
+   */
+  nextEpoch?: NextEpoch | undefined;
+
+  /**
+   * Epoch 1's signed record, naming the log's last entry.
+   *
+   * @generated from field: vaultsync.v1.EpochRecord record = 5;
+   */
+  record?: EpochRecord | undefined;
+
+  /**
+   * Whether the converted vault has escrow (SPEC.md §9.4).
+   *
+   * @generated from field: bool escrow = 6;
+   */
+  escrow: boolean;
+
+  /**
+   * The path key of every live (not deleted) document of the vault, one
+   * per document.
+   *
+   * @generated from field: repeated vaultsync.v1.DocumentPathKey path_keys = 7;
+   */
+  pathKeys: DocumentPathKey[];
+};
+
+/**
+ * Describes the message vaultsync.v1.ConvertVaultRequest.
+ * Use `create(ConvertVaultRequestSchema)` to create a new message.
+ */
+export const ConvertVaultRequestSchema: GenMessage<ConvertVaultRequest> = /*@__PURE__*/
+  messageDesc(file_vaultsync_v1_vault_key, 25);
+
+/**
+ * ConvertVaultResponse returns the vault's first epoch.
+ *
+ * @generated from message vaultsync.v1.ConvertVaultResponse
+ */
+export type ConvertVaultResponse = Message<"vaultsync.v1.ConvertVaultResponse"> & {
+  /**
+   * Epoch 1.
+   *
+   * @generated from field: vaultsync.v1.KeyEpoch epoch = 1;
+   */
+  epoch?: KeyEpoch | undefined;
+
+  /**
+   * The vault's head_seq at the conversion (ListEpochsResponse.conversion_seq).
+   *
+   * @generated from field: uint64 conversion_seq = 2;
+   */
+  conversionSeq: bigint;
+};
+
+/**
+ * Describes the message vaultsync.v1.ConvertVaultResponse.
+ * Use `create(ConvertVaultResponseSchema)` to create a new message.
+ */
+export const ConvertVaultResponseSchema: GenMessage<ConvertVaultResponse> = /*@__PURE__*/
+  messageDesc(file_vaultsync_v1_vault_key, 26);
+
+/**
+ * ConversionRefused is attached to ConvertVault's FAILED_PRECONDITION
+ * error when the vault cannot be converted yet. It lists what blocks it.
+ *
+ * @generated from message vaultsync.v1.ConversionRefused
+ */
+export type ConversionRefused = Message<"vaultsync.v1.ConversionRefused"> & {
+  /**
+   * The members without a user key, or with one that has no signing key,
+   * as canonical lowercase UUIDs, sorted.
+   *
+   * @generated from field: repeated string members_without_key = 1;
+   */
+  membersWithoutKey: string[];
+
+  /**
+   * The vault's pending invitations, as canonical lowercase UUIDs, sorted.
+   *
+   * @generated from field: repeated string pending_invitations = 2;
+   */
+  pendingInvitations: string[];
+};
+
+/**
+ * Describes the message vaultsync.v1.ConversionRefused.
+ * Use `create(ConversionRefusedSchema)` to create a new message.
+ */
+export const ConversionRefusedSchema: GenMessage<ConversionRefused> = /*@__PURE__*/
+  messageDesc(file_vaultsync_v1_vault_key, 27);
+
+/**
  * KeyRecipientKind is whom a key slot wraps an epoch key to.
  *
  * @generated from enum vaultsync.v1.KeyRecipientKind
@@ -966,11 +1133,13 @@ export const KeyRecipientKindSchema: GenEnum<KeyRecipientKind> = /*@__PURE__*/
  *
  * ListKeySlots, ListEpochs and ListLogEntries are open to every member, and
  * ListLogEntries also to the holder of a pending invitation's id; ListMissingSlots,
- * RotateEpoch, AddKeySlots, ListStaleRevisions, ReplaceRevisionCiphertext and RetireEpoch are owner-only (PERMISSION_DENIED for editors
+ * RotateEpoch, AddKeySlots, ListStaleRevisions, ReplaceRevisionCiphertext,
+ * RetireEpoch and ConvertVault are owner-only (PERMISSION_DENIED for editors
  * and viewers). A caller who is not a member gets NOT_FOUND, as for a vault
  * that does not exist. On a plaintext vault the lists are empty, and
  * RotateEpoch, AddKeySlots, ReplaceRevisionCiphertext and RetireEpoch are
- * FAILED_PRECONDITION.
+ * FAILED_PRECONDITION; ConvertVault turns a plaintext vault into an E2EE
+ * one.
  *
  * @generated from service vaultsync.v1.VaultKeyService
  */
@@ -1151,6 +1320,50 @@ export const VaultKeyService: GenService<{
     methodKind: "unary";
     input: typeof RetireEpochRequestSchema;
     output: typeof RetireEpochResponseSchema;
+  },
+  /**
+   * ConvertVault converts a plaintext vault to end-to-end encryption in
+   * place (docs/design/encryption.md, "Converting a plaintext vault in
+   * place"). In one transaction, under the vault row lock that commits and
+   * membership changes take, it stores the vault's membership log (genesis,
+   * then the members entry), creates epoch 1 with its slots and signed
+   * record, replaces the path_key of every live document with the
+   * submitted HMAC path key, and switches the vault to
+   * VAULT_ENCRYPTION_E2EE. Members, documents and history are kept. The
+   * stored revisions stay at epoch 0, as plaintext, until the re-key job
+   * moves them (ReplaceRevisionCiphertext). The response, and from then on
+   * ListEpochsResponse.conversion_seq, gives the vault's head_seq at the
+   * switch: every epoch-0 revision has a seq at most this, and readers
+   * refuse an epoch-0 revision with a later seq. After the switch a
+   * plaintext commit gets FAILED_PRECONDITION with reason
+   * ERROR_REASON_VAULT_ENCRYPTED.
+   *
+   * The log must name exactly the vault's members, with their roles and
+   * their current keys as UserKeyService stores them: the genesis entry
+   * (seq 1) is signed by the caller and names them as creator, and the
+   * members entry (seq 2) lists every other member. A vault whose caller is
+   * its only member needs no members entry. Epoch 1's record names the
+   * log's last entry.
+   *
+   * Errors: FAILED_PRECONDITION with a ConversionRefused error detail when
+   * a member has no user key (or one without a signing key) or the vault
+   * has pending invitations, which have no keys to wrap to: the owner
+   * revokes them, the members create their keys, then the owner retries;
+   * FAILED_PRECONDITION without that detail for a vault that is already end-to-end
+   * encrypted, and for escrow on a server without an escrow key; ABORTED when the
+   * log does not name the vault's current members, roles and keys, or
+   * path_keys do not name exactly the vault's live documents (they
+   * changed meanwhile: list them again and retry); INVALID_ARGUMENT for
+   * out-of-bounds fields, entries or a record that do not verify, slots
+   * that are not the record's recipients, or two live documents with the
+   * same path key. Nothing changes unless the conversion succeeds.
+   *
+   * @generated from rpc vaultsync.v1.VaultKeyService.ConvertVault
+   */
+  convertVault: {
+    methodKind: "unary";
+    input: typeof ConvertVaultRequestSchema;
+    output: typeof ConvertVaultResponseSchema;
   },
 }> = /*@__PURE__*/
   serviceDesc(file_vaultsync_v1_vault_key, 0);

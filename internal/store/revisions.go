@@ -233,10 +233,14 @@ func (vault *VaultStore) commitRevision(ctx context.Context, tx pgx.Tx, revision
 	// take KEY SHARE locks on it and must not be blocked.
 	var encryption Encryption
 
-	var currentEpoch int32
+	var (
+		currentEpoch int32
+		converted    bool
+	)
 
-	err := tx.QueryRow(ctx, `SELECT encryption, current_epoch FROM vaults WHERE id = $1 FOR NO KEY UPDATE`, vault.vaultID).
-		Scan(&encryption, &currentEpoch)
+	err := tx.QueryRow(ctx, `
+		SELECT encryption, current_epoch, conversion_seq IS NOT NULL FROM vaults WHERE id = $1 FOR NO KEY UPDATE`, vault.vaultID).
+		Scan(&encryption, &currentEpoch, &converted)
 	if err != nil {
 		return Revision{}, notFound(err, "lock vault")
 	}
@@ -276,6 +280,13 @@ func (vault *VaultStore) commitRevision(ctx context.Context, tx pgx.Tx, revision
 	// replica, has replaced (SPEC.md §9.3). A pending rotation leaves the
 	// current epoch in place, so commits under it go on until the next
 	// epoch exists.
+	// A plaintext commit to a converted vault: the vault was converted
+	// after the device last read it (ConvertVault). A vault created
+	// encrypted never had plaintext commits.
+	if converted && revision.Epoch == 0 {
+		return Revision{}, ErrVaultEncrypted
+	}
+
 	if revision.Epoch != currentEpoch || (encryption == EncryptionE2EE && currentEpoch == 0) {
 		return Revision{}, ErrEpochNotCurrent
 	}

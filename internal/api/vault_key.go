@@ -71,6 +71,7 @@ type VaultKeyStore interface {
 	ListStaleRevisions(ctx context.Context, after int64, limit int) (store.StaleRevisions, error)
 	ReplaceRevisionCiphertext(ctx context.Context, replacement store.RevisionCiphertext) (bool, error)
 	RetireEpoch(ctx context.Context, epoch int32) error
+	ConvertVault(ctx context.Context, creatorID uuid.UUID, conversion store.Conversion) (store.Epoch, int64, error)
 }
 
 // KeysOf returns the VaultKeyService.Keys of a store.
@@ -231,6 +232,7 @@ func (service VaultKeyService) ListEpochs(ctx context.Context, request *connect.
 	response := &vaultsyncv1.ListEpochsResponse{
 		CurrentEpoch:    uint32(max(state.CurrentEpoch, 0)),
 		RotationPending: state.RotationPending,
+		ConversionSeq:   uint64(max(state.ConversionSeq, 0)),
 	}
 	budget := newPageBudget(request.Header(), service.Limits.MaxResponseBytes)
 

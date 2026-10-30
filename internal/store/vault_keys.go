@@ -92,6 +92,12 @@ type KeyState struct {
 	CurrentEpoch int32
 	// RotationPending asks an owner client to create the next epoch.
 	RotationPending bool
+	// ConversionSeq is, for a vault converted in place (ConvertVault), its
+	// head_seq at the conversion: only revisions up to it may be at epoch
+	// 0. 0 for a vault never converted.
+	ConversionSeq int64
+	// Converted is set for a vault converted in place.
+	Converted bool
 }
 
 // NextEpoch is the epoch after ExpectedEpoch: its commitment and its key
@@ -133,8 +139,10 @@ func lockKeyState(ctx context.Context, tx pgx.Tx, vaultID uuid.UUID) (KeyState, 
 func keyState(ctx context.Context, db querier, vaultID uuid.UUID, lock string) (KeyState, error) {
 	var state KeyState
 
-	err := db.QueryRow(ctx, `SELECT encryption, escrow, current_epoch, rotation_pending FROM vaults WHERE id = $1 `+lock, vaultID).
-		Scan(&state.Encryption, &state.Escrow, &state.CurrentEpoch, &state.RotationPending)
+	err := db.QueryRow(ctx, `
+		SELECT encryption, escrow, current_epoch, rotation_pending, COALESCE(conversion_seq, 0), conversion_seq IS NOT NULL
+		FROM vaults WHERE id = $1 `+lock, vaultID).
+		Scan(&state.Encryption, &state.Escrow, &state.CurrentEpoch, &state.RotationPending, &state.ConversionSeq, &state.Converted)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return KeyState{}, ErrVaultNotFound
 	}
