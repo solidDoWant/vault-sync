@@ -40,7 +40,7 @@ When a change touches any of these, call it out explicitly in the PR description
 
 ## Project Structure
 
-See `SPEC.md` §14. In brief: `cmd/vault-sync-server` (server + `export` subcommand), `internal/` (server packages), `proto/` (API source of truth), `gen/` (generated Go), `plugin/` (Obsidian plugin: `src/core` engine, `src/obsidian` adapter), `deploy/charts/`, `docs/`, `nix/`, `.claude/` (agents, commands, gitignored task files).
+See `SPEC.md` §14. In brief: `cmd/vault-sync-server` (server + `export` subcommand), `internal/` (server packages), `proto/` (API source of truth), `gen/` (generated Go), `plugin/` (Obsidian plugin: `src/core` engine, `src/obsidian` adapter), `deploy/charts/`, `docs/` (`user/`, `admin/` and `dev/` per audience, `design/`, `testing/`, `acceptance/`, `agents/`; see `docs/README.md`), `nix/`, `.claude/` (agents, commands, gitignored task files).
 
 ## Commands
 
@@ -58,7 +58,7 @@ Run `make help` for the full list (keep it and this section current as targets a
 - `make docs-screenshots`: regenerate the settings-tab screenshots in `docs/user/images/` with the e2e harness (needs Docker). Run it when the settings tab changes.
 - `make build-images` — build the server OCI image with Nix (`nix/`), check its binary with `govulncheck -mode=binary`, load it into Docker and tag it `ghcr.io/soliddowant/vault-sync:$VERSION`; `PUSH_ALL=true` also pushes. Needs Docker. After a `go.mod`/`go.sum` change, run `make update-vendor-hash` to refresh `vendorHash` in `nix/server.nix`.
 - `make chart-lint` — lint `deploy/charts/vault-sync` and check its rendered manifests (`scripts/chart_test.sh`; no cluster). Run it when touching the chart, `docs/configuration.md`'s variables or `docs/deployment.md`. `make helm` packages the chart.
-- `make release VERSION=x.y.z` — dry run of a release (image, chart, plugin assets `main.js`/`manifest.json`/`styles.css`, tag, GitHub release). Never run it with `PUSH_ALL=true`: releasing is the human's call. See `docs/deployment.md`.
+- `make release VERSION=x.y.z` — dry run of a release (image, chart, plugin assets `main.js`/`manifest.json`/`styles.css`, tag, GitHub release). Never run it with `PUSH_ALL=true`: releasing is the human's call. See `docs/dev/releasing.md`.
 
 ## Dev Tools
 
