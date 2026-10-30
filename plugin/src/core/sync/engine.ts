@@ -5,7 +5,7 @@ import { DocumentKind, type Revision } from "../../gen/vaultsync/v1/types_pb";
 import { backoffDelay, globalTimers, type Backoff, type Timers } from "../backoff";
 import { errorCode, headMoved, vaultEncrypted } from "./errors";
 import { type IncomingRevision, type PullApi } from "./remote";
-import { EncryptedCodec, PlaintextCodec, type ContentRefFields, type RevisionCodec, type VaultKeyring } from "./codec";
+import { EncryptedCodec, PlaintextCodec, VaultKeyUnavailableError, type ContentRefFields, type RevisionCodec, type VaultKeyring } from "./codec";
 import { LogVerificationError } from "../keys/verified-log";
 import { sha256Hex } from "../hash";
 import { pathKey } from "../pathkey/pathkey";
@@ -355,6 +355,18 @@ export class SyncEngine {
   private async pull(): Promise<boolean> {
     const state = await this.loadState();
     let progress = false;
+    // Documents kept back for an epoch key this device lacked: read again, as the server holds them now, and applied once the key is here.
+    for (const waiting of [...state.waiting.values()]) {
+      const revision = await this.revisionIfAny(waiting.revisionId);
+      if (revision === undefined) {
+        await this.record({ deleteWaiting: [waiting.documentId] });
+        continue;
+      }
+      const incoming = await this.decodeOrWait(revision);
+      if (incoming === undefined) continue;
+      if (!(await this.applyPulled(state, revision, incoming, { deleteWaiting: [waiting.documentId] }))) return progress;
+      progress = true;
+    }
     for (;;) {
       const response = await this.api.sync.listChanges({
         vaultId: this.vaultId,
@@ -366,18 +378,57 @@ export class SyncEngine {
       if (response.diverged) return this.resync();
       for (const revision of response.revisions) {
         if (revision.seq <= state.cursor.seq) continue;
-        const before = localPath(state, revision.documentId);
-        const outcome = await this.applyOrSkip(state, revision, await this.codec.decode(revision));
-        if (outcome === undecided) return progress;
-        const change: JournalChange = { ...outcome, cursor: { seq: revision.seq, anchor: revision.anchor } };
-        // A revision that applied replaces an earlier skip of its document.
-        if (outcome.putSkipped === undefined && state.skipped.has(revision.documentId)) change.deleteSkipped = [revision.documentId];
-        await this.record(change);
-        // The item left its place here: a folder it leaves empty, which no live document holds, goes too.
-        if (before !== undefined && localPath(state, revision.documentId)?.path !== before.path) await this.removeEmptied(state, before.path, before.kind === "folder");
+        const cursor: Cursor = { seq: revision.seq, anchor: revision.anchor };
+        const incoming = await this.decodeOrWait(revision);
+        if (incoming === undefined) {
+          // Only this document waits (docs/design/encryption.md, *Interaction matrix*): the pull goes on past it, and later syncs retry it.
+          await this.record({ cursor, putWaiting: [{ documentId: revision.documentId, revisionId: revision.id }] });
+          continue;
+        }
+        // A later revision of a waiting document takes its place.
+        const waited: JournalChange = state.waiting.has(revision.documentId) ? { deleteWaiting: [revision.documentId] } : {};
+        if (!(await this.applyPulled(state, revision, incoming, { ...waited, cursor }))) return progress;
         progress = true;
       }
       if (!response.hasMore || response.revisions.length === 0) return progress;
+    }
+  }
+
+  /**
+   * Applies one pulled revision and records the result with `extra` in one
+   * journal change. False when the revision is undecided: nothing is
+   * recorded, and the pull stops before it.
+   */
+  private async applyPulled(state: JournalState, revision: Revision, incoming: IncomingRevision, extra: JournalChange): Promise<boolean> {
+    const before = localPath(state, revision.documentId);
+    const outcome = await this.applyOrSkip(state, revision, incoming);
+    if (outcome === undecided) return false;
+    const change: JournalChange = { ...outcome, ...extra };
+    // A revision that applied replaces an earlier skip of its document.
+    if (outcome.putSkipped === undefined && state.skipped.has(revision.documentId)) change.deleteSkipped = [revision.documentId];
+    await this.record(change);
+    // The item left its place here: a folder it leaves empty, which no live document holds, goes too.
+    if (before !== undefined && localPath(state, revision.documentId)?.path !== before.path) await this.removeEmptied(state, before.path, before.kind === "folder");
+    return true;
+  }
+
+  /** A revision decoded, or undefined when this device does not hold its epoch's key even after a key sync. */
+  private async decodeOrWait(revision: Revision): Promise<IncomingRevision | undefined> {
+    try {
+      return await this.codec.decode(revision);
+    } catch (error) {
+      if (error instanceof VaultKeyUnavailableError) return undefined;
+      throw error;
+    }
+  }
+
+  /** The revision `revisionId` as the server holds it now, or undefined when it is gone. */
+  private async revisionIfAny(revisionId: string): Promise<Revision | undefined> {
+    try {
+      return (await this.api.sync.getRevision({ vaultId: this.vaultId, revisionId })).revision;
+    } catch (error) {
+      if (errorCode(error) === Code.NotFound) return undefined;
+      throw error;
     }
   }
 

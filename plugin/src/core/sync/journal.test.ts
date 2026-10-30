@@ -73,12 +73,70 @@ describe.each(journals)("the journal %s", (_name, open) => {
     expect(after.conflicts.size).toBe(0);
   });
 
+  it("keeps the documents waiting for a key until they are deleted", async () => {
+    const journal = await open();
+    await journal.commit({ putWaiting: [{ documentId: "doc-1", revisionId: "rev-1" }] });
+    await journal.commit({ putWaiting: [{ documentId: "doc-1", revisionId: "rev-2" }, { documentId: "doc-2", revisionId: "rev-3" }] });
+    expect([...(await journal.load()).waiting.values()]).toEqual([
+      { documentId: "doc-1", revisionId: "rev-2" },
+      { documentId: "doc-2", revisionId: "rev-3" },
+    ]);
+    await journal.commit({ deleteWaiting: ["doc-1"] });
+    expect([...(await journal.load()).waiting.keys()]).toEqual(["doc-2"]);
+  });
+
   it("returns copies: changing a loaded state changes nothing stored", async () => {
     const journal = await open();
     await journal.commit({ putDocs: [doc] });
     const state = await journal.load();
     state.docs.clear();
     expect((await journal.load()).docs.size).toBe(1);
+  });
+});
+
+describe("the IndexedDB journal of an earlier version", () => {
+  it("keeps what it recorded and gains the waiting documents", async () => {
+    const factory = new IDBFactory();
+    // The first schema: no store for waiting documents.
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = factory.open("journal", 1);
+      request.onupgradeneeded = () => {
+        const first: [string, string][] = [
+          ["meta", "key"],
+          ["docs", "documentId"],
+          ["pending", "opId"],
+          ["conflicts", "path"],
+          ["skipped", "documentId"],
+        ];
+        for (const [store, keyPath] of first) {
+          request.result.createObjectStore(store, { keyPath });
+        }
+      };
+      request.onsuccess = () => {
+        resolve(request.result);
+      };
+      request.onerror = () => {
+        reject(request.error ?? new Error("open failed"));
+      };
+    });
+    await new Promise<void>((resolve, reject) => {
+      const transaction = db.transaction(["meta", "docs"], "readwrite");
+      transaction.objectStore("meta").put({ key: "cursor", seq: "9", anchor: new Uint8Array([3]) });
+      transaction.objectStore("docs").put(doc);
+      transaction.oncomplete = () => {
+        resolve();
+      };
+      transaction.onerror = () => {
+        reject(transaction.error ?? new Error("write failed"));
+      };
+    });
+    db.close();
+    const journal = await IndexedDbSyncJournal.open(factory, "journal");
+    await journal.commit({ putWaiting: [{ documentId: "doc-2", revisionId: "rev-2" }] });
+    const state = await journal.load();
+    expect(state.cursor).toEqual({ seq: 9n, anchor: new Uint8Array([3]) });
+    expect(state.docs.get("doc-1")).toEqual(doc);
+    expect([...state.waiting.keys()]).toEqual(["doc-2"]);
   });
 });
 

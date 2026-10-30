@@ -103,6 +103,18 @@ export interface SkippedEntry {
   size: number;
 }
 
+/**
+ * A document whose latest revision this device has seen but cannot open yet:
+ * it does not hold the key of the revision's epoch, even after a key sync
+ * (docs/design/encryption.md, *Interaction matrix*). The pull goes on past it,
+ * and every later sync reads the revision again and applies it once the key
+ * is there, unless a later revision of the document came first.
+ */
+export interface WaitingEntry {
+  documentId: string;
+  revisionId: string;
+}
+
 /** One atomic change to the journal. */
 export interface JournalChange {
   cursor?: Cursor;
@@ -114,6 +126,8 @@ export interface JournalChange {
   deleteConflicts?: string[];
   putSkipped?: SkippedEntry[];
   deleteSkipped?: string[];
+  putWaiting?: WaitingEntry[];
+  deleteWaiting?: string[];
 }
 
 /** Everything the journal holds. */
@@ -125,6 +139,8 @@ export interface JournalState {
   conflicts: Map<string, ConflictEntry>;
   /** By document id. */
   skipped: Map<string, SkippedEntry>;
+  /** By document id. */
+  waiting: Map<string, WaitingEntry>;
 }
 
 export interface SyncJournal {
@@ -152,6 +168,8 @@ export function applyChange(state: JournalState, change: JournalChange): void {
   for (const entry of change.putConflicts ?? []) state.conflicts.set(entry.path, { ...entry });
   for (const id of change.deleteSkipped ?? []) state.skipped.delete(id);
   for (const entry of change.putSkipped ?? []) state.skipped.set(entry.documentId, { ...entry });
+  for (const id of change.deleteWaiting ?? []) state.waiting.delete(id);
+  for (const entry of change.putWaiting ?? []) state.waiting.set(entry.documentId, { ...entry });
 }
 
 function copyState(state: JournalState): JournalState {
@@ -161,12 +179,13 @@ function copyState(state: JournalState): JournalState {
     pending: state.pending.map((op) => ({ ...op })),
     conflicts: new Map([...state.conflicts].map(([path, entry]) => [path, { ...entry }])),
     skipped: new Map([...state.skipped].map(([id, entry]) => [id, { ...entry }])),
+    waiting: new Map([...state.waiting].map(([id, entry]) => [id, { ...entry }])),
   };
 }
 
 /** A journal in memory, for tests. It survives an engine restart as long as the object does. */
 export class MemorySyncJournal implements SyncJournal {
-  private state: JournalState = { cursor: initialCursor, docs: new Map(), pending: [], conflicts: new Map(), skipped: new Map() };
+  private state: JournalState = { cursor: initialCursor, docs: new Map(), pending: [], conflicts: new Map(), skipped: new Map(), waiting: new Map() };
 
   load(): Promise<JournalState> {
     return Promise.resolve(copyState(this.state));

@@ -130,7 +130,7 @@ Every state change below runs on the server under the vault row lock as a compar
 - **`ABORTED` on a log append:** re-read the log, rebuild the entry on the new head, then retry.
 - **`NOT_FOUND` on a blob:** re-read the revision, then retry once.
 - **`PERMISSION_DENIED`, or `NOT_FOUND` on the vault:** the rules of `docs/design/sharing.md` apply. The device stops syncing and keeps its files.
-- **A revision whose epoch key the device lacks after a key sync:** that document waits, and the device retries at the next sync.
+- **A revision whose epoch key the device lacks after a key sync:** that document waits, and the device retries at the next sync. The pull applies the rest of the change list: the device records the document and its revision in the journal's `waiting` set and moves its cursor on. Every later sync reads that revision again (`GetRevision`, so a re-key since is seen) and applies it once the key is there; a later revision of the document in the change list takes its place.
 - **Any verification failure:** a hard stop.
 
 | Server change | Devices with work in flight | Test |

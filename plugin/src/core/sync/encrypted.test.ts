@@ -221,8 +221,7 @@ describe("sync in an end-to-end encrypted vault", () => {
     expect(await b.files()).toEqual({});
   });
 
-  // Fails until the engine keeps back only that document: https://github.com/solidDoWant/vault-sync/issues/1344
-  it.skip("keeps back only the document whose epoch key the device lacks after a key sync, and applies it at a later sync once the key arrives", async () => {
+  it("keeps back only the document whose epoch key the device lacks after a key sync, and applies it at a later sync once the key arrives", async () => {
     const { keys, a, server } = setup();
     await a.write("old.md", "under epoch 1\n");
     await a.sync();
