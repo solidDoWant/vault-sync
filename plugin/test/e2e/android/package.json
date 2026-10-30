@@ -5,7 +5,7 @@
   "type": "module",
   "devDependencies": {
     "@wdio/appium-service": "^9.32.0",
-    "appium": "^3.8.0",
-    "appium-uiautomator2-driver": "^8.7.0"
+    "appium": "^3.9.0",
+    "appium-uiautomator2-driver": "^8.7.3"
   }
 }
