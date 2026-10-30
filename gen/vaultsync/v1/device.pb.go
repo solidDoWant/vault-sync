@@ -304,6 +304,108 @@ func (*RemoveDeviceResponse) Descriptor() ([]byte, []int) {
 	return file_vaultsync_v1_device_proto_rawDescGZIP(), []int{5}
 }
 
+// RenameDeviceRequest names the device to rename and its new name.
+type RenameDeviceRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Id of one of the caller's devices (Device.id), a canonical lowercase
+	// UUID.
+	DeviceId string `protobuf:"bytes,1,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`
+	// The new name, under the same rules as RegisterDeviceRequest.name.
+	Name          string `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RenameDeviceRequest) Reset() {
+	*x = RenameDeviceRequest{}
+	mi := &file_vaultsync_v1_device_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RenameDeviceRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RenameDeviceRequest) ProtoMessage() {}
+
+func (x *RenameDeviceRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_vaultsync_v1_device_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RenameDeviceRequest.ProtoReflect.Descriptor instead.
+func (*RenameDeviceRequest) Descriptor() ([]byte, []int) {
+	return file_vaultsync_v1_device_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *RenameDeviceRequest) GetDeviceId() string {
+	if x != nil {
+		return x.DeviceId
+	}
+	return ""
+}
+
+func (x *RenameDeviceRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+// RenameDeviceResponse returns the renamed device.
+type RenameDeviceResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The device, with its new name.
+	Device        *Device `protobuf:"bytes,1,opt,name=device,proto3" json:"device,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RenameDeviceResponse) Reset() {
+	*x = RenameDeviceResponse{}
+	mi := &file_vaultsync_v1_device_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RenameDeviceResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RenameDeviceResponse) ProtoMessage() {}
+
+func (x *RenameDeviceResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_vaultsync_v1_device_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RenameDeviceResponse.ProtoReflect.Descriptor instead.
+func (*RenameDeviceResponse) Descriptor() ([]byte, []int) {
+	return file_vaultsync_v1_device_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *RenameDeviceResponse) GetDevice() *Device {
+	if x != nil {
+		return x.Device
+	}
+	return nil
+}
+
 var File_vaultsync_v1_device_proto protoreflect.FileDescriptor
 
 const file_vaultsync_v1_device_proto_rawDesc = "" +
@@ -321,11 +423,17 @@ const file_vaultsync_v1_device_proto_rawDesc = "" +
 	"\adevices\x18\x01 \x03(\v2\x14.vaultsync.v1.DeviceR\adevices\"2\n" +
 	"\x13RemoveDeviceRequest\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\"\x16\n" +
-	"\x14RemoveDeviceResponse2\x9d\x02\n" +
+	"\x14RemoveDeviceResponse\"F\n" +
+	"\x13RenameDeviceRequest\x12\x1b\n" +
+	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\"D\n" +
+	"\x14RenameDeviceResponse\x12,\n" +
+	"\x06device\x18\x01 \x01(\v2\x14.vaultsync.v1.DeviceR\x06device2\xf6\x02\n" +
 	"\rDeviceService\x12]\n" +
 	"\x0eRegisterDevice\x12#.vaultsync.v1.RegisterDeviceRequest\x1a$.vaultsync.v1.RegisterDeviceResponse\"\x00\x12T\n" +
 	"\vListDevices\x12 .vaultsync.v1.ListDevicesRequest\x1a!.vaultsync.v1.ListDevicesResponse\"\x00\x12W\n" +
-	"\fRemoveDevice\x12!.vaultsync.v1.RemoveDeviceRequest\x1a\".vaultsync.v1.RemoveDeviceResponse\"\x00B@Z>github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyncv1b\x06proto3"
+	"\fRemoveDevice\x12!.vaultsync.v1.RemoveDeviceRequest\x1a\".vaultsync.v1.RemoveDeviceResponse\"\x00\x12W\n" +
+	"\fRenameDevice\x12!.vaultsync.v1.RenameDeviceRequest\x1a\".vaultsync.v1.RenameDeviceResponse\"\x00B@Z>github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyncv1b\x06proto3"
 
 var (
 	file_vaultsync_v1_device_proto_rawDescOnce sync.Once
@@ -339,7 +447,7 @@ func file_vaultsync_v1_device_proto_rawDescGZIP() []byte {
 	return file_vaultsync_v1_device_proto_rawDescData
 }
 
-var file_vaultsync_v1_device_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_vaultsync_v1_device_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_vaultsync_v1_device_proto_goTypes = []any{
 	(*RegisterDeviceRequest)(nil),  // 0: vaultsync.v1.RegisterDeviceRequest
 	(*RegisterDeviceResponse)(nil), // 1: vaultsync.v1.RegisterDeviceResponse
@@ -347,22 +455,27 @@ var file_vaultsync_v1_device_proto_goTypes = []any{
 	(*ListDevicesResponse)(nil),    // 3: vaultsync.v1.ListDevicesResponse
 	(*RemoveDeviceRequest)(nil),    // 4: vaultsync.v1.RemoveDeviceRequest
 	(*RemoveDeviceResponse)(nil),   // 5: vaultsync.v1.RemoveDeviceResponse
-	(*Device)(nil),                 // 6: vaultsync.v1.Device
+	(*RenameDeviceRequest)(nil),    // 6: vaultsync.v1.RenameDeviceRequest
+	(*RenameDeviceResponse)(nil),   // 7: vaultsync.v1.RenameDeviceResponse
+	(*Device)(nil),                 // 8: vaultsync.v1.Device
 }
 var file_vaultsync_v1_device_proto_depIdxs = []int32{
-	6, // 0: vaultsync.v1.RegisterDeviceResponse.device:type_name -> vaultsync.v1.Device
-	6, // 1: vaultsync.v1.ListDevicesResponse.devices:type_name -> vaultsync.v1.Device
-	0, // 2: vaultsync.v1.DeviceService.RegisterDevice:input_type -> vaultsync.v1.RegisterDeviceRequest
-	2, // 3: vaultsync.v1.DeviceService.ListDevices:input_type -> vaultsync.v1.ListDevicesRequest
-	4, // 4: vaultsync.v1.DeviceService.RemoveDevice:input_type -> vaultsync.v1.RemoveDeviceRequest
-	1, // 5: vaultsync.v1.DeviceService.RegisterDevice:output_type -> vaultsync.v1.RegisterDeviceResponse
-	3, // 6: vaultsync.v1.DeviceService.ListDevices:output_type -> vaultsync.v1.ListDevicesResponse
-	5, // 7: vaultsync.v1.DeviceService.RemoveDevice:output_type -> vaultsync.v1.RemoveDeviceResponse
-	5, // [5:8] is the sub-list for method output_type
-	2, // [2:5] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	8, // 0: vaultsync.v1.RegisterDeviceResponse.device:type_name -> vaultsync.v1.Device
+	8, // 1: vaultsync.v1.ListDevicesResponse.devices:type_name -> vaultsync.v1.Device
+	8, // 2: vaultsync.v1.RenameDeviceResponse.device:type_name -> vaultsync.v1.Device
+	0, // 3: vaultsync.v1.DeviceService.RegisterDevice:input_type -> vaultsync.v1.RegisterDeviceRequest
+	2, // 4: vaultsync.v1.DeviceService.ListDevices:input_type -> vaultsync.v1.ListDevicesRequest
+	4, // 5: vaultsync.v1.DeviceService.RemoveDevice:input_type -> vaultsync.v1.RemoveDeviceRequest
+	6, // 6: vaultsync.v1.DeviceService.RenameDevice:input_type -> vaultsync.v1.RenameDeviceRequest
+	1, // 7: vaultsync.v1.DeviceService.RegisterDevice:output_type -> vaultsync.v1.RegisterDeviceResponse
+	3, // 8: vaultsync.v1.DeviceService.ListDevices:output_type -> vaultsync.v1.ListDevicesResponse
+	5, // 9: vaultsync.v1.DeviceService.RemoveDevice:output_type -> vaultsync.v1.RemoveDeviceResponse
+	7, // 10: vaultsync.v1.DeviceService.RenameDevice:output_type -> vaultsync.v1.RenameDeviceResponse
+	7, // [7:11] is the sub-list for method output_type
+	3, // [3:7] is the sub-list for method input_type
+	3, // [3:3] is the sub-list for extension type_name
+	3, // [3:3] is the sub-list for extension extendee
+	0, // [0:3] is the sub-list for field type_name
 }
 
 func init() { file_vaultsync_v1_device_proto_init() }
@@ -377,7 +490,7 @@ func file_vaultsync_v1_device_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_vaultsync_v1_device_proto_rawDesc), len(file_vaultsync_v1_device_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   6,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

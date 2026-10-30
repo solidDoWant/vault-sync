@@ -97,9 +97,11 @@ func TestRegisterDeviceRegistrationIDRules(t *testing.T) {
 	original, err := fixture.registerDevice(t, alice, &vaultsyncv1.RegisterDeviceRequest{Name: "Laptop", RegistrationId: registrationID})
 	require.NoError(t, err)
 
-	t.Run("a different name under the same id is refused", func(t *testing.T) {
-		_, err := fixture.registerDevice(t, alice, &vaultsyncv1.RegisterDeviceRequest{Name: "Phone", RegistrationId: registrationID})
-		requireCode(t, connect.CodeAlreadyExists, err)
+	t.Run("a different name under the same id returns the device as it is", func(t *testing.T) {
+		device, err := fixture.registerDevice(t, alice, &vaultsyncv1.RegisterDeviceRequest{Name: "Phone", RegistrationId: registrationID})
+		require.NoError(t, err)
+		assert.Equal(t, original.GetId(), device.GetId())
+		assert.Equal(t, "Laptop", device.GetName(), "the retry's name is ignored")
 	})
 
 	t.Run("a different public key under the same id is refused", func(t *testing.T) {

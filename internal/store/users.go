@@ -110,8 +110,8 @@ type Device struct {
 const deviceLastSeenGranularity = "1 minute"
 
 // ErrRegistrationConflict is returned when a registration id names a
-// device of the user's, not removed, whose name or public key differ from
-// the registration's.
+// device of the user's, not removed, whose public key differs from the
+// registration's.
 var ErrRegistrationConflict = errors.New("registration id already names a different device")
 
 // RegisterDevice registers a device for userID without a registration id,
@@ -126,9 +126,11 @@ func (store *Store) RegisterDevice(ctx context.Context, userID uuid.UUID, name s
 // user does not exist.
 //
 // With a valid registrationID it is idempotent: when the user has a device
-// that is not removed with that registration id, it returns that device,
-// without counting it against the limit again, if its name and public key
-// match, and ErrRegistrationConflict otherwise.
+// that is not removed with that registration id, it returns that device as
+// it is now, without counting it against the limit again, if its public key
+// matches, and ErrRegistrationConflict otherwise. name is then ignored: the
+// device keeps its current name, which RenameDevice may have changed since
+// the first call.
 func (store *Store) RegisterDeviceOnce(ctx context.Context, userID uuid.UUID, registrationID uuid.NullUUID, name string, publicKey []byte, limit int) (Device, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
@@ -169,7 +171,7 @@ func (store *Store) RegisterDeviceOnce(ctx context.Context, userID uuid.UUID, re
 			}
 
 			if found {
-				if existing.Name != name || !bytes.Equal(existing.PublicKey, publicKey) {
+				if !bytes.Equal(existing.PublicKey, publicKey) {
 					return ErrRegistrationConflict
 				}
 
@@ -272,4 +274,29 @@ func (store *Store) RemoveDevice(ctx context.Context, userID, deviceID uuid.UUID
 	}
 
 	return nil
+}
+
+// RenameDevice renames userID's device deviceID and returns it renamed. It
+// returns ErrDeviceNotFound when userID has no such device that is not
+// removed, including when the device belongs to another user.
+//
+// Like RemoveDevice, the update takes the device row lock, so it is
+// serialized with the device's commits and with its removal.
+func (store *Store) RenameDevice(ctx context.Context, userID, deviceID uuid.UUID, name string) (Device, error) {
+	var device Device
+
+	err := store.pool.QueryRow(ctx, `
+		UPDATE devices SET name = $3
+		WHERE id = $1 AND user_id = $2 AND removed_at IS NULL
+		RETURNING id, user_id, name, public_key, created_at, last_seen`, deviceID, userID, name).
+		Scan(&device.ID, &device.UserID, &device.Name, &device.PublicKey, &device.CreatedAt, &device.LastSeen)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Device{}, ErrDeviceNotFound
+	}
+
+	if err != nil {
+		return Device{}, fmt.Errorf("rename device: %w", err)
+	}
+
+	return device, nil
 }
