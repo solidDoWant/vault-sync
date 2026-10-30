@@ -101,6 +101,16 @@ The worktree-isolation guard rejects many compound shell commands, and failed to
 
 Any change to a user-facing surface (env vars, plugin settings, API, metrics, Helm values) updates the relevant doc under `docs/` in the same change. Keep `SPEC.md` current with any behavioral change it describes.
 
+**Write for one audience at a time** (owner instruction, #1401). The docs have four readers, and each page is for one of them:
+- **Users:** people who use the Obsidian plugin. They know Obsidian, not servers or cryptography.
+- **Admins:** people who run the server. They know Kubernetes, PostgreSQL, S3 and OIDC, and need concepts and settings, not internals.
+- **Developers:** people who change the code. They need the design and the reasons for it.
+- **Agents:** the files in `docs/agents/`, `.claude/` and this file.
+
+Put each fact in the page of the audience that acts on it, at that audience's depth. For example, a user needs to know that a forgotten passphrase can't be recovered. An admin needs to know that the passphrase is stretched with a slow hash (Argon2id), and how its cost affects devices. A developer needs the parameters and the library. Other audiences link to the page instead of repeating it. `docs/README.md` says where each audience's pages are.
+
+**Plain English for human readers.** Load the `simple-english` skill (`.claude/skills/simple-english/`, Plain mode) before you write or change text written mainly for people: anything under `docs/` except `docs/agents/`, `README.md`, `SPEC.md`, `CHANGELOG.md` and release notes, and status reports or questions for the owner. It does not apply to code comments, commit messages, issue bodies written for agents, or agent instructions.
+
 ## Quality Rules
 
 - Pass all acceptance tests and `make lint test` before opening a PR; fix code, not tests.

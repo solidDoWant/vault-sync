@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Deterministic job scheduler for the vault-sync agent team.
 
-Replaces the cycle-based project manager (pm-loop.sh): instead of one LLM
+Instead of one LLM
 session that re-derives every cycle what is ready and dispatches subagents,
 this loop polls GitHub every minute, builds a priority-ordered job list in
 code, and keeps up to `slots` independent `claude -p` processes running:

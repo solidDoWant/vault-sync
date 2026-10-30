@@ -3,8 +3,8 @@
 # it exits: at once when it asks to (exit 75: scheduler.py changed on disk,
 # e.g. master was fast-forwarded), after 30 s when it crashed. Agents run in
 # their own process sessions, so a scheduler restart does not touch them; the
-# new scheduler re-adopts them from .pm/scheduler/state.json. Replaces
-# pm-loop.sh; start it in the `pm` tmux session from `coder ssh` (agents need
+# new scheduler re-adopts them from .pm/scheduler/state.json. Start it
+# in the `pm` tmux session from `coder ssh` (agents need
 # that session's CODER_AGENT_*, GIT_ASKPASS and Claude credentials).
 #
 # Control files (in .pm/):
