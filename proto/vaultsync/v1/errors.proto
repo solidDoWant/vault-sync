@@ -58,6 +58,13 @@ enum ErrorReason {
   // (docs/design/encryption.md, "Escrow reset on the server"). The export
   // job reports the vault and does not retry.
   ERROR_REASON_ESCROW_NOT_ADOPTED = 9;
+  // FAILED_PRECONDITION from CreateVault, ConvertVault and RotateEpoch: a
+  // genesis, a conversion, an escrow "on" entry or an escrow reset entry
+  // named an escrow bundle that is not the escrow chain's head. The client
+  // re-reads GetServerInfo and evaluates its pin again, and does not send
+  // the request again until the head changes (docs/design/encryption.md,
+  // "Until the owner adopts").
+  ERROR_REASON_ESCROW_NOT_CURRENT = 10;
 }
 
 // ErrorDetail is attached to an error (as a Connect error detail) to give

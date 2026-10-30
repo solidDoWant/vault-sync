@@ -118,7 +118,7 @@ func (service VaultService) CreateVault(ctx context.Context, request *connect.Re
 
 	switch {
 	case encryption == store.EncryptionE2EE:
-		vaultID, genesis, err = verifyGenesis(request.Msg.GetNewVaultId(), request.Msg.GetGenesis(), user.ID, request.Msg.GetEscrow())
+		vaultID, genesis, err = verifyGenesis(request.Msg.GetNewVaultId(), request.Msg.GetGenesis(), user.ID, request.Msg.GetEscrow(), service.Escrow)
 		if err != nil {
 			return nil, err
 		}

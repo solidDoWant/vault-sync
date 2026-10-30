@@ -19,8 +19,9 @@ import (
 // verifyGenesis checks the vault id and genesis entry of an E2EE
 // CreateVault: the genesis must verify as the first entry of the vault's
 // log (e2ee.ReplayLog), name creatorID as its creator, and record an escrow
-// bundle exactly when escrow is requested.
-func verifyGenesis(rawVaultID string, genesis *vaultsyncv1.LogEntry, creatorID uuid.UUID, escrow bool) (uuid.UUID, *store.LogEntry, error) {
+// bundle exactly when escrow is requested: the escrow chain's head of
+// deployment, or the request fails with ESCROW_NOT_CURRENT.
+func verifyGenesis(rawVaultID string, genesis *vaultsyncv1.LogEntry, creatorID uuid.UUID, escrow bool, deployment Escrow) (uuid.UUID, *store.LogEntry, error) {
 	vaultID, err := uuid.Parse(rawVaultID)
 	if err != nil || vaultID == uuid.Nil {
 		return uuid.Nil, nil, invalidArgument("new_vault_id must be a UUID chosen by the creator for an E2EE vault")
@@ -55,6 +56,10 @@ func verifyGenesis(rawVaultID string, genesis *vaultsyncv1.LogEntry, creatorID u
 
 	if (state.Escrow != nil) != escrow {
 		return uuid.Nil, nil, invalidArgument("genesis must record an escrow key exactly when escrow is requested")
+	}
+
+	if state.Escrow != nil && (deployment.Bundle == nil || !escrowBundlesEqual(*state.Escrow, *deployment.Bundle)) {
+		return uuid.Nil, nil, escrowNotCurrent("genesis")
 	}
 
 	return vaultID, &store.LogEntry{

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"slices"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -102,7 +103,7 @@ func (vault *signedVault) check(t *testing.T, request *vaultsyncv1.RotateEpochRe
 	recorder := &keyRecorder{}
 	service := api.VaultKeyService{
 		Keys:   func(uuid.UUID) api.VaultKeyStore { return recorder },
-		Escrow: api.Escrow{PublicKey: vault.escrowPublic, KeyID: vault.escrowKeyID, Rotations: vault.rotations},
+		Escrow: api.Escrow{PublicKey: vault.escrowPublic, KeyID: vault.escrowKeyID, Bundle: vault.escrow, Rotations: vault.rotations},
 	}
 	ctx := authz.WithMembership(auth.WithUser(context.Background(), auth.User{ID: vault.ownerID}), authz.Membership{VaultID: vault.vaultID, Role: store.RoleOwner})
 
@@ -111,9 +112,7 @@ func (vault *signedVault) check(t *testing.T, request *vaultsyncv1.RotateEpochRe
 	require.NotNil(t, recorder.next.Check, "an E2EE rotation is checked against the log")
 
 	log := storedLog(stored)
-	if recorder.next.EscrowEntry != nil {
-		log = append(log, *recorder.next.EscrowEntry)
-	}
+	log = append(log, recorder.next.EscrowEntries...)
 
 	return recorder.next.Check(log, vault.prevCommitment)
 }
@@ -370,5 +369,241 @@ func TestRotateEpochMovesAnEscrowedVaultToTheNextKeyOfTheEscrowChain(t *testing.
 
 		_, err := vault.check(t, request, stored)
 		require.ErrorIs(t, err, store.ErrEpochRecord)
+	})
+}
+
+// otherEscrowKey returns a fresh escrow bundle and its key id, which the
+// deployment's escrow chain does not reach.
+func otherEscrowKey(t *testing.T) (e2ee.EscrowBundle, string) {
+	t.Helper()
+
+	_, public, err := e2ee.GenerateKeyPair()
+	require.NoError(t, err)
+
+	recipient, err := e2ee.AgeRecipient(public)
+	require.NoError(t, err)
+
+	signPub, _, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+
+	keyID, err := e2ee.EscrowKeyID(public)
+	require.NoError(t, err)
+
+	return e2ee.EscrowBundle{SignPub: signPub, Recipient: recipient}, keyID
+}
+
+// rotateEpoch sends request to RotateEpoch of vault's service and returns
+// its error and whether the store was reached.
+func (vault *signedVault) rotateEpoch(t *testing.T, request *vaultsyncv1.RotateEpochRequest) (bool, error) {
+	t.Helper()
+
+	recorder := &keyRecorder{}
+	service := api.VaultKeyService{
+		Keys:   func(uuid.UUID) api.VaultKeyStore { return recorder },
+		Escrow: api.Escrow{PublicKey: vault.escrowPublic, KeyID: vault.escrowKeyID, Bundle: vault.escrow, Rotations: vault.rotations},
+	}
+	ctx := authz.WithMembership(auth.WithUser(t.Context(), auth.User{ID: vault.ownerID}), authz.Membership{VaultID: vault.vaultID, Role: store.RoleOwner})
+
+	_, err := service.RotateEpoch(ctx, connect.NewRequest(request))
+
+	return recorder.calls > 0, err
+}
+
+func TestRotateEpochWithAnEscrowResetEntry(t *testing.T) {
+	escrowSlot := func(vault *signedVault, keyID string) *vaultsyncv1.KeySlot {
+		return vault.slot(vaultsyncv1.KeyRecipientKind_KEY_RECIPIENT_KIND_ESCROW, keyID)
+	}
+
+	// escrowedToOld is a vault whose log names old, an escrow key that no
+	// signed rotation leads from to the chain's head (vault.escrow), and
+	// the log the store holds.
+	escrowedToOld := func(t *testing.T) (*signedVault, e2ee.EscrowBundle, string, []e2ee.Entry) {
+		t.Helper()
+
+		vault := newSignedVault(t)
+		old, oldKeyID := otherEscrowKey(t)
+		vault.log.Escrow(t, vault.ownerID, &old)
+
+		return vault, old, oldKeyID, slices.Clone(vault.log.Entries)
+	}
+
+	// adoption is the owner's request moving the vault from old to the
+	// head: the escrow reset entry signed by signerID, a slot for the head
+	// and the record signed at the entry.
+	adoption := func(t *testing.T, vault *signedVault, signerID uuid.UUID, last e2ee.EscrowBundle) *vaultsyncv1.RotateEpochRequest {
+		t.Helper()
+
+		entry := vault.log.EscrowReset(t, signerID, last, *vault.escrow)
+		request := vault.request(t)
+		request.EscrowEntry = logtest.EntryMessage(entry)
+		request.NextEpoch.Slots = append(request.NextEpoch.Slots, escrowSlot(vault, vault.escrowKeyID))
+
+		return request
+	}
+
+	t.Run("an owner's escrow reset entry with a rotation creates the epoch escrowed to the new key", func(t *testing.T) {
+		vault, old, _, stored := escrowedToOld(t)
+		request := adoption(t, vault, vault.ownerID, old)
+
+		escrow, err := vault.check(t, request, stored)
+		require.NoError(t, err)
+		assert.True(t, escrow)
+	})
+
+	t.Run("an epoch of the adoption escrowed to the old key is refused", func(t *testing.T) {
+		vault, old, oldKeyID, stored := escrowedToOld(t)
+		request := adoption(t, vault, vault.ownerID, old)
+		request.NextEpoch.Slots[2] = escrowSlot(vault, oldKeyID)
+
+		_, err := vault.check(t, request, stored)
+		require.ErrorIs(t, err, store.ErrEpochRecord)
+	})
+
+	// forged is the owner's request with an escrow reset entry the log
+	// replay must refuse; its record is signed before the entry, which the
+	// replay reaches first.
+	forged := func(t *testing.T, vault *signedVault, signerID uuid.UUID, last e2ee.EscrowBundle) *vaultsyncv1.RotateEpochRequest {
+		t.Helper()
+
+		request := vault.request(t)
+		request.EscrowEntry = logtest.EntryMessage(vault.log.EscrowReset(t, signerID, last, *vault.escrow))
+		request.NextEpoch.Slots = append(request.NextEpoch.Slots, escrowSlot(vault, vault.escrowKeyID))
+
+		return request
+	}
+
+	t.Run("an escrow reset entry forged by a non-owner is refused with INVALID_ARGUMENT", func(t *testing.T) {
+		vault, old, _, stored := escrowedToOld(t)
+
+		_, err := vault.check(t, forged(t, vault, vault.editorID, old), stored)
+		require.ErrorIs(t, err, store.ErrEpochRecord)
+		require.ErrorContains(t, err, "membership log does not verify")
+		requireCode(t, connect.CodeInvalidArgument, api.KeyError(err))
+	})
+
+	t.Run("an escrow reset entry naming another bundle than the log's last is refused with INVALID_ARGUMENT", func(t *testing.T) {
+		vault, _, _, stored := escrowedToOld(t)
+		elsewhere, _ := otherEscrowKey(t)
+
+		_, err := vault.check(t, forged(t, vault, vault.ownerID, elsewhere), stored)
+		require.ErrorIs(t, err, store.ErrEpochRecord)
+		require.ErrorContains(t, err, "membership log does not verify")
+		requireCode(t, connect.CodeInvalidArgument, api.KeyError(err))
+	})
+
+	t.Run("an escrow reset entry to a key that is not the chain's head gets ESCROW_NOT_CURRENT", func(t *testing.T) {
+		vault, old, _, _ := escrowedToOld(t)
+		other, otherKeyID := otherEscrowKey(t)
+		entry := vault.log.EscrowReset(t, vault.ownerID, old, other)
+		request := vault.request(t)
+		request.EscrowEntry = logtest.EntryMessage(entry)
+		request.NextEpoch.Slots = append(request.NextEpoch.Slots, escrowSlot(vault, otherKeyID))
+
+		reached, err := vault.rotateEpoch(t, request)
+		requireCode(t, connect.CodeFailedPrecondition, err)
+		assert.Equal(t, vaultsyncv1.ErrorReason_ERROR_REASON_ESCROW_NOT_CURRENT, api.ErrorReasonOf(err))
+		assert.False(t, reached, "refused before the store")
+	})
+
+	t.Run("an escrow on entry naming a key that is not the chain's head gets ESCROW_NOT_CURRENT", func(t *testing.T) {
+		vault := newSignedVault(t)
+		other, otherKeyID := otherEscrowKey(t)
+		entry := vault.log.Escrow(t, vault.ownerID, &other)
+		request := vault.request(t)
+		request.EscrowEntry = logtest.EntryMessage(entry)
+		request.NextEpoch.Slots = append(request.NextEpoch.Slots, escrowSlot(vault, otherKeyID))
+
+		reached, err := vault.rotateEpoch(t, request)
+		requireCode(t, connect.CodeFailedPrecondition, err)
+		assert.Equal(t, vaultsyncv1.ErrorReason_ERROR_REASON_ESCROW_NOT_CURRENT, api.ErrorReasonOf(err))
+		assert.False(t, reached, "refused before the store")
+	})
+
+	t.Run("until adoption a new epoch escrowed to the log's bundle is accepted", func(t *testing.T) {
+		vault, _, oldKeyID, stored := escrowedToOld(t)
+		request := vault.request(t)
+		request.NextEpoch.Slots = append(request.NextEpoch.Slots, escrowSlot(vault, oldKeyID))
+
+		escrow, err := vault.check(t, request, stored)
+		require.NoError(t, err)
+		assert.True(t, escrow)
+	})
+
+	t.Run("until adoption a new epoch escrowed to the chain's head is refused", func(t *testing.T) {
+		vault, _, _, stored := escrowedToOld(t)
+		request := vault.request(t)
+		request.NextEpoch.Slots = append(request.NextEpoch.Slots, escrowSlot(vault, vault.escrowKeyID))
+
+		_, err := vault.check(t, request, stored)
+		require.ErrorIs(t, err, store.ErrEpochRecord)
+	})
+
+	// offState is a vault that turned escrow off while its log named old,
+	// and the owner's request turning it on again with the head: the escrow
+	// reset entry, the escrow on entry, a slot for the head and the record
+	// signed at the escrow on entry.
+	offState := func(t *testing.T) (*signedVault, *vaultsyncv1.RotateEpochRequest, []e2ee.Entry) {
+		t.Helper()
+
+		vault, old, _, _ := escrowedToOld(t)
+		vault.log.Escrow(t, vault.ownerID, nil)
+		stored := slices.Clone(vault.log.Entries)
+
+		reset := vault.log.EscrowReset(t, vault.ownerID, old, *vault.escrow)
+		on := vault.log.Escrow(t, vault.ownerID, vault.escrow)
+		request := vault.request(t)
+		request.EscrowResetEntry = logtest.EntryMessage(reset)
+		request.EscrowEntry = logtest.EntryMessage(on)
+		request.NextEpoch.Slots = append(request.NextEpoch.Slots, escrowSlot(vault, vault.escrowKeyID))
+
+		return vault, request, stored
+	}
+
+	t.Run("with escrow off an escrow reset entry and an escrow on entry are appended with the epoch", func(t *testing.T) {
+		vault, request, stored := offState(t)
+
+		escrow, err := vault.check(t, request, stored)
+		require.NoError(t, err)
+		assert.True(t, escrow)
+	})
+
+	t.Run("with escrow off an escrow on entry to the head without the reset is refused", func(t *testing.T) {
+		vault, _, _, _ := escrowedToOld(t)
+		vault.log.Escrow(t, vault.ownerID, nil)
+		stored := slices.Clone(vault.log.Entries)
+		request := vault.request(t)
+		request.EscrowEntry = logtest.EntryMessage(vault.log.Escrow(t, vault.ownerID, vault.escrow))
+		request.NextEpoch.Slots = append(request.NextEpoch.Slots, escrowSlot(vault, vault.escrowKeyID))
+
+		_, err := vault.check(t, request, stored)
+		require.ErrorIs(t, err, store.ErrEpochRecord)
+		require.ErrorContains(t, err, "membership log does not verify")
+	})
+
+	t.Run("with escrow off an escrow reset entry sent alone is refused", func(t *testing.T) {
+		vault, old, _, _ := escrowedToOld(t)
+		vault.log.Escrow(t, vault.ownerID, nil)
+		stored := slices.Clone(vault.log.Entries)
+		reset := vault.log.EscrowReset(t, vault.ownerID, old, *vault.escrow)
+		request := vault.request(t)
+		request.EscrowEntry = logtest.EntryMessage(reset)
+
+		_, err := vault.check(t, request, stored)
+		require.ErrorIs(t, err, store.ErrEpochRecord)
+		require.ErrorContains(t, err, "must come before the escrow on entry")
+	})
+
+	t.Run("with escrow on an escrow reset entry before an escrow on entry is refused", func(t *testing.T) {
+		vault, old, _, stored := escrowedToOld(t)
+		reset := vault.log.EscrowReset(t, vault.ownerID, old, *vault.escrow)
+		on := vault.log.Escrow(t, vault.ownerID, vault.escrow)
+		request := vault.request(t)
+		request.EscrowResetEntry = logtest.EntryMessage(reset)
+		request.EscrowEntry = logtest.EntryMessage(on)
+		request.NextEpoch.Slots = append(request.NextEpoch.Slots, escrowSlot(vault, vault.escrowKeyID))
+
+		_, err := vault.check(t, request, stored)
+		require.ErrorIs(t, err, store.ErrEpochRecord)
+		require.ErrorContains(t, err, "only for a vault with escrow off")
 	})
 }

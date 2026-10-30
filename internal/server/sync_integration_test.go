@@ -50,6 +50,9 @@ type syncFixture struct {
 	// escrowPublic is the replicas' escrow public key, which escrow slots
 	// must name.
 	escrowPublic []byte
+	// escrowBundle is the replicas' escrow bundle, the escrow chain's head,
+	// which genesis and escrow on entries must name.
+	escrowBundle *e2ee.EscrowBundle
 }
 
 // newSyncFixture starts two server replicas on one database; configure
@@ -72,8 +75,9 @@ func newSyncFixture(t *testing.T, limits api.SyncLimits, configure ...func(*api.
 	escrowID, err := e2ee.EscrowKeyID(escrowPublic)
 	require.NoError(t, err)
 
-	escrow := api.Escrow{PublicKey: escrowPublic, KeyID: escrowID}
-	syncFix := &syncFixture{escrowPublic: escrowPublic}
+	escrowBundle := escrowBundleOf(t, escrowPublic)
+	escrow := api.Escrow{PublicKey: escrowPublic, KeyID: escrowID, Bundle: escrowBundle}
+	syncFix := &syncFixture{escrowPublic: escrowPublic, escrowBundle: escrowBundle}
 
 	for replica := range 2 {
 		replicaPool := pool

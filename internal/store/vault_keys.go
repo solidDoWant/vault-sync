@@ -108,18 +108,19 @@ type NextEpoch struct {
 	Slots         []KeySlot
 	// Record is the epoch's signed record, stored with the epoch.
 	Record []byte
-	// EscrowEntry is a membership log entry to append in the same
-	// transaction as the epoch (the escrow on/off entry), or nil.
-	EscrowEntry *LogEntry
+	// EscrowEntries are the membership log entries to append, in order, in
+	// the same transaction as the epoch: an escrow on/off or escrow reset
+	// entry, or an escrow reset entry followed by an escrow "on" entry.
+	EscrowEntries []LogEntry
 	// Check, when set, verifies the new epoch against the vault's log under
 	// the vault row lock, before anything is written (see EpochCheck).
 	Check EpochCheck
 }
 
 // EpochCheck verifies a new epoch of an E2EE vault. log is the vault's
-// membership log in seq order, followed by the NextEpoch's EscrowEntry if
-// it has one; prevCommitment is the current epoch's commitment (nil before
-// the first epoch). It returns whether escrow is on at the head of log, and
+// membership log in seq order, followed by the NextEpoch's EscrowEntries;
+// prevCommitment is the current epoch's commitment (nil before the first
+// epoch). It returns whether escrow is on at the head of log, and
 // an error wrapping ErrEpochRecord when the epoch does not verify.
 type EpochCheck func(log []LogEntry, prevCommitment []byte) (escrow bool, err error)
 
@@ -216,9 +217,11 @@ func createEpoch(ctx context.Context, tx pgx.Tx, vaultID uuid.UUID, state KeySta
 		return Epoch{}, err
 	}
 
-	if next.EscrowEntry != nil {
-		if err := insertLogEntry(ctx, tx, vaultID, *next.EscrowEntry); err != nil {
-			return Epoch{}, err
+	if len(next.EscrowEntries) > 0 {
+		for _, entry := range next.EscrowEntries {
+			if err := insertLogEntry(ctx, tx, vaultID, entry); err != nil {
+				return Epoch{}, err
+			}
 		}
 
 		if _, err := tx.Exec(ctx, `UPDATE vaults SET escrow = $2 WHERE id = $1`, vaultID, state.Escrow); err != nil {
@@ -254,7 +257,7 @@ func createEpoch(ctx context.Context, tx pgx.Tx, vaultID uuid.UUID, state KeySta
 }
 
 // checkSignedEpoch runs next.Check on the vault's log (with next's escrow
-// entry appended) and the current epoch's commitment, under the vault row
+// entries appended) and the current epoch's commitment, under the vault row
 // lock held by tx, and returns whether escrow is on afterwards.
 func checkSignedEpoch(ctx context.Context, tx pgx.Tx, vaultID uuid.UUID, state KeyState, next NextEpoch) (bool, error) {
 	log, err := listLogEntries(ctx, tx, vaultID, 0, math.MaxInt32)
@@ -262,9 +265,7 @@ func checkSignedEpoch(ctx context.Context, tx pgx.Tx, vaultID uuid.UUID, state K
 		return false, err
 	}
 
-	if next.EscrowEntry != nil {
-		log = append(log, *next.EscrowEntry)
-	}
+	log = append(log, next.EscrowEntries...)
 
 	var prevCommitment []byte
 

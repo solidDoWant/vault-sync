@@ -612,7 +612,8 @@ func TestCreateVaultEndToEndEncryptedFollowsTheEscrowKey(t *testing.T) {
 	keyID, err := e2ee.EscrowKeyID(publicKey)
 	require.NoError(t, err)
 
-	withKey := api.Escrow{PublicKey: publicKey, KeyID: keyID, Default: true}
+	headBundle := escrowBundleOf(t, publicKey)
+	withKey := api.Escrow{PublicKey: publicKey, KeyID: keyID, Default: true, Bundle: headBundle}
 
 	tests := []struct {
 		name     string
@@ -635,7 +636,7 @@ func TestCreateVaultEndToEndEncryptedFollowsTheEscrowKey(t *testing.T) {
 
 			var escrow *e2ee.EscrowBundle
 			if test.request {
-				escrow = escrowBundleOf(t, publicKey)
+				escrow = headBundle
 			}
 
 			response, err := fixture.vaultClient().CreateVault(t.Context(), authorized(e2eeCreateRequest(t, "Secret", users.userID(t, "alice"), escrow), token))

@@ -379,10 +379,18 @@ message RotateEpochRequest {
   // exactly those the log names there and match next_epoch's slots.
   EpochRecord record = 3;
   // The owner's signed escrow on/off entry (type 8), to turn the vault's
-  // escrow on or off with this rotation. It is appended to the membership
-  // log in the same transaction as the epoch, and the record's log
-  // position must be this entry.
+  // escrow on or off with this rotation, or escrow reset entry (type 10),
+  // to move an escrowed vault to the escrow chain's head. It is appended to
+  // the membership log in the same transaction as the epoch, and the
+  // record's log position must be this entry. An escrow "on" entry and an
+  // escrow reset entry must name the chain's head, or the call fails with
+  // ERROR_REASON_ESCROW_NOT_CURRENT.
   LogEntry escrow_entry = 4;
+  // An escrow reset entry (type 10) of a vault with escrow off, appended
+  // directly before escrow_entry, which must then be an escrow "on" entry
+  // naming the same bundle. Both are appended with the epoch in one
+  // transaction.
+  LogEntry escrow_reset_entry = 5;
 }
 
 // RotateEpochResponse returns the new epoch.

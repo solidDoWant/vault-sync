@@ -575,7 +575,7 @@ func TestKeyStoreErrorsMapToCodesAndReasons(t *testing.T) {
 	}
 }
 
-func TestEscrowSlotsMustNameTheCurrentOrARetiringEscrowKey(t *testing.T) {
+func TestAddedEscrowSlotsMustNameTheCurrentOrARetiringEscrowKey(t *testing.T) {
 	escrowSlot := func(epoch uint32, id string) *vaultsyncv1.KeySlot {
 		return &vaultsyncv1.KeySlot{
 			Epoch:         epoch,
@@ -607,19 +607,6 @@ func TestEscrowSlotsMustNameTheCurrentOrARetiringEscrowKey(t *testing.T) {
 		if test.accepted {
 			want = 0
 		}
-
-		t.Run("RotateEpoch with "+test.name, func(t *testing.T) {
-			recorder := &keyRecorder{}
-			service, ctx := keyService(recorder)
-			service.Escrow = test.escrow
-
-			next := validNextEpoch()
-			next.Slots = append(next.Slots, escrowSlot(0, test.id))
-
-			_, err := service.RotateEpoch(ctx, connect.NewRequest(&vaultsyncv1.RotateEpochRequest{NextEpoch: next}))
-			requireCode(t, want, err)
-			assert.Equal(t, test.accepted, recorder.calls == 1, "the store is reached only for an accepted escrow slot")
-		})
 
 		t.Run("AddKeySlots with "+test.name, func(t *testing.T) {
 			recorder := &keyRecorder{}
