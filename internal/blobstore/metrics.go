@@ -34,20 +34,20 @@ func NewMetrics() *Metrics {
 	return &Metrics{
 		requests: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "vault_sync_s3_requests_total",
-			Help: "S3 operations, retries included, by operation and outcome.",
+			Help: "S3 operations, by S3 API operation (PutObject, GetObject, HeadBucket, ...) and outcome: ok, not_found (HTTP 404, expected for example when deleting a missing object) or error. One operation counts once, however often the SDK retried it.",
 		}, []string{"operation", "outcome"}),
 		duration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "vault_sync_s3_request_duration_seconds",
-			Help:    "S3 operation time, retries included, by operation and outcome.",
+			Help:    "Time each S3 operation took, retries included, by operation and outcome.",
 			Buckets: prometheus.DefBuckets,
 		}, []string{"operation", "outcome"}),
 		uploaded: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "vault_sync_blob_uploaded_bytes_total",
-			Help: "Blob chunk bytes clients uploaded that the server accepted.",
+			Help: "Blob chunk bytes clients uploaded that this replica accepted.",
 		}),
 		downloaded: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "vault_sync_blob_downloaded_bytes_total",
-			Help: "Blob bytes the server read for client downloads.",
+			Help: "Blob bytes this replica served to clients' downloads.",
 		}),
 	}
 }

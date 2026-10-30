@@ -56,6 +56,7 @@ jobs:
             chart:
               - 'docs/{configuration,deployment,alerts}.md'
               - 'docs/admin/alerts.md'
+              - 'docs/admin/metrics-reference.md'
             desktop:
               - '{plugin/**,.github/**,nix/**,flake.*}'
             npm:
@@ -131,9 +132,10 @@ jobs:
   # rendered-manifest checks, and the Nix-built server image, whose binary
   # build-images checks with govulncheck. Building the image also fails when
   # go.mod/go.sum changed without updating vendorHash in nix/server.nix.
-  # Nothing is pushed. A docs-only change to docs/configuration.md or
-  # docs/deployment.md runs the chart checks (which check that every
-  # documented variable can be set through the chart) but not the image.
+  # Nothing is pushed. A docs-only change to docs/configuration.md,
+  # docs/deployment.md or a generated reference page runs the chart checks
+  # (which check that every documented variable can be set through the
+  # chart) and the generated-page check, but not the image.
   release-artifacts:
     needs: changes
     if: needs.changes.outputs.code == 'true' || needs.changes.outputs.chart == 'true'
@@ -144,6 +146,8 @@ jobs:
       - uses: ./.github/actions/nix-dev-shell
       - name: Chart lint and rendered-manifest checks
         run: nix develop -c make chart-lint
+      - name: Generated reference pages are current
+        run: nix develop -c make check-generate-docs
       - name: Build the server image (not pushed)
         if: needs.changes.outputs.code == 'true'
         run: nix develop -c make build-images

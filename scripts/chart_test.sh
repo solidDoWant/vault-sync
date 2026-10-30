@@ -28,7 +28,7 @@
 #   - the PrometheusRule (config.alerts) renders only on request, with its
 #     matchers, per-alert overrides and runbook links; promtool accepts it and
 #     its unit tests (ci/alerts-test.yaml) pass; every metric it reads is in
-#     docs/configuration.md and every alert has a docs/admin/alerts.md section
+#     docs/admin/metrics-reference.md and every alert has a docs/admin/alerts.md section
 #     (and a heading in the docs/alerts.md stub);
 #   - every VAULT_SYNC_* variable in docs/configuration.md can be set through
 #     the chart, and every config value is documented in docs/deployment.md.
@@ -536,17 +536,17 @@ rejects "values.schema.json rejects an unknown severity" "severity" \
 rejects "values.schema.json rejects a bad for duration" "for" \
 	--set config.alerts.prometheusRule.enabled=true --set config.alerts.rules.VaultSyncSyncLatencyHigh.for=soon
 
-# Every metric an expression reads is in docs/configuration.md's Metrics
-# tables (histogram series by their base name), and every alert has a
+# Every metric an expression reads is in the generated
+# docs/admin/metrics-reference.md (histogram series by their base name), and every alert has a
 # runbook section in docs/admin/alerts.md. The old docs/alerts.md keeps a
 # heading per alert, so runbook_url links of released charts still land on
 # the alert.
-documented_metrics="$(grep -oE '^\| `vault_sync_[a-z0-9_]+`' "$repo_root/docs/configuration.md" | tr -d '|` ' | sort -u)"
+documented_metrics="$(grep -oE '^\| `vault_sync_[a-z0-9_]+`' "$repo_root/docs/admin/metrics-reference.md" | tr -d '|` ' | sort -u)"
 for metric in $(grep -oE 'vault_sync_[a-z0-9_]+' "$rules_file" | sed -E 's/_(bucket|sum|count)$//' | sort -u); do
 	if grep -qxF -- "$metric" <<<"$documented_metrics"; then
-		pass "docs/configuration.md documents $metric, which the alerts read"
+		pass "docs/admin/metrics-reference.md documents $metric, which the alerts read"
 	else
-		fail "docs/configuration.md documents $metric, which the alerts read"
+		fail "docs/admin/metrics-reference.md documents $metric, which the alerts read"
 	fi
 done
 for name in $all_alerts; do

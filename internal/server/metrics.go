@@ -27,11 +27,11 @@ func newRPCMetrics() *rpcMetrics {
 	return &rpcMetrics{
 		requests: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "vault_sync_rpc_requests_total",
-			Help: "RPCs handled, by procedure and Connect status code.",
+			Help: "RPCs handled, by full procedure name (for example /vaultsync.v1.ServerInfoService/GetServerInfo) and Connect status code (ok, unimplemented, ...). Calls rejected for authentication are counted with code unauthenticated. Requests rejected before reaching an RPC handler (oversized declared bodies, unknown routes, malformed messages) are not counted.",
 		}, []string{"procedure", "code"}),
 		duration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "vault_sync_rpc_request_duration_seconds",
-			Help:    "RPC handling time, by procedure and Connect status code.",
+			Help:    "Time spent handling each RPC, by procedure and Connect status code.",
 			Buckets: prometheus.DefBuckets,
 		}, []string{"procedure", "code"}),
 	}

@@ -43,7 +43,7 @@ func newConcurrencyMetrics() *concurrencyMetrics {
 	return &concurrencyMetrics{
 		rejections: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "vault_sync_rpc_concurrency_rejections_total",
-			Help: "Authenticated RPCs rejected because their user already had the maximum number in flight on this replica, by procedure.",
+			Help: "Authenticated RPCs rejected with resource_exhausted because their user already had VAULT_SYNC_MAX_CONCURRENT_RPCS_PER_USER calls in flight on this replica, by procedure. These calls are also counted in vault_sync_rpc_requests_total with code resource_exhausted.",
 		}, []string{"procedure"}),
 		inFlight: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "vault_sync_rpc_in_flight",
