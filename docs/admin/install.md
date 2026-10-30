@@ -7,7 +7,7 @@ This page installs the vault-sync server and its plaintext export job on Kuberne
 ## What you deploy
 
 - **The server.** This is a Deployment of two or more identical replicas behind one Service. It is the only part that faces the internet. The replicas share one PostgreSQL database and one S3 bucket and keep no state of their own, so you can stop any replica at any time ([Upgrades](upgrades.md) has more about high availability).
-- **The export job.** This is a CronJob that runs `vault-sync-server export`. It writes a plaintext copy of every vault to a volume that your tape-archival tooling reads. It has its own credentials. It is the only part that can ever hold the escrow private key. It is off by default. Turn it on with `config.export.enabled: true` ([The export job](../deployment.md#the-export-job)), because it is the plaintext disaster-recovery copy of every vault.
+- **The export job.** This is a CronJob that runs `vault-sync-server export`. It writes a plaintext copy of every vault to a volume that your tape-archival tooling reads. It has its own credentials. It is the only part that can ever hold the escrow private key. It is off by default. Turn it on with `config.export.enabled: true` ([The export job](backup-and-restore.md#the-export-job)), because it is the plaintext disaster-recovery copy of every vault.
 - **Nothing else.** The chart creates no database, no bucket, no Secret and no client in the sign-in provider. It refers to the ones that you create in the steps below.
 
 ## The image
@@ -18,7 +18,7 @@ The same image runs three things:
 
 - The server, with no arguments.
 - The export, with `export -out DIR`.
-- The Markdown import, with `import VAULT_ID DIR` ([import.md](../import.md)).
+- The Markdown import, with `import VAULT_ID DIR` ([import.md](backup-and-restore.md#import-markdown)).
 
 The image is built reproducibly with Nix (`nix/server.nix`, `nix/server-image.nix`, `dockerTools.streamLayeredImage`), with the pinned Go toolchain of the flake. Every build checks the binary with `govulncheck -mode=binary` ([Releasing](../deployment.md#releasing)).
 

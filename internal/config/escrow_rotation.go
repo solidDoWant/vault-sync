@@ -14,7 +14,7 @@ import (
 )
 
 // EscrowRotationConfig is the configuration of the export job's escrow key
-// rotation (docs/export.md): the database it reads escrow slots from, and
+// rotation (docs/admin/encryption.md): the database it reads escrow slots from, and
 // the identities, signing keys and job token it rotates with.
 type EscrowRotationConfig struct {
 	// Database is the PostgreSQL connection configuration. Its pool is

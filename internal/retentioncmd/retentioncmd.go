@@ -1,6 +1,6 @@
 // Package retentioncmd is the `vault-sync-server retention` subcommand, with
 // which the operator sets, removes and lists per-vault retention overrides
-// (SPEC.md §11, docs/configuration.md). It is the only way to set one: no
+// (SPEC.md §11, docs/admin/history-and-retention.md). It is the only way to set one: no
 // API does.
 package retentioncmd
 

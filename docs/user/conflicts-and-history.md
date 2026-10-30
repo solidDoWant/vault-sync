@@ -37,7 +37,7 @@ The conflict view also lists files that do not sync. [Syncing](syncing.md#files-
 
 ## History
 
-By default, the server keeps every saved version for 90 days, then one version per day for a year, then one per week. Your admin can change these times. The current version of a file is never removed, and neither is the record that a file was deleted. For the settings, see "Retention and history" in [the server configuration](../configuration.md).
+By default, the server keeps every saved version for 90 days, then one version per day for a year, then one per week. Your admin can change these times. The current version of a file is never removed, and neither is the record that a file was deleted. For the settings, see [History and retention](../admin/history-and-retention.md#the-retention-policy) in the admin docs.
 
 History works only while the vault syncs: you are signed in and the vault is connected.
 

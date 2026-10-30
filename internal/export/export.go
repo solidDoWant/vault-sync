@@ -1,6 +1,6 @@
 // Package export writes a plaintext copy of every vault's live documents to
 // a directory tree for the operator's archival tooling (SPEC.md §4). It runs
-// as the `vault-sync-server export` subcommand (docs/export.md).
+// as the `vault-sync-server export` subcommand (docs/admin/backup-and-restore.md).
 //
 // Every live document whose content can be read is exported: at its path in
 // the vault's directory when the filesystem can hold it there, otherwise in
@@ -8,10 +8,46 @@
 // live document and where its bytes are, so the export can be restored
 // exactly.
 //
+// # Path safety
+//
+// Document paths come from the database and are treated as untrusted.
+// Before anything is written, every path is checked against the
+// vault-relative rule shared with the server and clients (SPEC.md §6.2,
+// testdata/paths/validity.json): no leading separator, no drive letter or
+// UNC prefix, and no empty, "." or ".." segment, with "\" also counted as a
+// separator. A path that fails the check is never used as a file name: the
+// document goes to the unplaced tree. Files are created through a handle
+// confined to the vault's directory (os.Root), every directory on the way is
+// checked without following symbolic links, and files are created
+// exclusively (O_EXCL), so the export never writes through a symbolic link
+// or overwrites a file.
+//
+// # Atomic replacement
+//
 // The export only reads the database and the object store. It writes a new
-// tree to a staging directory beside the output directory and swaps it into
-// place atomically, so the output directory always holds one complete
-// export: an interrupted run leaves the previous one untouched.
+// tree to a staging directory beside the output directory DIR, named
+// ".<name>.staging-<number>" in DIR's parent, and swaps it into place
+// atomically, so DIR always holds one complete export: a run that fails, is
+// killed or loses power part-way leaves the previous one untouched.
+//
+// Once the whole tree is written and flushed to disk (syncfs), the run
+// exchanges the staging directory with DIR (renameat2 with
+// RENAME_EXCHANGE), then removes the previous tree and flushes the rename to
+// disk. If only that last flush fails, the new export is already in place:
+// the run reports ok or partial as usual and logs a warning that the swap may
+// not survive a power loss. On the first run DIR is created by a plain
+// rename.
+//
+// A lock file, ".<name>.lock" in the parent, makes a second concurrent run
+// against the same DIR fail at once. Because the lock serializes runs, a run
+// removes the staging directories left by interrupted runs before it
+// starts: only entries named exactly ".<name>.staging-" followed by digits,
+// so the lock file and the staging directories of an export to a sibling
+// directory (for example -out /backup/out.staging-1) are left alone. This
+// holds for any name, including one that contains "*". If the staging name
+// a run picks is already taken (by a directory, file or symbolic link
+// created after that cleanup), the run leaves that entry alone and picks
+// another, failing after maxStagingAttempts taken names.
 package export
 
 import (

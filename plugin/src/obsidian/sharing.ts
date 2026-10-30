@@ -181,7 +181,7 @@ async function escrowFingerprints(named: EscrowBundle, pinnedEscrow: (() => Prom
 /**
  * The vault fingerprint: the whole genesis hash as 64 lowercase hex digits
  * in groups of four, the form the escrow import's `-genesis` takes
- * (docs/import.md).
+ * (docs/admin/backup-and-restore.md).
  */
 export function vaultFingerprint(genesisHash: Uint8Array): string {
   return (bytesToHex(genesisHash).match(/.{1,4}/gu) ?? []).join(" ");

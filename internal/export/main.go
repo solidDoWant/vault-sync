@@ -85,7 +85,7 @@ func runExport(ctx context.Context, output string, lookup func(string) (string, 
 	cfg, err := config.LoadExport(lookup)
 	if err != nil {
 		logger := slog.New(slog.NewJSONHandler(stderr, nil))
-		logger.ErrorContext(ctx, "invalid configuration; see docs/export.md", "problems", problemList(err))
+		logger.ErrorContext(ctx, "invalid configuration; see docs/admin/backup-and-restore.md", "problems", problemList(err))
 
 		return Summary{}, fmt.Errorf("invalid configuration: %s", strings.Join(problemList(err), "; "))
 	}
@@ -150,7 +150,7 @@ func runExport(ctx context.Context, output string, lookup func(string) (string, 
 	defer cancelRecord()
 
 	if recordErr := queries.RecordExportRun(recordCtx, summary.Status); recordErr != nil {
-		logger.WarnContext(ctx, "cannot record the export's outcome in export_status; see docs/export.md for the grant it needs", "error", recordErr)
+		logger.WarnContext(ctx, "cannot record the export's outcome in export_status; see docs/admin/backup-and-restore.md for the grant it needs", "error", recordErr)
 	}
 
 	return summary, err

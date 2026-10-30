@@ -97,11 +97,12 @@ func exportedFiles(t *testing.T, directory string) map[string]string {
 }
 
 // A user who loses the recovery passphrase, with one vault escrowed and one
-// not, followed by the documented recovery (docs/encryption.md, "Losing your
-// passphrase"): the export job writes the escrowed vault in plaintext, and the
-// operator imports that copy into a new encrypted vault of the user's new key
-// through the escrow identity. Afterwards the deployment's database, bucket and
-// logs are searched for anything that must never reach the server.
+// not, followed by the documented recovery (docs/admin/encryption.md, "When a
+// member loses their passphrase"): the export job writes the escrowed vault in
+// plaintext, and the operator imports that copy into a new encrypted vault of
+// the user's new key through the escrow identity. Afterwards the deployment's
+// database, bucket and logs are searched for anything that must never reach the
+// server.
 func TestLostPassphraseAndEscrowRecovery(t *testing.T) {
 	cluster := newDeployment(t)
 	flow := cluster.issuer.EnableDeviceFlow(t, cluster.key, authtest.DeviceFlowOptions{})
