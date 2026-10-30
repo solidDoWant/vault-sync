@@ -213,12 +213,7 @@
 {{- $escrowSecretName := $config.export.escrow.secretName | default "" -}}
 {{- if and $escrowSecretName $exportEnabled -}}
   {{- $escrowKey := $config.export.escrow.key | default "escrow.key" -}}
-  {{- $escrowKeys := list $escrowKey -}}
-  {{- with $config.export.escrow.signingKeysKey -}}
-    {{- $escrowKeys = append $escrowKeys . -}}
-    {{- $_ := set $exportEnv "VAULT_SYNC_ESCROW_SIGNING_KEY_FILE" (printf "%s/escrow/%s" $mountRoot .) -}}
-  {{- end -}}
-  {{- $_ := set $secretMounts "escrow" (dict "secretName" $escrowSecretName "path" (printf "%s/escrow" $mountRoot) "controllers" (list $exportController) "keys" $escrowKeys) -}}
+  {{- $_ := set $secretMounts "escrow" (dict "secretName" $escrowSecretName "path" (printf "%s/escrow" $mountRoot) "controllers" (list $exportController) "keys" (list $escrowKey)) -}}
   {{- $_ := set $exportEnv "VAULT_SYNC_ESCROW_IDENTITY_FILE" (printf "%s/escrow/%s" $mountRoot $escrowKey) -}}
 {{- end -}}
 
@@ -547,6 +542,20 @@
   {{- if regexMatch $namesEscrow (toYaml (.Values.resources.defaultPodOptions | default dict)) -}}
     {{- fail (printf "resources.defaultPodOptions references the escrow Secret %q, which would reach the server; it may be used by the export job only (SPEC.md §9.4)" $escrowSecretName) -}}
   {{- end -}}
+{{- end -}}
+
+{{/* The escrow signing private key stays offline and is used only by a
+   manual escrow key rotation (export rotate-escrow, docs/export.md). No
+   controller may receive its file or run the rotation, so the render fails
+   if anything in a controller or the default pod options names either. */}}
+{{- $namesSigningKey := "VAULT_SYNC_ESCROW_SIGNING_KEY_FILE|rotate-escrow" -}}
+{{- range $id, $controller := $merged.controllers -}}
+  {{- if regexMatch $namesSigningKey (toYaml $controller) -}}
+    {{- fail (printf "resources.controllers.%s gets the escrow signing key (VAULT_SYNC_ESCROW_SIGNING_KEY_FILE or export rotate-escrow); it stays offline and is used only by a manual rotation (docs/export.md)" $id) -}}
+  {{- end -}}
+{{- end -}}
+{{- if regexMatch $namesSigningKey (toYaml (.Values.resources.defaultPodOptions | default dict)) -}}
+  {{- fail "resources.defaultPodOptions gets the escrow signing key (VAULT_SYNC_ESCROW_SIGNING_KEY_FILE or export rotate-escrow); it stays offline and is used only by a manual rotation (docs/export.md)" -}}
 {{- end -}}
 
 {{/* ============================================================ */}}

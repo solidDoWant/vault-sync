@@ -247,15 +247,13 @@ config:
     # key rotation). It is mounted read-only at /etc/vault-sync/escrow into
     # the export job only, which reads it as VAULT_SYNC_ESCROW_IDENTITY_FILE
     # to decrypt escrowed vaults; the chart refuses to render if any value
-    # would put it into the server. signingKeysKey, when set, names the key
-    # of the same Secret holding the escrow signing keys (one base64 Ed25519
-    # seed per line, both during a rotation), read as
-    # VAULT_SYNC_ESCROW_SIGNING_KEY_FILE by the escrow key rotation
-    # (export rotate-escrow, docs/export.md).
+    # would put it into the server. The escrow signing keys never go into
+    # the cluster: they stay offline and are used only by a manual escrow key
+    # rotation (export rotate-escrow, docs/export.md), and the chart refuses
+    # to render if any controller would get them.
     escrow:
       secretName: ""
       key: escrow.key
-      signingKeysKey: ""
   # escrowJobToken names the Secret holding the static bearer token of the
   # export job's escrow rotation endpoint under key (one line, at least 32
   # characters, e.g. openssl rand -base64 32). It is mounted read-only at

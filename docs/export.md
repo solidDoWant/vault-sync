@@ -209,6 +209,16 @@ The exit status is `0` only for `ok`. It is `1` for `partial` or `failed`, and `
 
 `vault-sync-server export rotate-escrow` moves every escrow slot to a new escrow key (`docs/design/encryption.md`, *Escrow*). The operator runs it on purpose and names the new escrow bundle: its age recipient and its Ed25519 signing public key.
 
+### Keep the escrow signing key offline
+
+The escrow signing key is the private key that signs the move from one escrow key to the next. Devices trust a new escrow key only when the old signing key signed it. This protects devices only if the signing key is never on the cluster. Thus:
+
+- Keep the signing key file on an offline machine or medium, with a second offline backup.
+- Bring it out only for a rotation, and put it away again after the rotation.
+- Do not put it in a Kubernetes Secret that a pod mounts. The Helm chart has no value for it. The chart refuses to render if a controller gets `VAULT_SYNC_ESCROW_SIGNING_KEY_FILE` or runs `export rotate-escrow`.
+
+A rotation is a rare manual task. You run it in one of two ways, shown in [Run the rotation](#run-the-rotation): from your own machine, or as a one-off pod.
+
 ```sh
 vault-sync-server export rotate-escrow -server https://sync.example.com \
   -recipient age1pq1… -signing-public-key BASE64
@@ -244,9 +254,9 @@ It prints one JSON line and exits `0` only when no slot failed and no slot is le
 
 `failures` lists up to 100 of the `failed_slots`, each with `vault_id`, `epoch`, `recipient_id` and `reason`.
 
-**The operator's order of steps:**
+### The order of steps
 
-1. Generate the new escrow key and a new escrow signing key, and add the new identity to the identity file and the new seed to the signing key file, keeping the old ones:
+1. On your offline machine, generate the new escrow key and a new escrow signing key. Add the new identity to the identity file and the new seed to the signing key file. Keep the old ones in both files:
 
    ```sh
    age-keygen -pq -o new-escrow.key && age-keygen -y new-escrow.key              # -recipient
@@ -255,10 +265,96 @@ It prints one JSON line and exits `0` only when no slot failed and no slot is le
    openssl pkey -in new-signing.pem -pubout -outform DER | tail -c 32 | base64   # -signing-public-key
    ```
 
-2. Run `export rotate-escrow` with the new bundle. It appends the rotation statement and re-wraps the existing slots.
+2. Run `export rotate-escrow` with the new bundle, as shown in [Run the rotation](#run-the-rotation). It appends the rotation statement and re-wraps the existing slots.
 3. Update the server: `VAULT_SYNC_ESCROW_RECIPIENT` and `VAULT_SYNC_ESCROW_SIGNING_KEY` to the new bundle (the server refuses to start with a bundle that is not the chain's head), and the old key's id in `VAULT_SYNC_ESCROW_RETIRING_KEY_IDS`, so that slots that devices still wrap to the old key during the switch are accepted.
 4. Re-run `export rotate-escrow` until it reports `"old_key_slots": 0` and exits `0`. Look into any slot listed in `failures`: it stays on the old key.
-5. Unset `VAULT_SYNC_ESCROW_RETIRING_KEY_IDS`, then remove the old identity and the old seed from the files and destroy them, offline copies included. An escrow slot now opens with the new identity and `age --decrypt` ([encryption.md](encryption.md#recovery-with-age)).
+5. Unset `VAULT_SYNC_ESCROW_RETIRING_KEY_IDS`, then remove the old identity and the old seed from the files and destroy them, offline copies included. Put the signing key file with the new seed back into offline storage, and update its offline backup. Delete every copy that is not offline. An escrow slot now opens with the new identity and `age --decrypt` ([encryption.md](encryption.md#recovery-with-age)).
+
+### Run the rotation
+
+Both ways need the same inputs:
+
+- The database URL of a role that can read the vault-sync database, as for the export.
+- The server's public URL.
+- The escrow job token, from the Secret that `config.escrowJobToken.secretName` names.
+- From offline storage: the identity file (`escrow.key`) and the signing key file (`signing.keys`).
+
+The examples use the namespace `vault-sync`, the token Secret `vault-sync-escrow-job-token`, the image version `VERSION`, and the new bundle in `$RECIPIENT` and `$SIGNING_PUBLIC_KEY`. Change them for your installation.
+
+#### From your own machine
+
+You need the `vault-sync-server` binary of the same version as the server, and `kubectl` access to the namespace of the database.
+
+1. Forward the PostgreSQL port to your machine. Keep this command running in its own terminal. Replace `svc/postgres` with your PostgreSQL service.
+
+   ```sh
+   kubectl -n vault-sync port-forward svc/postgres 5432:5432
+   ```
+
+2. Write the job token to a file:
+
+   ```sh
+   kubectl -n vault-sync get secret vault-sync-escrow-job-token -o jsonpath='{.data.token}' | base64 -d > token
+   ```
+
+3. Run the rotation. The database URL points at the forwarded port:
+
+   ```sh
+   VAULT_SYNC_DATABASE_URL='postgres://vault_sync_export@localhost:5432/vault_sync' \
+   VAULT_SYNC_ESCROW_IDENTITY_FILE=./escrow.key \
+   VAULT_SYNC_ESCROW_SIGNING_KEY_FILE=./signing.keys \
+   VAULT_SYNC_ESCROW_JOB_TOKEN_FILE=./token \
+   vault-sync-server export rotate-escrow -server https://sync.example.com \
+     -recipient "$RECIPIENT" -signing-public-key "$SIGNING_PUBLIC_KEY"
+   ```
+
+4. Stop the port forward, and delete the `token` file.
+
+#### As a one-off pod
+
+You put the keys in a temporary Secret and delete it after the run.
+
+1. Create the temporary Secret from the files on your machine. Include the job token:
+
+   ```sh
+   kubectl -n vault-sync get secret vault-sync-escrow-job-token -o jsonpath='{.data.token}' | base64 -d > token
+   kubectl -n vault-sync create secret generic vault-sync-escrow-rotation \
+     --from-file=escrow.key=./escrow.key --from-file=signing.keys=./signing.keys --from-file=token=./token
+   ```
+
+2. Run the rotation in a pod that mounts this Secret. The pod is deleted when it ends, and the command prints the JSON summary:
+
+   ```sh
+   kubectl -n vault-sync run vault-sync-rotate-escrow --rm -i --restart=Never \
+     --image=ghcr.io/soliddowant/vault-sync:VERSION --overrides='{
+       "spec": {
+         "securityContext": {"runAsNonRoot": true, "runAsUser": 65532, "runAsGroup": 65532},
+         "volumes": [{"name": "keys", "secret": {"secretName": "vault-sync-escrow-rotation"}}],
+         "containers": [{
+           "name": "vault-sync-rotate-escrow",
+           "image": "ghcr.io/soliddowant/vault-sync:VERSION",
+           "args": ["export", "rotate-escrow", "-server", "https://sync.example.com",
+                    "-recipient", "'"$RECIPIENT"'", "-signing-public-key", "'"$SIGNING_PUBLIC_KEY"'"],
+           "env": [
+             {"name": "VAULT_SYNC_DATABASE_URL", "value": "postgres://vault_sync_export@postgres:5432/vault_sync"},
+             {"name": "VAULT_SYNC_ESCROW_IDENTITY_FILE", "value": "/keys/escrow.key"},
+             {"name": "VAULT_SYNC_ESCROW_SIGNING_KEY_FILE", "value": "/keys/signing.keys"},
+             {"name": "VAULT_SYNC_ESCROW_JOB_TOKEN_FILE", "value": "/keys/token"}
+           ],
+           "volumeMounts": [{"name": "keys", "mountPath": "/keys", "readOnly": true}]
+         }]
+       }
+     }'
+   ```
+
+3. Delete the temporary Secret and the local `token` file at once, also when the run failed:
+
+   ```sh
+   kubectl -n vault-sync delete secret vault-sync-escrow-rotation
+   rm token
+   ```
+
+If your database needs TLS client certificates, add them to the run as the `VAULT_SYNC_DATABASE_TLS_*` files ([configuration.md](configuration.md)). For the one-off pod, put them in the temporary Secret too.
 
 ## Signals
 
