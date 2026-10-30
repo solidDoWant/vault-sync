@@ -20,7 +20,7 @@ import { MembershipService } from "../../gen/vaultsync/v1/membership_pb";
 import { VaultEncryption, VaultRole } from "../../gen/vaultsync/v1/types_pb";
 import { UserKeyService } from "../../gen/vaultsync/v1/user_key_pb";
 import { VaultService } from "../../gen/vaultsync/v1/vault_pb";
-import { KeyRecipientKind, VaultKeyService, type EpochRecord as EpochRecordMessage, type NextEpoch } from "../../gen/vaultsync/v1/vault_key_pb";
+import { ConversionRefusedSchema, KeyRecipientKind, VaultKeyService, type EpochRecord as EpochRecordMessage, type NextEpoch } from "../../gen/vaultsync/v1/vault_key_pb";
 import type { LogEntry } from "../../gen/vaultsync/v1/types_pb";
 import { equalBytes, randomBytes } from "@noble/ciphers/utils.js";
 import { sha256 } from "@noble/hashes/sha2.js";
@@ -37,6 +37,8 @@ export interface StoredMember {
   role: VaultRole;
   /** The member's user public key; undefined while they have none. */
   publicKey: Uint8Array | undefined;
+  /** The member's signing public key, if their key has one. */
+  signPublicKey?: Uint8Array;
 }
 
 /** A stored epoch. */
@@ -89,6 +91,20 @@ export class MemoryVaultKeyServer {
   private founder: Uint8Array | undefined;
   /** Pending invitations, by id. */
   readonly invitations = new Map<string, { idHash: Uint8Array; role: VaultRole; slots: StoredSlot[]; anchor: Uint8Array }>();
+  /**
+   * Whether the vault is end-to-end encrypted. A plaintext vault
+   * ({@link plaintextVault}) has members but no log or epochs until
+   * ConvertVault converts it.
+   */
+  encrypted = true;
+  /** The vault's head seq at its conversion (ListEpochs' conversion_seq); 0 when never converted. */
+  conversionSeq = 0n;
+  /** In a plaintext vault: its head seq, which a conversion records. */
+  headSeq = 0n;
+  /** In a plaintext vault: its live documents, whose path keys ConvertVault needs. */
+  liveDocuments = new Set<string>();
+  /** In a plaintext vault: its pending invitations, which block a conversion. */
+  plaintextInvitations: string[] = [];
   /** Users' sealed anchor lists (UserKeyService) and their versions. */
   readonly anchorLists = new Map<string, { version: number; sealed: Uint8Array }>();
   /** Every request any member sent, in order. */
@@ -143,6 +159,18 @@ export class MemoryVaultKeyServer {
     check();
     this.log.push(entry);
     return after;
+  }
+
+  /** Makes this a plaintext vault that exists, with no log and no epochs, as before a conversion. */
+  plaintextVault(): void {
+    this.encrypted = false;
+    this.created = true;
+    this.rotationPending = false;
+  }
+
+  /** Adds a member of a plaintext vault with their user key and signing key, or with no key. */
+  addPlaintextMember(userId: string, role: VaultRole, key?: UserKeyPair): void {
+    this.members.set(userId, { role, publicKey: key?.publicKey, signPublicKey: key === undefined ? undefined : signPublicKey(key.signSeed) });
   }
 
   /** Adds a member; `publicKey` is their user key, if they have one. */
@@ -260,6 +288,7 @@ export class MemoryVaultKeyServer {
               nextPageToken: next,
               currentEpoch: this.currentEpoch,
               rotationPending: this.rotationPending,
+              conversionSeq: this.conversionSeq,
             };
           },
           listMissingSlots: (request) => {
@@ -274,6 +303,57 @@ export class MemoryVaultKeyServer {
             }
             const { items, next } = this.page(missing, request.pageToken);
             return { missingSlots: items, nextPageToken: next };
+          },
+          convertVault: (request) => {
+            this.owner(userId, request.vaultId);
+            if (this.encrypted) throw new ConnectError("the vault is already end-to-end encrypted", Code.FailedPrecondition);
+            const withoutKey = [...this.members].filter(([, member]) => member.publicKey === undefined || member.signPublicKey === undefined).map(([id]) => id);
+            if (withoutKey.length > 0 || this.plaintextInvitations.length > 0) {
+              throw new ConnectError("the vault cannot be converted yet", Code.FailedPrecondition, undefined, [
+                { desc: ConversionRefusedSchema, value: { membersWithoutKey: withoutKey.sort(), pendingInvitations: [...this.plaintextInvitations].sort() } },
+              ]);
+            }
+            if (request.genesis === undefined) throw new ConnectError("genesis is required", Code.InvalidArgument);
+            const log = [fromLogEntry(this.vaultId, request.genesis)];
+            if (request.membersEntry !== undefined) log.push(fromLogEntry(this.vaultId, request.membersEntry));
+            let state: LogState | undefined;
+            try {
+              state = replayLog(this.vaultId, log).at(-1);
+            } catch (error) {
+              throw new ConnectError(`the log does not verify: ${error instanceof Error ? error.message : String(error)}`, Code.InvalidArgument);
+            }
+            if (state?.members.get(userId)?.role !== logRole(VaultRole.OWNER) || (state.escrow !== undefined) !== request.escrow) {
+              throw new ConnectError("the genesis does not name the caller or the requested escrow", Code.InvalidArgument);
+            }
+            const named =
+              state.members.size === this.members.size &&
+              [...this.members].every(([id, member]) => {
+                const logged = state.members.get(id);
+                return (
+                  logged !== undefined &&
+                  logged.role === logRole(member.role) &&
+                  member.publicKey !== undefined &&
+                  member.signPublicKey !== undefined &&
+                  equalBytes(logged.bundle.kemPub, member.publicKey) &&
+                  equalBytes(logged.bundle.signPub, member.signPublicKey)
+                );
+              });
+            if (!named) throw new ConnectError("the log does not name the vault's members, roles and keys", Code.Aborted);
+            const documents = new Set(request.pathKeys.map((entry) => entry.documentId));
+            if (documents.size !== request.pathKeys.length || request.pathKeys.some((entry) => entry.pathKey.length !== 32)) {
+              throw new ConnectError("one 32-byte path key per document", Code.InvalidArgument);
+            }
+            if (documents.size !== this.liveDocuments.size || [...documents].some((id) => !this.liveDocuments.has(id))) {
+              throw new ConnectError("path_keys do not name the vault's live documents", Code.Aborted);
+            }
+            const nextEpoch = this.checkNextEpoch(request.nextEpoch);
+            this.checkRecord(nextEpoch, request.record, log, log.length);
+            this.escrow = request.escrow;
+            this.log.push(...log);
+            const epoch = this.applyNextEpoch(userId, nextEpoch, request.record);
+            this.encrypted = true;
+            this.conversionSeq = this.headSeq;
+            return { epoch: { epoch: epoch.epoch, commitment: epoch.commitment, creatorUserId: epoch.creator }, conversionSeq: this.conversionSeq };
           },
           rotateEpoch: async (request) => {
             this.owner(userId, request.vaultId);
@@ -310,7 +390,12 @@ export class MemoryVaultKeyServer {
           listMembers: (request) => {
             this.owner(userId, request.vaultId);
             return {
-              members: [...this.members].map(([memberId, member]) => ({ userId: memberId, role: member.role, publicKey: member.publicKey ?? new Uint8Array() })),
+              members: [...this.members].map(([memberId, member]) => ({
+                userId: memberId,
+                role: member.role,
+                publicKey: member.publicKey ?? new Uint8Array(),
+                signPublicKey: member.signPublicKey ?? new Uint8Array(),
+              })),
             };
           },
           removeMember: async (request) => {

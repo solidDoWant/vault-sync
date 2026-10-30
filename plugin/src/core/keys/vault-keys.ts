@@ -280,46 +280,13 @@ export class VaultKeyManager {
    * the key is not: the device's own slot is in the epoch.
    */
   private async createEpoch(view: EpochView, at: LogState, send: (nextEpoch: NextEpochInit, record: EpochRecordInit) => Promise<unknown>): Promise<void> {
-    const { vaultId, userKey } = this.options;
     const expected = view.currentEpoch;
-    const epoch = expected + 1;
-    const epochKey = generateKey();
-    const slots: SlotInit[] = [];
-    for (const [userId, member] of at.members) {
-      slots.push({
-        epoch,
-        recipientKind: KeyRecipientKind.USER,
-        recipientId: userId,
-        wrappedKey: await sealKeySlot(member.bundle.kemPub, epochKey, { vaultId, epoch, recipientKind: "user", recipientId: userId }),
-      });
-    }
-    for (const [invitationId, invitation] of at.invitations) {
-      slots.push({
-        epoch,
-        recipientKind: KeyRecipientKind.INVITATION,
-        recipientId: invitationId,
-        wrappedKey: await sealKeySlot(invitation.kemPub, epochKey, { vaultId, epoch, recipientKind: "invitation", recipientId: invitationId }),
-      });
-    }
-    if (at.escrow !== undefined) {
-      const { escrow } = this.options;
-      if (escrow?.bundle === undefined || !escrowEqual(escrow.bundle, at.escrow)) {
-        throw new Error("the vault's membership log names another escrow key than the one this device pinned, so it does not rotate");
-      }
-      slots.push({
-        epoch,
-        recipientKind: KeyRecipientKind.ESCROW,
-        recipientId: escrow.keyId,
-        wrappedKey: await sealKeySlot(escrow.publicKey, epochKey, { vaultId, epoch, recipientKind: "escrow", recipientId: escrow.keyId }),
-      });
-    }
-    const commitment = keyCommitment(epochKey, vaultId, epoch);
     const prevCommitment = expected === 0 ? NO_PREVIOUS_COMMITMENT : view.commitments.get(expected);
     if (prevCommitment === undefined) throw new Error(`the vault lists no commitment for epoch ${String(expected)}`);
-    const record = signEpochRecord({ vaultId, epoch, commitment, prevCommitment, logSeq: at.seq, logHash: at.hash, recipients: epochRecipients(at) }, userKey.signSeed);
-    await send({ expectedEpoch: expected, commitment, slots }, epochRecordMessage(record));
+    const built = await buildEpoch({ vaultId: this.options.vaultId, signSeed: this.options.userKey.signSeed, at, expected, prevCommitment, escrow: this.options.escrow });
+    await send(built.nextEpoch, built.record);
     const keys = await this.loaded();
-    keys.set(epoch, epochKey);
+    keys.set(built.epoch, built.epochKey);
     await this.options.store.save(keys);
   }
 
@@ -434,6 +401,75 @@ export class VaultKeyManager {
     this.keys ??= new Map(await this.options.store.load());
     return this.keys;
   }
+}
+
+/** A new epoch, ready to send: its key, its slots and its signed record. */
+export interface BuiltEpoch {
+  epoch: number;
+  epochKey: Uint8Array;
+  nextEpoch: NextEpochInit;
+  record: EpochRecordInit;
+}
+
+export interface BuildEpochOptions {
+  vaultId: string;
+  /** The signing seed of the owner who signs the epoch's record. */
+  signSeed: Uint8Array;
+  /** The verified log position the record names: its recipients are the members, pending invitations and escrow key there. */
+  at: LogState;
+  /** The vault's current epoch, which the new one follows (0 for the first). */
+  expected: number;
+  /** The current epoch's commitment ({@link NO_PREVIOUS_COMMITMENT} for the first). */
+  prevCommitment: Uint8Array;
+  /** The pinned escrow key, which the log at `at` must name if it names one. */
+  escrow: EscrowRecipient | undefined;
+}
+
+/**
+ * The epoch after `expected` with a fresh key, wrapped for every recipient
+ * the log names at `at` (members, pending invitations, and the escrow key if
+ * escrow is on there), each to its key in the log, and its record signed at
+ * that position.
+ */
+export async function buildEpoch(options: BuildEpochOptions): Promise<BuiltEpoch> {
+  const { vaultId, at, expected } = options;
+  const epoch = expected + 1;
+  const epochKey = generateKey();
+  const slots: SlotInit[] = [];
+  for (const [userId, member] of at.members) {
+    slots.push({
+      epoch,
+      recipientKind: KeyRecipientKind.USER,
+      recipientId: userId,
+      wrappedKey: await sealKeySlot(member.bundle.kemPub, epochKey, { vaultId, epoch, recipientKind: "user", recipientId: userId }),
+    });
+  }
+  for (const [invitationId, invitation] of at.invitations) {
+    slots.push({
+      epoch,
+      recipientKind: KeyRecipientKind.INVITATION,
+      recipientId: invitationId,
+      wrappedKey: await sealKeySlot(invitation.kemPub, epochKey, { vaultId, epoch, recipientKind: "invitation", recipientId: invitationId }),
+    });
+  }
+  if (at.escrow !== undefined) {
+    const { escrow } = options;
+    if (escrow?.bundle === undefined || !escrowEqual(escrow.bundle, at.escrow)) {
+      throw new Error("the vault's membership log names another escrow key than the one this device pinned, so it does not rotate");
+    }
+    slots.push({
+      epoch,
+      recipientKind: KeyRecipientKind.ESCROW,
+      recipientId: escrow.keyId,
+      wrappedKey: await sealKeySlot(escrow.publicKey, epochKey, { vaultId, epoch, recipientKind: "escrow", recipientId: escrow.keyId }),
+    });
+  }
+  const commitment = keyCommitment(epochKey, vaultId, epoch);
+  const record = signEpochRecord(
+    { vaultId, epoch, commitment, prevCommitment: options.prevCommitment, logSeq: at.seq, logHash: at.hash, recipients: epochRecipients(at) },
+    options.signSeed,
+  );
+  return { epoch, epochKey, nextEpoch: { expectedEpoch: expected, commitment, slots }, record: epochRecordMessage(record) };
 }
 
 /** Every item of a paged list, following next-page tokens. */
