@@ -1,7 +1,7 @@
 name: release
 
 # Publishes the server image and the Helm chart for a release tag
-# (docs/deployment.md, Releasing). `make release` only tags and creates the
+# (docs/dev/releasing.md). `make release` only tags and creates the
 # GitHub release; pushing the tag starts this workflow, which builds the
 # image with Nix exactly as `make build-images` does (govulncheck included),
 # pushes ghcr.io/soliddowant/vault-sync:<tag> (plus :latest for a final

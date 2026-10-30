@@ -463,32 +463,5 @@ The dashboards come from the chart's own files. To import them by hand, upload t
 
 ## Releasing
 
-Releases are cut from a clean checkout of `master` with the GitHub CLI signed in. `VERSION` is a semantic version without a `v` (`1.2.3`, or `1.2.3-beta.1` for a pre-release):
+How a release is made is in [`dev/releasing.md`](dev/releasing.md).
 
-```sh
-nix develop -c make release VERSION=1.2.3                # dry run: builds the plugin, prints what it would tag and release
-nix develop -c make release VERSION=1.2.3 PUSH_ALL=true  # releases
-```
-
-**Release notes come from `CHANGELOG.md`.** The body of the GitHub release is the `## <VERSION>` section of `CHANGELOG.md` in the released checkout, without its heading, so write and merge that section before releasing. `make release` refuses a version whose section is missing or empty, in a dry run too, before anything is built or pushed; a dry run prints the notes it would publish.
-
-`make release` checks the version, `gh auth status` and the `CHANGELOG.md` section first (and, for a real release, that the tree is clean, that `HEAD` is the published `master` (`origin/master`, fetched first) and that the tag is new), then runs:
-
-1. `make plugin-release-assets`: builds the plugin and collects `main.js`, `manifest.json` (its `version` set to `<VERSION>`) and `styles.css` in `bin/release/`, and checks them, so a broken asset stops the release before anything is tagged.
-2. Tags `HEAD` as `<VERSION>`, pushes the tag and creates the GitHub release `<VERSION>` with that `CHANGELOG.md` section as its notes (written to `bin/release/release-notes.md`) and the three plugin files attached (a version with `-` is marked as a pre-release and never as the latest release). In a dry run these commands are only printed.
-
-`make release` needs no registry credentials: pushing the tag starts the `release` workflow (`.github/workflows/release.yml`), which publishes the server image and the chart with the workflow's `GITHUB_TOKEN` (`packages: write`). It runs on every pushed tag of the form `X.Y.Z` or `X.Y.Z-…` and, through `scripts/publish-release.sh`:
-
-1. `make build-images PUSH_ALL=true`: builds the image with Nix, runs `govulncheck -mode=binary` on its binary (a known vulnerability fails the run), and pushes `ghcr.io/soliddowant/vault-sync:<VERSION>`, plus `:latest` unless the version is a pre-release.
-2. `make helm PUSH_ALL=true`: packages the chart as version `<VERSION>` and pushes it to `oci://ghcr.io/soliddowant/charts`.
-3. Checks that both resolve (`docker manifest inspect ghcr.io/soliddowant/vault-sync:<VERSION>`, `helm show chart oci://ghcr.io/soliddowant/charts/vault-sync --version <VERSION>`).
-
-The GitHub release therefore exists a few minutes before its image and chart: a release is complete once its `release` workflow run has passed (`gh run list --workflow release.yml --branch <VERSION>`). If the run fails, fix the cause and re-run it (`gh run rerun <run-id>`); never move the tag. If tagging, the tag push or `gh release create` fails, finish by hand from the same checkout with the commands of step 2 (`git tag -a <VERSION> -m "Release <VERSION>"`, `git push origin refs/tags/<VERSION>`, `gh release create <VERSION> --verify-tag --title <VERSION> --notes-file bin/release/release-notes.md bin/release/main.js bin/release/manifest.json bin/release/styles.css`, adding `--prerelease --latest=false` for a pre-release), skipping any that already succeeded. Rerunning `make release` instead stops at the preflight once the tag exists.
-
-To build the image and chart locally without the workflow, `make build-images helm VERSION=<VERSION>` builds both without pushing; with `PUSH_ALL=true` they are pushed, which needs credentials for `ghcr.io` in the Docker daemon (`docker login ghcr.io`) and for Helm (`helm registry login ghcr.io`).
-
-The tag has no `v` because Obsidian and BRAT require the release tag, the release name and the released `manifest.json` version to be the same string. The plugin is installed from these releases with [BRAT](https://github.com/TfTHacker/obsidian42-brat): add the beta plugin `solidDoWant/vault-sync`, and BRAT downloads the three files from the latest release.
-
-**Agent releases.** The `release-manager` agent (`.claude/agents/release-manager.md`) cuts a release (`0.N.0` when phase *N* closes, patch versions for fixes, `-rc.K` candidates when asked) on a `/pm release` instruction or when a phase closes, after its own gate checks (milestone, open critical/high bugs, CI, integration/upgrade tests, vulncheck, a dry run). `1.0.0` and above need an explicit `/pm` instruction.
-
-**The Go vendor hash.** `nix/server.nix` pins a hash of the Go module dependencies. After a change to `go.mod` or `go.sum`, `make build-images` fails with a hash mismatch until `vendorHash` is updated. Run `make update-vendor-hash` (needs network access): it builds the vendored modules with a placeholder hash, writes the hash Nix reports into `nix/server.nix` and checks that the modules build with it; commit the change with the `go.mod`/`go.sum` change. `make update-dependencies` runs it too. On Renovate's pull requests the `renovate-fixups` workflow runs it and pushes the result.

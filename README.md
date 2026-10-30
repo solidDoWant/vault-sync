@@ -16,13 +16,7 @@ See [`SPEC.md`](SPEC.md) for the design and [`CLAUDE.md`](CLAUDE.md) for how wor
 
 ## Development
 
-```sh
-nix develop      # or: direnv allow
-make help
-make lint test
-```
-
-Always evaluate the flake as a git flake: run `nix develop` inside the checkout or worktree, and in Nix expressions use `builtins.getFlake "git+file://${toString ./.}"`, not `builtins.getFlake (toString ./.)`. A path flake (`path:...`, or a bare path passed to `builtins.getFlake`) makes Nix copy the whole directory into the store, including gitignored caches such as `plugin/node_modules` and `plugin/.wdio-obsidian-cache` (over 1 GB). The dev shell and the packages refuse to evaluate from such a source, and `scripts/flake-source_test.sh` (part of `make test`) checks this. Nothing in `flake.nix` can refuse access to a path flake's `inputs` or `outPath` (for example `(builtins.getFlake (toString ./.)).inputs.nixpkgs.rev`): Nix attaches them itself, so such an expression still succeeds after copying the whole tree. Never write it.
+To build, test and change the code, start with [`docs/dev/`](docs/dev/README.md). The dev shell and the `make` targets are in [`docs/dev/building.md`](docs/dev/building.md).
 
 ## License
 
