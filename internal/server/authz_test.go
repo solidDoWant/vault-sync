@@ -365,6 +365,7 @@ var expectedAccess = map[string]authz.Access{
 	"/vaultsync.v1.VaultKeyService/ListStaleRevisions":        authz.Manage,
 	"/vaultsync.v1.VaultKeyService/ReplaceRevisionCiphertext": authz.Manage,
 	"/vaultsync.v1.VaultKeyService/RetireEpoch":               authz.Manage,
+	"/vaultsync.v1.VaultKeyService/ConvertVault":              authz.Manage,
 	// Only owners delete a vault.
 	"/vaultsync.v1.VaultService/DeleteVault": authz.Manage,
 }

@@ -26,11 +26,13 @@ option go_package = "github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyn
 //
 // ListKeySlots, ListEpochs and ListLogEntries are open to every member, and
 // ListLogEntries also to the holder of a pending invitation's id; ListMissingSlots,
-// RotateEpoch, AddKeySlots, ListStaleRevisions, ReplaceRevisionCiphertext and RetireEpoch are owner-only (PERMISSION_DENIED for editors
+// RotateEpoch, AddKeySlots, ListStaleRevisions, ReplaceRevisionCiphertext,
+// RetireEpoch and ConvertVault are owner-only (PERMISSION_DENIED for editors
 // and viewers). A caller who is not a member gets NOT_FOUND, as for a vault
 // that does not exist. On a plaintext vault the lists are empty, and
 // RotateEpoch, AddKeySlots, ReplaceRevisionCiphertext and RetireEpoch are
-// FAILED_PRECONDITION.
+// FAILED_PRECONDITION; ConvertVault turns a plaintext vault into an E2EE
+// one.
 service VaultKeyService {
   // ListKeySlots lists the caller's own key slots in the vault, in
   // ascending epoch order, or with recipient_kind KEY_RECIPIENT_KIND_ESCROW
@@ -145,6 +147,43 @@ service VaultKeyService {
   // docs/design/encryption.md), for the vault's current epoch, while any
   // revision still uses the epoch, and for a plaintext vault.
   rpc RetireEpoch(RetireEpochRequest) returns (RetireEpochResponse) {}
+
+  // ConvertVault converts a plaintext vault to end-to-end encryption in
+  // place (docs/design/encryption.md, "Converting a plaintext vault in
+  // place"). In one transaction, under the vault row lock that commits and
+  // membership changes take, it stores the vault's membership log (genesis,
+  // then the members entry), creates epoch 1 with its slots and signed
+  // record, replaces the path_key of every live document with the
+  // submitted HMAC path key, and switches the vault to
+  // VAULT_ENCRYPTION_E2EE. Members, documents and history are kept. The
+  // stored revisions stay at epoch 0, as plaintext, until the re-key job
+  // moves them (ReplaceRevisionCiphertext). The response, and from then on
+  // ListEpochsResponse.conversion_seq, gives the vault's head_seq at the
+  // switch: every epoch-0 revision has a seq at most this, and readers
+  // refuse an epoch-0 revision with a later seq. After the switch a
+  // plaintext commit gets FAILED_PRECONDITION with reason
+  // ERROR_REASON_VAULT_ENCRYPTED.
+  //
+  // The log must name exactly the vault's members, with their roles and
+  // their current keys as UserKeyService stores them: the genesis entry
+  // (seq 1) is signed by the caller and names them as creator, and the
+  // members entry (seq 2) lists every other member. A vault whose caller is
+  // its only member needs no members entry. Epoch 1's record names the
+  // log's last entry.
+  //
+  // Errors: FAILED_PRECONDITION with a ConversionRefused error detail when
+  // a member has no user key (or one without a signing key) or the vault
+  // has pending invitations, which have no keys to wrap to: the owner
+  // revokes them, the members create their keys, then the owner retries;
+  // FAILED_PRECONDITION without that detail for a vault that is already end-to-end
+  // encrypted, and for escrow on a server without an escrow key; ABORTED when the
+  // log does not name the vault's current members, roles and keys, or
+  // path_keys do not name exactly the vault's live documents (they
+  // changed meanwhile: list them again and retry); INVALID_ARGUMENT for
+  // out-of-bounds fields, entries or a record that do not verify, slots
+  // that are not the record's recipients, or two live documents with the
+  // same path key. Nothing changes unless the conversion succeeds.
+  rpc ConvertVault(ConvertVaultRequest) returns (ConvertVaultResponse) {}
 }
 
 // KeyRecipientKind is whom a key slot wraps an epoch key to.
@@ -299,6 +338,11 @@ message ListEpochsResponse {
   // Whether an owner client should create the next epoch (RotateEpoch):
   // set on a new E2EE vault and when a member leaves.
   bool rotation_pending = 4;
+  // For a vault converted in place (ConvertVault), the vault's head_seq at
+  // the conversion: only revisions with a seq at most this may be at epoch
+  // 0, and they are plaintext. 0 for a vault that was never converted, or
+  // was converted with no revisions; then no revision may be at epoch 0.
+  uint64 conversion_seq = 5;
 }
 
 // ListMissingSlotsRequest pages through the vault's missing slots.
@@ -445,3 +489,55 @@ message RetireEpochRequest {
 
 // RetireEpochResponse is empty.
 message RetireEpochResponse {}
+
+// DocumentPathKey is the end-to-end encrypted path key of one live document.
+message DocumentPathKey {
+  // The document, a canonical lowercase UUID.
+  string document_id = 1;
+  // HMAC-SHA256(path_key_secret, normalize(path)) of the document's current
+  // path, with path_key_secret derived from epoch 1's key
+  // (docs/design/crypto.md): exactly 32 bytes.
+  bytes path_key = 2;
+}
+
+// ConvertVaultRequest converts a plaintext vault to end-to-end encryption.
+message ConvertVaultRequest {
+  // The vault. The caller must be an owner.
+  string vault_id = 1;
+  // The genesis entry of the vault's membership log (seq 1), signed by the
+  // caller, naming the caller as creator and recording the escrow key
+  // exactly when escrow is set.
+  LogEntry genesis = 2;
+  // The members entry (seq 2, type 9), signed by the caller, listing every
+  // other member with their role and keys. Unset only when the caller is
+  // the vault's only member.
+  LogEntry members_entry = 3;
+  // Epoch 1: expected_epoch 0, its commitment and a slot for every member
+  // (and the escrow key with escrow).
+  NextEpoch next_epoch = 4;
+  // Epoch 1's signed record, naming the log's last entry.
+  EpochRecord record = 5;
+  // Whether the converted vault has escrow (SPEC.md §9.4).
+  bool escrow = 6;
+  // The path key of every live (not deleted) document of the vault, one
+  // per document.
+  repeated DocumentPathKey path_keys = 7;
+}
+
+// ConvertVaultResponse returns the vault's first epoch.
+message ConvertVaultResponse {
+  // Epoch 1.
+  KeyEpoch epoch = 1;
+  // The vault's head_seq at the conversion (ListEpochsResponse.conversion_seq).
+  uint64 conversion_seq = 2;
+}
+
+// ConversionRefused is attached to ConvertVault's FAILED_PRECONDITION
+// error when the vault cannot be converted yet. It lists what blocks it.
+message ConversionRefused {
+  // The members without a user key, or with one that has no signing key,
+  // as canonical lowercase UUIDs, sorted.
+  repeated string members_without_key = 1;
+  // The vault's pending invitations, as canonical lowercase UUIDs, sorted.
+  repeated string pending_invitations = 2;
+}

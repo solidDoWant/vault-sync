@@ -44,6 +44,13 @@ enum ErrorReason {
   // It persists unless an operator restores the vault. The client stops
   // syncing the vault and keeps its local files.
   ERROR_REASON_VAULT_DELETED = 7;
+  // FAILED_PRECONDITION from SyncService.CommitRevision: the request is a
+  // plaintext commit (epoch 0), but the vault is end-to-end encrypted,
+  // because an owner converted it in place (VaultKeyService.ConvertVault).
+  // The client reloads the vault, unlocks its user key, syncs the vault's
+  // keys, encrypts the pending change under the current epoch and retries
+  // (docs/design/encryption.md, "Converting a plaintext vault in place").
+  ERROR_REASON_VAULT_ENCRYPTED = 8;
 }
 
 // ErrorDetail is attached to an error (as a Connect error detail) to give

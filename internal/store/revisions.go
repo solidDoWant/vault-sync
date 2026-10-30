@@ -276,6 +276,12 @@ func (vault *VaultStore) commitRevision(ctx context.Context, tx pgx.Tx, revision
 	// replica, has replaced (SPEC.md §9.3). A pending rotation leaves the
 	// current epoch in place, so commits under it go on until the next
 	// epoch exists.
+	// A plaintext commit to an encrypted vault: the vault was converted
+	// after the device last read it (ConvertVault).
+	if encryption == EncryptionE2EE && revision.Epoch == 0 {
+		return Revision{}, ErrVaultEncrypted
+	}
+
 	if revision.Epoch != currentEpoch || (encryption == EncryptionE2EE && currentEpoch == 0) {
 		return Revision{}, ErrEpochNotCurrent
 	}

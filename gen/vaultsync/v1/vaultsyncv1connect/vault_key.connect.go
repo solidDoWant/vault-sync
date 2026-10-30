@@ -60,6 +60,9 @@ const (
 	// VaultKeyServiceRetireEpochProcedure is the fully-qualified name of the VaultKeyService's
 	// RetireEpoch RPC.
 	VaultKeyServiceRetireEpochProcedure = "/vaultsync.v1.VaultKeyService/RetireEpoch"
+	// VaultKeyServiceConvertVaultProcedure is the fully-qualified name of the VaultKeyService's
+	// ConvertVault RPC.
+	VaultKeyServiceConvertVaultProcedure = "/vaultsync.v1.VaultKeyService/ConvertVault"
 )
 
 // VaultKeyServiceClient is a client for the vaultsync.v1.VaultKeyService service.
@@ -169,6 +172,42 @@ type VaultKeyServiceClient interface {
 	// docs/design/encryption.md), for the vault's current epoch, while any
 	// revision still uses the epoch, and for a plaintext vault.
 	RetireEpoch(context.Context, *connect.Request[v1.RetireEpochRequest]) (*connect.Response[v1.RetireEpochResponse], error)
+	// ConvertVault converts a plaintext vault to end-to-end encryption in
+	// place (docs/design/encryption.md, "Converting a plaintext vault in
+	// place"). In one transaction, under the vault row lock that commits and
+	// membership changes take, it stores the vault's membership log (genesis,
+	// then the members entry), creates epoch 1 with its slots and signed
+	// record, replaces the path_key of every live document with the
+	// submitted HMAC path key, and switches the vault to
+	// VAULT_ENCRYPTION_E2EE. Members, documents and history are kept. The
+	// stored revisions stay at epoch 0, as plaintext, until the re-key job
+	// moves them (ReplaceRevisionCiphertext). The response, and from then on
+	// ListEpochsResponse.conversion_seq, gives the vault's head_seq at the
+	// switch: every epoch-0 revision has a seq at most this, and readers
+	// refuse an epoch-0 revision with a later seq. After the switch a
+	// plaintext commit gets FAILED_PRECONDITION with reason
+	// ERROR_REASON_VAULT_ENCRYPTED.
+	//
+	// The log must name exactly the vault's members, with their roles and
+	// their current keys as UserKeyService stores them: the genesis entry
+	// (seq 1) is signed by the caller and names them as creator, and the
+	// members entry (seq 2) lists every other member. A vault whose caller is
+	// its only member needs no members entry. Epoch 1's record names the
+	// log's last entry.
+	//
+	// Errors: FAILED_PRECONDITION with a ConversionRefused error detail when
+	// a member has no user key (or one without a signing key) or the vault
+	// has pending invitations, which have no keys to wrap to: the owner
+	// revokes them, the members create their keys, then the owner retries;
+	// FAILED_PRECONDITION without that detail for a vault that is already end-to-end
+	// encrypted, and for escrow on a server without an escrow key; ABORTED when the
+	// log does not name the vault's current members, roles and keys, or
+	// path_keys do not name exactly the vault's live documents (they
+	// changed meanwhile: list them again and retry); INVALID_ARGUMENT for
+	// out-of-bounds fields, entries or a record that do not verify, slots
+	// that are not the record's recipients, or two live documents with the
+	// same path key. Nothing changes unless the conversion succeeds.
+	ConvertVault(context.Context, *connect.Request[v1.ConvertVaultRequest]) (*connect.Response[v1.ConvertVaultResponse], error)
 }
 
 // NewVaultKeyServiceClient constructs a client for the vaultsync.v1.VaultKeyService service. By
@@ -236,6 +275,12 @@ func NewVaultKeyServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(vaultKeyServiceMethods.ByName("RetireEpoch")),
 			connect.WithClientOptions(opts...),
 		),
+		convertVault: connect.NewClient[v1.ConvertVaultRequest, v1.ConvertVaultResponse](
+			httpClient,
+			baseURL+VaultKeyServiceConvertVaultProcedure,
+			connect.WithSchema(vaultKeyServiceMethods.ByName("ConvertVault")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -250,6 +295,7 @@ type vaultKeyServiceClient struct {
 	listStaleRevisions        *connect.Client[v1.ListStaleRevisionsRequest, v1.ListStaleRevisionsResponse]
 	replaceRevisionCiphertext *connect.Client[v1.ReplaceRevisionCiphertextRequest, v1.ReplaceRevisionCiphertextResponse]
 	retireEpoch               *connect.Client[v1.RetireEpochRequest, v1.RetireEpochResponse]
+	convertVault              *connect.Client[v1.ConvertVaultRequest, v1.ConvertVaultResponse]
 }
 
 // ListKeySlots calls vaultsync.v1.VaultKeyService.ListKeySlots.
@@ -295,6 +341,11 @@ func (c *vaultKeyServiceClient) ReplaceRevisionCiphertext(ctx context.Context, r
 // RetireEpoch calls vaultsync.v1.VaultKeyService.RetireEpoch.
 func (c *vaultKeyServiceClient) RetireEpoch(ctx context.Context, req *connect.Request[v1.RetireEpochRequest]) (*connect.Response[v1.RetireEpochResponse], error) {
 	return c.retireEpoch.CallUnary(ctx, req)
+}
+
+// ConvertVault calls vaultsync.v1.VaultKeyService.ConvertVault.
+func (c *vaultKeyServiceClient) ConvertVault(ctx context.Context, req *connect.Request[v1.ConvertVaultRequest]) (*connect.Response[v1.ConvertVaultResponse], error) {
+	return c.convertVault.CallUnary(ctx, req)
 }
 
 // VaultKeyServiceHandler is an implementation of the vaultsync.v1.VaultKeyService service.
@@ -404,6 +455,42 @@ type VaultKeyServiceHandler interface {
 	// docs/design/encryption.md), for the vault's current epoch, while any
 	// revision still uses the epoch, and for a plaintext vault.
 	RetireEpoch(context.Context, *connect.Request[v1.RetireEpochRequest]) (*connect.Response[v1.RetireEpochResponse], error)
+	// ConvertVault converts a plaintext vault to end-to-end encryption in
+	// place (docs/design/encryption.md, "Converting a plaintext vault in
+	// place"). In one transaction, under the vault row lock that commits and
+	// membership changes take, it stores the vault's membership log (genesis,
+	// then the members entry), creates epoch 1 with its slots and signed
+	// record, replaces the path_key of every live document with the
+	// submitted HMAC path key, and switches the vault to
+	// VAULT_ENCRYPTION_E2EE. Members, documents and history are kept. The
+	// stored revisions stay at epoch 0, as plaintext, until the re-key job
+	// moves them (ReplaceRevisionCiphertext). The response, and from then on
+	// ListEpochsResponse.conversion_seq, gives the vault's head_seq at the
+	// switch: every epoch-0 revision has a seq at most this, and readers
+	// refuse an epoch-0 revision with a later seq. After the switch a
+	// plaintext commit gets FAILED_PRECONDITION with reason
+	// ERROR_REASON_VAULT_ENCRYPTED.
+	//
+	// The log must name exactly the vault's members, with their roles and
+	// their current keys as UserKeyService stores them: the genesis entry
+	// (seq 1) is signed by the caller and names them as creator, and the
+	// members entry (seq 2) lists every other member. A vault whose caller is
+	// its only member needs no members entry. Epoch 1's record names the
+	// log's last entry.
+	//
+	// Errors: FAILED_PRECONDITION with a ConversionRefused error detail when
+	// a member has no user key (or one without a signing key) or the vault
+	// has pending invitations, which have no keys to wrap to: the owner
+	// revokes them, the members create their keys, then the owner retries;
+	// FAILED_PRECONDITION without that detail for a vault that is already end-to-end
+	// encrypted, and for escrow on a server without an escrow key; ABORTED when the
+	// log does not name the vault's current members, roles and keys, or
+	// path_keys do not name exactly the vault's live documents (they
+	// changed meanwhile: list them again and retry); INVALID_ARGUMENT for
+	// out-of-bounds fields, entries or a record that do not verify, slots
+	// that are not the record's recipients, or two live documents with the
+	// same path key. Nothing changes unless the conversion succeeds.
+	ConvertVault(context.Context, *connect.Request[v1.ConvertVaultRequest]) (*connect.Response[v1.ConvertVaultResponse], error)
 }
 
 // NewVaultKeyServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -467,6 +554,12 @@ func NewVaultKeyServiceHandler(svc VaultKeyServiceHandler, opts ...connect.Handl
 		connect.WithSchema(vaultKeyServiceMethods.ByName("RetireEpoch")),
 		connect.WithHandlerOptions(opts...),
 	)
+	vaultKeyServiceConvertVaultHandler := connect.NewUnaryHandler(
+		VaultKeyServiceConvertVaultProcedure,
+		svc.ConvertVault,
+		connect.WithSchema(vaultKeyServiceMethods.ByName("ConvertVault")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/vaultsync.v1.VaultKeyService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case VaultKeyServiceListKeySlotsProcedure:
@@ -487,6 +580,8 @@ func NewVaultKeyServiceHandler(svc VaultKeyServiceHandler, opts ...connect.Handl
 			vaultKeyServiceReplaceRevisionCiphertextHandler.ServeHTTP(w, r)
 		case VaultKeyServiceRetireEpochProcedure:
 			vaultKeyServiceRetireEpochHandler.ServeHTTP(w, r)
+		case VaultKeyServiceConvertVaultProcedure:
+			vaultKeyServiceConvertVaultHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -530,4 +625,8 @@ func (UnimplementedVaultKeyServiceHandler) ReplaceRevisionCiphertext(context.Con
 
 func (UnimplementedVaultKeyServiceHandler) RetireEpoch(context.Context, *connect.Request[v1.RetireEpochRequest]) (*connect.Response[v1.RetireEpochResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("vaultsync.v1.VaultKeyService.RetireEpoch is not implemented"))
+}
+
+func (UnimplementedVaultKeyServiceHandler) ConvertVault(context.Context, *connect.Request[v1.ConvertVaultRequest]) (*connect.Response[v1.ConvertVaultResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("vaultsync.v1.VaultKeyService.ConvertVault is not implemented"))
 }
