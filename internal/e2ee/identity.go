@@ -32,14 +32,15 @@ const (
 	// HashSize is the size of a log entry hash and a genesis hash.
 	HashSize = sha256.Size
 
-	bundleLabel         = "vault-sync/v1/bundle"
-	fingerprintLabel    = "vault-sync/v1/fingerprint"
-	inviteSignLabel     = "vault-sync/v1/invitation-sign"
-	inviteAnchorLabel   = "vault-sync/v1/invite-anchor"
-	invitationKeyLabel  = "vault-sync/v1/invitation-key"
-	anchorsLabel        = "vault-sync/v1/anchors"
-	escrowBundleLabel   = "vault-sync/v1/escrow"
-	escrowRotationLabel = "vault-sync/v1/escrow-rotation"
+	bundleLabel            = "vault-sync/v1/bundle"
+	fingerprintLabel       = "vault-sync/v1/fingerprint"
+	inviteSignLabel        = "vault-sync/v1/invitation-sign"
+	inviteAnchorLabel      = "vault-sync/v1/invite-anchor"
+	invitationKeyLabel     = "vault-sync/v1/invitation-key"
+	anchorsLabel           = "vault-sync/v1/anchors"
+	escrowBundleLabel      = "vault-sync/v1/escrow"
+	escrowRotationLabel    = "vault-sync/v1/escrow-rotation"
+	escrowFingerprintLabel = "vault-sync/v1/escrow-fingerprint"
 
 	// BundleSize is the size of an encoded user key bundle.
 	BundleSize = len(bundleLabel) + 16 + SignPublicKeySize + PublicKeySize
@@ -439,6 +440,20 @@ func (bundle EscrowBundle) Encode() ([]byte, error) {
 	}
 
 	return slices.Concat([]byte(escrowBundleLabel), bundle.SignPub, lengthPrefixed([]byte(bundle.Recipient))), nil
+}
+
+// Fingerprint returns SHA-256("vault-sync/v1/escrow-fingerprint" ||
+// escrow_bundle). It covers both keys of the pair and is shown like a member's
+// fingerprint, with FormatFingerprint.
+func (bundle EscrowBundle) Fingerprint() ([]byte, error) {
+	encoded, err := bundle.Encode()
+	if err != nil {
+		return nil, err
+	}
+
+	sum := sha256.Sum256(slices.Concat([]byte(escrowFingerprintLabel), encoded))
+
+	return sum[:], nil
 }
 
 // ParseEscrowBundle reverses EscrowBundle.Encode; the whole input must be

@@ -38,6 +38,7 @@ const INVITATION_KEY_LABEL = "vault-sync/v1/invitation-key";
 const ANCHORS_LABEL = "vault-sync/v1/anchors";
 const ESCROW_BUNDLE_LABEL = "vault-sync/v1/escrow";
 const ESCROW_ROTATION_LABEL = "vault-sync/v1/escrow-rotation";
+const ESCROW_FINGERPRINT_LABEL = "vault-sync/v1/escrow-fingerprint";
 const AGE_RECIPIENT_HRP = "age1pq";
 
 const encoder = new TextEncoder();
@@ -315,6 +316,14 @@ export function encodeEscrowBundle(bundle: EscrowBundle): Uint8Array {
   const recipient = encoder.encode(bundle.recipient);
   if (recipient.length === 0 || recipient.length > MAX_ESCROW_RECIPIENT_SIZE) throw new Error("e2ee: escrow recipient of the wrong size");
   return concat(label(ESCROW_BUNDLE_LABEL), bundle.signPub, lengthPrefixed(recipient));
+}
+
+/**
+ * SHA-256("vault-sync/v1/escrow-fingerprint" || escrow_bundle). It covers both
+ * keys of the pair and is shown like a member's fingerprint, with {@link formatFingerprint}.
+ */
+export function escrowFingerprint(bundle: EscrowBundle): Uint8Array {
+  return sha256(concat(label(ESCROW_FINGERPRINT_LABEL), encodeEscrowBundle(bundle)));
 }
 
 /** Reverses {@link encodeEscrowBundle}; the whole input must be one bundle. */

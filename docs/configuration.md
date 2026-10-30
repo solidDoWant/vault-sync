@@ -2,7 +2,7 @@
 
 `vault-sync-server` is configured entirely by environment variables. An empty variable is treated as unset. On startup the server validates every variable and, if any is missing or invalid, exits with status 1 after logging one `invalid configuration` record whose `problems` field names each offending variable. Secret values (such as the database password) are never echoed.
 
-The `vault-sync-server export` subcommand reads the database, S3 and log-level variables below, and `VAULT_SYNC_ESCROW_IDENTITY_FILE`, and ignores the rest; see [export.md](export.md). `vault-sync-server export rotate-escrow` reads the database and log-level variables, `VAULT_SYNC_ESCROW_IDENTITY_FILE`, `VAULT_SYNC_ESCROW_SIGNING_KEY_FILE` and `VAULT_SYNC_ESCROW_JOB_TOKEN_FILE`.
+The `vault-sync-server export` subcommand reads the database, S3 and log-level variables below, and `VAULT_SYNC_ESCROW_IDENTITY_FILE`, and ignores the rest; see [export.md](export.md). `vault-sync-server export rotate-escrow` reads the database and log-level variables, `VAULT_SYNC_ESCROW_IDENTITY_FILE`, `VAULT_SYNC_ESCROW_SIGNING_KEY_FILE` and `VAULT_SYNC_ESCROW_JOB_TOKEN_FILE`. `vault-sync-server escrow fingerprint` reads only `VAULT_SYNC_ESCROW_RECIPIENT` and `VAULT_SYNC_ESCROW_SIGNING_KEY`, and only when its flags are not given (see [encryption.md](encryption.md#for-operators-the-escrow-key)).
 
 ## Environment variables
 
