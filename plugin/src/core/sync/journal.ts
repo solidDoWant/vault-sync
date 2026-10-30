@@ -132,6 +132,18 @@ export interface WaitingEntry {
   revisionId: string;
 }
 
+/**
+ * A folder a pulled folder revision moved away from while synced documents
+ * were still in it (docs/design/engine.md §2, *Remote folder revision*). It
+ * is not a local create while any of those documents is still in it: they
+ * move by their own revisions, and it goes once it empties.
+ */
+export interface VacatedFolder {
+  path: string;
+  /** The documents that were in the folder when it was vacated. */
+  documentIds: string[];
+}
+
 /** One atomic change to the journal. */
 export interface JournalChange {
   cursor?: Cursor;
@@ -145,6 +157,8 @@ export interface JournalChange {
   deleteSkipped?: string[];
   putWaiting?: WaitingEntry[];
   deleteWaiting?: string[];
+  putVacated?: VacatedFolder[];
+  deleteVacated?: string[];
 }
 
 /** Everything the journal holds. */
@@ -158,6 +172,8 @@ export interface JournalState {
   skipped: Map<string, SkippedEntry>;
   /** By document id. */
   waiting: Map<string, WaitingEntry>;
+  /** By path. */
+  vacated: Map<string, VacatedFolder>;
 }
 
 export interface SyncJournal {
@@ -187,6 +203,8 @@ export function applyChange(state: JournalState, change: JournalChange): void {
   for (const entry of change.putSkipped ?? []) state.skipped.set(entry.documentId, { ...entry });
   for (const id of change.deleteWaiting ?? []) state.waiting.delete(id);
   for (const entry of change.putWaiting ?? []) state.waiting.set(entry.documentId, { ...entry });
+  for (const path of change.deleteVacated ?? []) state.vacated.delete(path);
+  for (const entry of change.putVacated ?? []) state.vacated.set(entry.path, { ...entry, documentIds: [...entry.documentIds] });
 }
 
 function copyState(state: JournalState): JournalState {
@@ -197,12 +215,13 @@ function copyState(state: JournalState): JournalState {
     conflicts: new Map([...state.conflicts].map(([path, entry]) => [path, { ...entry }])),
     skipped: new Map([...state.skipped].map(([id, entry]) => [id, { ...entry }])),
     waiting: new Map([...state.waiting].map(([id, entry]) => [id, { ...entry }])),
+    vacated: new Map([...state.vacated].map(([path, entry]) => [path, { ...entry, documentIds: [...entry.documentIds] }])),
   };
 }
 
 /** A journal in memory, for tests. It survives an engine restart as long as the object does. */
 export class MemorySyncJournal implements SyncJournal {
-  private state: JournalState = { cursor: initialCursor, docs: new Map(), pending: [], conflicts: new Map(), skipped: new Map(), waiting: new Map() };
+  private state: JournalState = { cursor: initialCursor, docs: new Map(), pending: [], conflicts: new Map(), skipped: new Map(), waiting: new Map(), vacated: new Map() };
 
   load(): Promise<JournalState> {
     return Promise.resolve(copyState(this.state));

@@ -316,6 +316,7 @@ export class SyncEngine {
     if (!this.cleaned) await this.removeTemporaryFiles();
     await this.codec.prepare();
     const state = await this.loadState();
+    await this.sweepVacated(state);
     const renames = this.renames;
     this.renames = [];
     const detected = await detectChanges(state, {
@@ -408,8 +409,36 @@ export class SyncEngine {
     if (outcome.putSkipped === undefined && state.skipped.has(revision.documentId)) change.deleteSkipped = [revision.documentId];
     await this.record(change);
     // The item left its place here: a folder it leaves empty, which no live document holds, goes too.
-    if (before !== undefined && localPath(state, revision.documentId)?.path !== before.path) await this.removeEmptied(state, before.path, before.kind === "folder");
+    const after = localPath(state, revision.documentId);
+    if (before !== undefined && after?.path !== before.path) {
+      await this.removeEmptied(state, before.path, before.kind === "folder");
+      // A folder moved away from files still in it: they move by their own revisions, and the old folder waits for them, vacated.
+      if (before.kind === "folder" && after !== undefined && (await this.folderExists(before.path)) && liveAt(state, before.path) === undefined) {
+        const inside = [...state.docs.values()].filter((entry) => entry.deleted !== true && entry.path.startsWith(`${before.path}/`)).map((entry) => entry.documentId);
+        await this.record({ putVacated: [{ path: before.path, documentIds: inside }] });
+      }
+    }
     return true;
+  }
+
+  /**
+   * Before detection: a vacated folder that is gone, that a live document
+   * holds again, or that has emptied (its files left on this device) is no
+   * longer vacated; an emptied one is removed. Deepest first, so an emptied
+   * parent goes after its vacated folders.
+   */
+  private async sweepVacated(state: JournalState): Promise<void> {
+    if (state.vacated.size === 0) return;
+    const files = await this.vault.list();
+    const folders = await this.vault.listFolders();
+    const cleared: string[] = [];
+    for (const path of [...state.vacated.keys()].sort((left, right) => right.length - left.length)) {
+      const key = pathKey(path);
+      const inside = (other: string) => pathKey(other).startsWith(`${key}/`) && !cleared.some((gone) => pathKey(other) === pathKey(gone));
+      if (!folders.some((folder) => pathKey(folder) === key) || liveAt(state, path) !== undefined) cleared.push(path);
+      else if (!files.some(inside) && !folders.some(inside) && (await this.deleteFolder(path))) cleared.push(path);
+    }
+    if (cleared.length > 0) await this.record({ deleteVacated: cleared });
   }
 
   /** A revision decoded, or undefined when this device does not hold its epoch's key even after a key sync. */
@@ -817,7 +846,8 @@ export class SyncEngine {
    * The rows of §5 for a folder document. A folder has no content, so only
    * the path rules apply (rule M). A live revision puts the folder at its
    * path; the files and folders in it move by their own revisions, and the
-   * folder it leaves goes once they have (Pull's removeEmptied). A tombstone
+   * folder it leaves goes once they have (Pull's removeEmptied). Until then
+   * that folder is vacated (applyPulled, sweepVacated). A tombstone
    * deletes the folder only if it is empty; otherwise the folder stays, and
    * the document stays here as a tombstone that the next detection creates
    * again on (a live item keeps its folders live, engine.md §2).

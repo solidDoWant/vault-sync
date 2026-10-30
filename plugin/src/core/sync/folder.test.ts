@@ -186,30 +186,219 @@ describe("folder documents", () => {
     },
   );
 
-  it("A4: a folder renamed on A is renamed on B, and the old folder goes, when B pulls the folder's rename before the moves of the files in it", async () => {
-    const { server, a, b } = await setup();
-    await a.write("Projects/Plan.md", "the plan\n");
-    await converge(server, a, b);
-    const folder = serverFolders(server).get("Projects") as string;
+  describe("a folder rename pulled before the moves of the files in it", () => {
+    /** Commits A's move of a document to `path`, as A's push would. */
+    async function commitMove(
+      server: InMemoryServer,
+      documentId: string,
+      path: string,
+      kind: DocumentKind = DocumentKind.FOLDER,
+    ): Promise<void> {
+      const head = server.history(documentId).at(-1);
+      const api = createProtocolClient({ transport: server.transport });
+      await api.sync.commitRevision({
+        vaultId: server.vaultId,
+        deviceId: "device-a",
+        documentId,
+        revisionId: uuidv7(),
+        baseRevId: head?.id ?? "",
+        kind,
+        path: new TextEncoder().encode(path),
+        ...(kind === DocumentKind.FOLDER
+          ? {}
+          : { contentRef: head?.contentRef }),
+      });
+    }
 
-    // A's rename of the folder reaches the server before the move of the file in it.
-    const api = createProtocolClient({ transport: server.transport });
-    await api.sync.commitRevision({
-      vaultId: server.vaultId,
-      deviceId: "device-a",
-      documentId: folder,
-      revisionId: uuidv7(),
-      baseRevId: server.history(folder).at(-1)?.id ?? "",
-      kind: DocumentKind.FOLDER,
-      path: new TextEncoder().encode("Archive"),
+    /** The folder revisions the server holds at `path`. */
+    function folderRevisionsAt(server: InMemoryServer, path: string): number {
+      let found = 0;
+      for (let seq = 1n; seq <= server.currentHeadSeq; seq++) {
+        const revision = server.revisionAt(seq);
+        if (
+          revision.kind === DocumentKind.FOLDER &&
+          new TextDecoder().decode(revision.path) === path
+        )
+          found++;
+      }
+      return found;
+    }
+
+    /** The document whose head is at `path`. */
+    function documentAt(server: InMemoryServer, path: string): string {
+      const heads = new Map<string, string>();
+      for (let seq = 1n; seq <= server.currentHeadSeq; seq++) {
+        const revision = server.revisionAt(seq);
+        heads.set(revision.documentId, new TextDecoder().decode(revision.path));
+      }
+      const found = [...heads].find(([, head]) => head === path);
+      if (found === undefined) throw new Error(`no document at ${path}`);
+      return found[0];
+    }
+
+    /** A and B hold `Projects/Plan.md`; A's rename of `Projects` to `Archive` reaches the server and B, before the file's move. */
+    async function vacate(): Promise<{
+      server: InMemoryServer;
+      a: Device;
+      b: Device;
+      folder: string;
+    }> {
+      const { server, a, b } = await setup();
+      await a.write("Projects/Plan.md", "the plan\n");
+      await converge(server, a, b);
+      const folder = serverFolders(server).get("Projects") as string;
+      await commitMove(server, folder, "Archive");
+      await b.sync();
+      expect(await folders(b)).toEqual(["Archive", "Projects"]);
+      return { server, a, b, folder };
+    }
+
+    it("A4: B renames the folder, and the old folder goes once its file has moved, never pushed as a new folder", async () => {
+      const { server, a, b, folder } = await vacate();
+      await b.sync();
+      await a.vault.handle("user").renameFolder("Projects", "Archive");
+      await converge(server, a, b);
+      expect(await folders(a)).toEqual(["Archive"]);
+      expect(await folders(b)).toEqual(["Archive"]);
+      expect(await b.files()).toEqual({ "Archive/Plan.md": "the plan\n" });
+      expect(serverFolders(server)).toEqual(new Map([["Archive", folder]]));
+      // Only A's first commit ever named the old folder.
+      expect(folderRevisionsAt(server, "Projects")).toBe(1);
+      expect((await b.journal.load()).vacated.size).toBe(0);
     });
-    await b.sync();
-    await a.vault.handle("user").renameFolder("Projects", "Archive");
-    await converge(server, a, b);
-    expect(await folders(a)).toEqual(["Archive"]);
-    expect(await folders(b)).toEqual(["Archive"]);
-    expect(await b.files()).toEqual({ "Archive/Plan.md": "the plan\n" });
-    expect(serverFolders(server)).toEqual(new Map([["Archive", folder]]));
+
+    it.each([1, 2])(
+      "A4: the old folder goes when B syncs after A's commit %i, with the folder's rename first",
+      async (cut) => {
+        const { server, a, b } = await vacate();
+        // A sends the file's move (and its own view of the folder's rename) next; its connection drops after commit `cut`.
+        await a.vault.handle("user").renameFolder("Projects", "Archive");
+        let commits = 0;
+        server.interceptor = (method) => {
+          if (method === "CommitRevision" && ++commits === cut + 1)
+            throw new ConnectError("unavailable", Code.Unavailable);
+        };
+        await a.sync().catch(() => undefined);
+        server.interceptor = undefined;
+        await b.sync();
+        await b.sync();
+        await converge(server, a, b);
+        expect(await folders(a)).toEqual(["Archive"]);
+        expect(await folders(b)).toEqual(["Archive"]);
+        expect(await b.files()).toEqual({ "Archive/Plan.md": "the plan\n" });
+        expect(folderRevisionsAt(server, "Projects")).toBe(1);
+      },
+    );
+
+    it("A5: the file deleted on A instead of moved empties the old folder, which goes", async () => {
+      const { server, a, b, folder } = await vacate();
+      await a.vault.delete("Projects/Plan.md");
+      await converge(server, a, b);
+      expect(await folders(a)).toEqual(["Archive"]);
+      expect(await folders(b)).toEqual(["Archive"]);
+      expect(await b.files()).toEqual({});
+      expect(serverFolders(server)).toEqual(new Map([["Archive", folder]]));
+      expect(folderRevisionsAt(server, "Projects")).toBe(1);
+    });
+
+    it("the old folder goes once B's user has moved its file out", async () => {
+      const { server, a, b, folder } = await vacate();
+      await b.vault.handle("user").rename("Projects/Plan.md", "Plan.md");
+      await converge(server, a, b);
+      expect(await folders(b)).toEqual(["Archive"]);
+      expect(await b.files()).toEqual({ "Plan.md": "the plan\n" });
+      expect(serverFolders(server)).toEqual(new Map([["Archive", folder]]));
+      expect(folderRevisionsAt(server, "Projects")).toBe(1);
+    });
+
+    it("B's edit of the file still in the old folder is kept, at the file's new path", async () => {
+      const { server, a, b } = await vacate();
+      await b.write("Projects/Plan.md", "the plan\nedited on B\n");
+      await a.vault.handle("user").renameFolder("Projects", "Archive");
+      await converge(server, a, b);
+      expect(await folders(b)).toEqual(["Archive"]);
+      expect(await b.files()).toEqual({
+        "Archive/Plan.md": "the plan\nedited on B\n",
+      });
+    });
+
+    it("a new file B adds to the old folder makes it a folder again, once the old file has left", async () => {
+      const { server, a, b, folder } = await vacate();
+      await b.write("Projects/New.md", "new on B\n");
+      await b.sync();
+      // B, before A has seen the new file, makes the folder a document again once the old file has left.
+      await commitMove(
+        server,
+        documentAt(server, "Projects/Plan.md"),
+        "Archive/Plan.md",
+        DocumentKind.TEXT,
+      );
+      await b.sync();
+      await b.sync();
+      expect(serverFolders(server).has("Projects")).toBe(true);
+      await a.vault.handle("user").renameFolder("Projects", "Archive");
+      await converge(server, a, b);
+      expect(await folders(b)).toEqual(["Archive", "Projects"]);
+      expect(await b.files()).toEqual({
+        "Archive/Plan.md": "the plan\n",
+        "Projects/New.md": "new on B\n",
+      });
+      expect(serverFolders(server).get("Archive")).toBe(folder);
+      expect(serverFolders(server).get("Projects")).not.toBe(folder);
+    });
+
+    it("A4: a rename back to the old name binds B's folder, with no second folder", async () => {
+      const { server, a, b, folder } = await vacate();
+      await commitMove(server, folder, "Projects");
+      await b.sync();
+      expect(await folders(b)).toEqual(["Projects"]);
+      expect((await b.journal.load()).vacated.size).toBe(0);
+      await converge(server, a, b);
+      expect(await folders(a)).toEqual(["Projects"]);
+      expect(await b.files()).toEqual({ "Projects/Plan.md": "the plan\n" });
+      expect(serverFolders(server)).toEqual(new Map([["Projects", folder]]));
+    });
+
+    it("A4: the old folder stays vacated across a restart, and goes once its file has moved", async () => {
+      const { server, a, b, folder } = await vacate();
+      await b.restart().start();
+      await b.sync();
+      expect(await folders(b)).toEqual(["Archive", "Projects"]);
+      await a.vault.handle("user").renameFolder("Projects", "Archive");
+      await converge(server, a, b);
+      expect(await folders(b)).toEqual(["Archive"]);
+      expect(serverFolders(server)).toEqual(new Map([["Archive", folder]]));
+      expect(folderRevisionsAt(server, "Projects")).toBe(1);
+    });
+
+    it("A4: nested, the old folder and its vacated subfolder go once their files have moved", async () => {
+      const { server, a, b } = await setup();
+      await a.write("Projects/Plan.md", "the plan\n");
+      await a.write("Projects/Sub/Note.md", "a note\n");
+      await converge(server, a, b);
+      const ids = serverFolders(server);
+      await commitMove(server, ids.get("Projects") as string, "Archive");
+      await b.sync();
+      await commitMove(server, ids.get("Projects/Sub") as string, "Archive/Sub");
+      await b.sync();
+      await b.sync();
+      expect(await folders(b)).toEqual([
+        "Archive",
+        "Archive/Sub",
+        "Projects",
+        "Projects/Sub",
+      ]);
+      await a.vault.handle("user").renameFolder("Projects", "Archive");
+      await converge(server, a, b);
+      expect(await folders(a)).toEqual(["Archive", "Archive/Sub"]);
+      expect(await folders(b)).toEqual(["Archive", "Archive/Sub"]);
+      expect(await b.files()).toEqual({
+        "Archive/Plan.md": "the plan\n",
+        "Archive/Sub/Note.md": "a note\n",
+      });
+      expect(folderRevisionsAt(server, "Projects")).toBe(1);
+      expect(folderRevisionsAt(server, "Projects/Sub")).toBe(1);
+    });
   });
 
   it("A5: an empty folder deleted on A is deleted on B and stays deleted", async () => {
