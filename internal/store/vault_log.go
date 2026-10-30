@@ -41,6 +41,13 @@ func (vault *VaultStore) ListLogEntries(ctx context.Context, after int64, limit 
 	return listLogEntries(ctx, vault.store.pool, vault.vaultID, after, limit)
 }
 
+// VaultLogEntries returns up to limit of vaultID's log entries after seq
+// after, in ascending seq order, whether the vault is live or deleted and
+// not purged yet.
+func (store *Store) VaultLogEntries(ctx context.Context, vaultID uuid.UUID, after int64, limit int) ([]LogEntry, error) {
+	return listLogEntries(ctx, store.pool, vaultID, after, limit)
+}
+
 func listLogEntries(ctx context.Context, db querier, vaultID uuid.UUID, after int64, limit int) ([]LogEntry, error) {
 	rows, err := db.Query(ctx, `
 		SELECT seq, prev_hash, entry_type, payload, signatures, created_at FROM vault_log_entries

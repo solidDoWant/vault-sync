@@ -66,6 +66,22 @@ This section moved to [Encryption for operators](admin/encryption.md#from-your-o
 
 This section moved to [Encryption for operators](admin/encryption.md#as-a-one-off-pod).
 
+## Resetting the escrow chain
+
+This section moved to [Encryption for operators](admin/encryption.md#reset-the-escrow-chain).
+
+### The order of steps for a reset
+
+This section moved to [Encryption for operators](admin/encryption.md#the-order-of-steps-for-a-reset).
+
+### Destroying the old escrow identity after a reset
+
+This section moved to [Encryption for operators](admin/encryption.md#destroy-the-old-escrow-identity-after-a-reset).
+
+### A reset point that you did not make
+
+This section moved to [Encryption for operators](admin/encryption.md#a-reset-point-that-you-did-not-make).
+
 ## Signals
 
 This section moved to [Backup and restore](admin/backup-and-restore.md#signals).

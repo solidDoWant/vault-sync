@@ -188,6 +188,7 @@ function statement(rotation: EscrowRotation) {
     oldBundleHash: rotation.oldBundleHash,
     newBundle: encodeEscrowBundle(rotation.newBundle),
     signature: rotation.signature,
+    reset: false,
   };
 }
 

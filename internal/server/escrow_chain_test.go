@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"net/http"
 	"testing"
 
@@ -71,6 +72,14 @@ func rotate(t *testing.T, signer ed25519.PrivateKey, from, to escrowKey) store.E
 	return store.EscrowRotationStatement{OldBundleHash: rotation.OldBundleHash, NewBundle: to.encoded, Signature: rotation.Signature}
 }
 
+// resetPoint returns the reset point that continues the chain from from to
+// to, without a signature.
+func resetPoint(from, to escrowKey) store.EscrowRotationStatement {
+	hash := sha256.Sum256(from.encoded)
+
+	return store.EscrowRotationStatement{OldBundleHash: hash[:], NewBundle: to.encoded, Reset: true}
+}
+
 // memoryEscrowChains is an in-memory escrow chain store with the store's
 // seeding rule: the first root offered to an empty chain becomes its root.
 type memoryEscrowChains struct {
@@ -95,6 +104,7 @@ func publishedStatements(statements []store.EscrowRotationStatement) []*vaultsyn
 			OldBundleHash: statement.OldBundleHash,
 			NewBundle:     statement.NewBundle,
 			Signature:     statement.Signature,
+			Reset_:        statement.Reset,
 		})
 	}
 
@@ -102,7 +112,7 @@ func publishedStatements(statements []store.EscrowRotationStatement) []*vaultsyn
 }
 
 func TestLoadEscrowChain(t *testing.T) {
-	first, second, third := newEscrowKey(t), newEscrowKey(t), newEscrowKey(t)
+	first, second, third, fourth := newEscrowKey(t), newEscrowKey(t), newEscrowKey(t), newEscrowKey(t)
 
 	firstToSecond := rotate(t, first.sign, first, second)
 	secondToThird := rotate(t, second.sign, second, third)
@@ -113,6 +123,17 @@ func TestLoadEscrowChain(t *testing.T) {
 	// Names the hash of a bundle other than the one before it.
 	wrongPredecessor := rotate(t, third.sign, third, second)
 	wrongPredecessor.Signature = rotate(t, first.sign, third, second).Signature
+
+	// After the reset, a signed rotation from the reset point's bundle.
+	thirdToFourth := rotate(t, third.sign, third, fourth)
+
+	// A reset point's shape without its mark.
+	unmarked := resetPoint(second, third)
+	unmarked.Reset = false
+
+	// A reset point that carries a signature.
+	signedReset := resetPoint(second, third)
+	signedReset.Signature = rotate(t, second.sign, second, third).Signature
 
 	tests := []struct {
 		name       string
@@ -143,6 +164,52 @@ func TestLoadEscrowChain(t *testing.T) {
 			stored:     store.EscrowChain{Root: first.encoded, Rotations: []store.EscrowRotationStatement{firstToSecond, secondToThird}},
 			configured: third,
 			wantChain:  api.EscrowChain{Root: first.encoded, Rotations: publishedStatements([]store.EscrowRotationStatement{firstToSecond, secondToThird})},
+		},
+		{
+			name:       "a reset point, configured head",
+			stored:     store.EscrowChain{Root: first.encoded, Rotations: []store.EscrowRotationStatement{firstToSecond, resetPoint(second, third)}},
+			configured: third,
+			wantChain:  api.EscrowChain{Root: first.encoded, Rotations: publishedStatements([]store.EscrowRotationStatement{firstToSecond, resetPoint(second, third)})},
+		},
+		{
+			name:       "a signed rotation after a reset point, configured head",
+			stored:     store.EscrowChain{Root: first.encoded, Rotations: []store.EscrowRotationStatement{resetPoint(first, third), thirdToFourth}},
+			configured: fourth,
+			wantChain: api.EscrowChain{Root: first.encoded, Rotations: publishedStatements([]store.EscrowRotationStatement{
+				resetPoint(first, third), thirdToFourth,
+			})},
+		},
+		{
+			name:       "an unmarked statement with an empty signature",
+			stored:     store.EscrowChain{Root: first.encoded, Rotations: []store.EscrowRotationStatement{firstToSecond, unmarked}},
+			configured: third,
+			assertErr:  errorIs(server.ErrEscrowChain),
+		},
+		{
+			name:       "a reset point with a signature",
+			stored:     store.EscrowChain{Root: first.encoded, Rotations: []store.EscrowRotationStatement{firstToSecond, signedReset}},
+			configured: third,
+			assertErr:  errorIs(server.ErrEscrowChain),
+		},
+		{
+			name:       "a reset point naming another predecessor",
+			stored:     store.EscrowChain{Root: first.encoded, Rotations: []store.EscrowRotationStatement{firstToSecond, resetPoint(first, third)}},
+			configured: third,
+			assertErr:  errorIs(server.ErrEscrowChain),
+		},
+		{
+			name:       "a reset point back to a bundle already in the chain",
+			stored:     store.EscrowChain{Root: first.encoded, Rotations: []store.EscrowRotationStatement{firstToSecond, resetPoint(second, first)}},
+			configured: first,
+			assertErr:  errorIs(server.ErrEscrowChain),
+		},
+		{
+			name: "a signed rotation back to a bundle already in the chain",
+			stored: store.EscrowChain{Root: first.encoded, Rotations: []store.EscrowRotationStatement{
+				firstToSecond, rotate(t, second.sign, second, first),
+			}},
+			configured: first,
+			assertErr:  errorIs(server.ErrEscrowChain),
 		},
 		{
 			name:       "a statement signed by the new key",
@@ -203,6 +270,7 @@ func TestLoadEscrowChain(t *testing.T) {
 				for index, statement := range test.wantChain.Rotations {
 					assert.True(t, proto.Equal(statement, escrow.Chain.Rotations[index]), "statement %d", index)
 					assert.Equal(t, statement.GetSignature(), escrow.Rotations[index].Signature, "statement %d", index)
+					assert.Equal(t, statement.GetReset_(), escrow.Rotations[index].Reset, "statement %d", index)
 				}
 			}
 		})

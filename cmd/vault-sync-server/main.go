@@ -7,7 +7,8 @@
 //
 // `vault-sync-server export rotate-escrow -server URL -recipient R
 // -signing-public-key K` rotates the deployment's escrow key and exits
-// (docs/admin/encryption.md).
+// (docs/admin/encryption.md). `vault-sync-server export reset-escrow` takes the
+// same flags and appends an escrow reset point instead.
 //
 // `vault-sync-server escrow fingerprint` prints the fingerprint of the
 // deployment's escrow key pair and exits (docs/admin/encryption.md).

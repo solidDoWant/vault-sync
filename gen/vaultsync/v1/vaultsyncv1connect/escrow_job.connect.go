@@ -39,6 +39,9 @@ const (
 	// EscrowJobServiceAppendEscrowRotationProcedure is the fully-qualified name of the
 	// EscrowJobService's AppendEscrowRotation RPC.
 	EscrowJobServiceAppendEscrowRotationProcedure = "/vaultsync.v1.EscrowJobService/AppendEscrowRotation"
+	// EscrowJobServiceResetEscrowChainProcedure is the fully-qualified name of the EscrowJobService's
+	// ResetEscrowChain RPC.
+	EscrowJobServiceResetEscrowChainProcedure = "/vaultsync.v1.EscrowJobService/ResetEscrowChain"
 )
 
 // EscrowJobServiceClient is a client for the vaultsync.v1.EscrowJobService service.
@@ -50,10 +53,16 @@ type EscrowJobServiceClient interface {
 	// within the last 30 days. new_recipient_id must be the key id of the
 	// escrow chain's head.
 	//
+	// The head must be reachable from the escrow bundle the vault's log named
+	// last through signed rotations alone, so a slot never crosses a reset
+	// point the vault's owner has not adopted.
+	//
 	// Errors: INVALID_ARGUMENT for a malformed request or a new recipient
-	// that is not the chain head's key; NOT_FOUND when the vault's epoch has
-	// no escrow slot wrapped to old_recipient_id (already replaced, or no
-	// such vault or epoch).
+	// that is not the chain head's key; FAILED_PRECONDITION with
+	// ERROR_REASON_ESCROW_NOT_ADOPTED when a reset point lies between the
+	// vault's last escrow bundle and the head; NOT_FOUND when the vault's
+	// epoch has no escrow slot wrapped to old_recipient_id (already replaced,
+	// or no such vault or epoch).
 	ReplaceEscrowSlot(context.Context, *connect.Request[v1.ReplaceEscrowSlotRequest]) (*connect.Response[v1.ReplaceEscrowSlotResponse], error)
 	// AppendEscrowRotation appends the next escrow rotation statement to the
 	// stored escrow chain. The statement must name the hash of the chain
@@ -64,6 +73,17 @@ type EscrowJobServiceClient interface {
 	// deployment has no escrow chain; ABORTED when another statement was
 	// appended concurrently (read the chain and try again).
 	AppendEscrowRotation(context.Context, *connect.Request[v1.AppendEscrowRotationRequest]) (*connect.Response[v1.AppendEscrowRotationResponse], error)
+	// ResetEscrowChain appends a reset point to the stored escrow chain: the
+	// chain continues from new_bundle without a signature of the head's
+	// escrow signing key (docs/design/encryption.md, "Escrow reset on the
+	// server"). It is appended only while the chain's head still hashes to
+	// expected_head_hash.
+	//
+	// Errors: INVALID_ARGUMENT for a malformed bundle or one already in the
+	// chain; FAILED_PRECONDITION when the deployment has no escrow chain;
+	// ABORTED when the head is not expected_head_hash, or another statement
+	// was appended concurrently (read the chain and try again).
+	ResetEscrowChain(context.Context, *connect.Request[v1.ResetEscrowChainRequest]) (*connect.Response[v1.ResetEscrowChainResponse], error)
 }
 
 // NewEscrowJobServiceClient constructs a client for the vaultsync.v1.EscrowJobService service. By
@@ -89,6 +109,12 @@ func NewEscrowJobServiceClient(httpClient connect.HTTPClient, baseURL string, op
 			connect.WithSchema(escrowJobServiceMethods.ByName("AppendEscrowRotation")),
 			connect.WithClientOptions(opts...),
 		),
+		resetEscrowChain: connect.NewClient[v1.ResetEscrowChainRequest, v1.ResetEscrowChainResponse](
+			httpClient,
+			baseURL+EscrowJobServiceResetEscrowChainProcedure,
+			connect.WithSchema(escrowJobServiceMethods.ByName("ResetEscrowChain")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -96,6 +122,7 @@ func NewEscrowJobServiceClient(httpClient connect.HTTPClient, baseURL string, op
 type escrowJobServiceClient struct {
 	replaceEscrowSlot    *connect.Client[v1.ReplaceEscrowSlotRequest, v1.ReplaceEscrowSlotResponse]
 	appendEscrowRotation *connect.Client[v1.AppendEscrowRotationRequest, v1.AppendEscrowRotationResponse]
+	resetEscrowChain     *connect.Client[v1.ResetEscrowChainRequest, v1.ResetEscrowChainResponse]
 }
 
 // ReplaceEscrowSlot calls vaultsync.v1.EscrowJobService.ReplaceEscrowSlot.
@@ -108,6 +135,11 @@ func (c *escrowJobServiceClient) AppendEscrowRotation(ctx context.Context, req *
 	return c.appendEscrowRotation.CallUnary(ctx, req)
 }
 
+// ResetEscrowChain calls vaultsync.v1.EscrowJobService.ResetEscrowChain.
+func (c *escrowJobServiceClient) ResetEscrowChain(ctx context.Context, req *connect.Request[v1.ResetEscrowChainRequest]) (*connect.Response[v1.ResetEscrowChainResponse], error) {
+	return c.resetEscrowChain.CallUnary(ctx, req)
+}
+
 // EscrowJobServiceHandler is an implementation of the vaultsync.v1.EscrowJobService service.
 type EscrowJobServiceHandler interface {
 	// ReplaceEscrowSlot replaces one escrow key slot: it deletes the slot of
@@ -117,10 +149,16 @@ type EscrowJobServiceHandler interface {
 	// within the last 30 days. new_recipient_id must be the key id of the
 	// escrow chain's head.
 	//
+	// The head must be reachable from the escrow bundle the vault's log named
+	// last through signed rotations alone, so a slot never crosses a reset
+	// point the vault's owner has not adopted.
+	//
 	// Errors: INVALID_ARGUMENT for a malformed request or a new recipient
-	// that is not the chain head's key; NOT_FOUND when the vault's epoch has
-	// no escrow slot wrapped to old_recipient_id (already replaced, or no
-	// such vault or epoch).
+	// that is not the chain head's key; FAILED_PRECONDITION with
+	// ERROR_REASON_ESCROW_NOT_ADOPTED when a reset point lies between the
+	// vault's last escrow bundle and the head; NOT_FOUND when the vault's
+	// epoch has no escrow slot wrapped to old_recipient_id (already replaced,
+	// or no such vault or epoch).
 	ReplaceEscrowSlot(context.Context, *connect.Request[v1.ReplaceEscrowSlotRequest]) (*connect.Response[v1.ReplaceEscrowSlotResponse], error)
 	// AppendEscrowRotation appends the next escrow rotation statement to the
 	// stored escrow chain. The statement must name the hash of the chain
@@ -131,6 +169,17 @@ type EscrowJobServiceHandler interface {
 	// deployment has no escrow chain; ABORTED when another statement was
 	// appended concurrently (read the chain and try again).
 	AppendEscrowRotation(context.Context, *connect.Request[v1.AppendEscrowRotationRequest]) (*connect.Response[v1.AppendEscrowRotationResponse], error)
+	// ResetEscrowChain appends a reset point to the stored escrow chain: the
+	// chain continues from new_bundle without a signature of the head's
+	// escrow signing key (docs/design/encryption.md, "Escrow reset on the
+	// server"). It is appended only while the chain's head still hashes to
+	// expected_head_hash.
+	//
+	// Errors: INVALID_ARGUMENT for a malformed bundle or one already in the
+	// chain; FAILED_PRECONDITION when the deployment has no escrow chain;
+	// ABORTED when the head is not expected_head_hash, or another statement
+	// was appended concurrently (read the chain and try again).
+	ResetEscrowChain(context.Context, *connect.Request[v1.ResetEscrowChainRequest]) (*connect.Response[v1.ResetEscrowChainResponse], error)
 }
 
 // NewEscrowJobServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -152,12 +201,20 @@ func NewEscrowJobServiceHandler(svc EscrowJobServiceHandler, opts ...connect.Han
 		connect.WithSchema(escrowJobServiceMethods.ByName("AppendEscrowRotation")),
 		connect.WithHandlerOptions(opts...),
 	)
+	escrowJobServiceResetEscrowChainHandler := connect.NewUnaryHandler(
+		EscrowJobServiceResetEscrowChainProcedure,
+		svc.ResetEscrowChain,
+		connect.WithSchema(escrowJobServiceMethods.ByName("ResetEscrowChain")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/vaultsync.v1.EscrowJobService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case EscrowJobServiceReplaceEscrowSlotProcedure:
 			escrowJobServiceReplaceEscrowSlotHandler.ServeHTTP(w, r)
 		case EscrowJobServiceAppendEscrowRotationProcedure:
 			escrowJobServiceAppendEscrowRotationHandler.ServeHTTP(w, r)
+		case EscrowJobServiceResetEscrowChainProcedure:
+			escrowJobServiceResetEscrowChainHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -173,4 +230,8 @@ func (UnimplementedEscrowJobServiceHandler) ReplaceEscrowSlot(context.Context, *
 
 func (UnimplementedEscrowJobServiceHandler) AppendEscrowRotation(context.Context, *connect.Request[v1.AppendEscrowRotationRequest]) (*connect.Response[v1.AppendEscrowRotationResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("vaultsync.v1.EscrowJobService.AppendEscrowRotation is not implemented"))
+}
+
+func (UnimplementedEscrowJobServiceHandler) ResetEscrowChain(context.Context, *connect.Request[v1.ResetEscrowChainRequest]) (*connect.Response[v1.ResetEscrowChainResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("vaultsync.v1.EscrowJobService.ResetEscrowChain is not implemented"))
 }

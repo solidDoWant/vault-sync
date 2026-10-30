@@ -69,6 +69,13 @@ const (
 	// keys, encrypts the pending change under the current epoch and retries
 	// (docs/design/encryption.md, "Converting a plaintext vault in place").
 	ErrorReason_ERROR_REASON_VAULT_ENCRYPTED ErrorReason = 8
+	// FAILED_PRECONDITION from EscrowJobService.ReplaceEscrowSlot: the escrow
+	// chain's head is not reachable from the escrow bundle the vault's log
+	// named last through signed rotations alone, because a reset point lies
+	// between them. The vault waits for its owner to adopt the new escrow key
+	// (docs/design/encryption.md, "Escrow reset on the server"). The export
+	// job reports the vault and does not retry.
+	ErrorReason_ERROR_REASON_ESCROW_NOT_ADOPTED ErrorReason = 9
 )
 
 // Enum value maps for ErrorReason.
@@ -83,6 +90,7 @@ var (
 		6: "ERROR_REASON_EPOCH_NOT_CURRENT",
 		7: "ERROR_REASON_VAULT_DELETED",
 		8: "ERROR_REASON_VAULT_ENCRYPTED",
+		9: "ERROR_REASON_ESCROW_NOT_ADOPTED",
 	}
 	ErrorReason_value = map[string]int32{
 		"ERROR_REASON_UNSPECIFIED":                   0,
@@ -94,6 +102,7 @@ var (
 		"ERROR_REASON_EPOCH_NOT_CURRENT":             6,
 		"ERROR_REASON_VAULT_DELETED":                 7,
 		"ERROR_REASON_VAULT_ENCRYPTED":               8,
+		"ERROR_REASON_ESCROW_NOT_ADOPTED":            9,
 	}
 )
 
@@ -189,7 +198,7 @@ const file_vaultsync_v1_errors_proto_rawDesc = "" +
 	"\vErrorDetail\x121\n" +
 	"\x06reason\x18\x01 \x01(\x0e2\x19.vaultsync.v1.ErrorReasonR\x06reason\x129\n" +
 	"\n" +
-	"retry_time\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\tretryTime*\xd5\x02\n" +
+	"retry_time\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\tretryTime*\xfa\x02\n" +
 	"\vErrorReason\x12\x1c\n" +
 	"\x18ERROR_REASON_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19ERROR_REASON_DEVICE_LIMIT\x10\x01\x12-\n" +
@@ -199,7 +208,8 @@ const file_vaultsync_v1_errors_proto_rawDesc = "" +
 	"*ERROR_REASON_PASSPHRASE_ATTEMPTS_EXHAUSTED\x10\x05\x12\"\n" +
 	"\x1eERROR_REASON_EPOCH_NOT_CURRENT\x10\x06\x12\x1e\n" +
 	"\x1aERROR_REASON_VAULT_DELETED\x10\a\x12 \n" +
-	"\x1cERROR_REASON_VAULT_ENCRYPTED\x10\bB@Z>github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyncv1b\x06proto3"
+	"\x1cERROR_REASON_VAULT_ENCRYPTED\x10\b\x12#\n" +
+	"\x1fERROR_REASON_ESCROW_NOT_ADOPTED\x10\tB@Z>github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyncv1b\x06proto3"
 
 var (
 	file_vaultsync_v1_errors_proto_rawDescOnce sync.Once

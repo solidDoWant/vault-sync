@@ -10,7 +10,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file vaultsync/v1/server_info.proto.
  */
 export const file_vaultsync_v1_server_info: GenFile = /*@__PURE__*/
-  fileDesc("Ch52YXVsdHN5bmMvdjEvc2VydmVyX2luZm8ucHJvdG8SDHZhdWx0c3luYy52MSIWChRHZXRTZXJ2ZXJJbmZvUmVxdWVzdCK+AgoVR2V0U2VydmVySW5mb1Jlc3BvbnNlEg8KB3ZlcnNpb24YASABKAkSGAoQcHJvdG9jb2xfdmVyc2lvbhgCIAEoDRIiChptYXhfcmVhbHRpbWVfc3Vic2NyaXB0aW9ucxgDIAEoDRIXCg9vaWRjX2lzc3Vlcl91cmwYBCABKAkSFgoOb2lkY19jbGllbnRfaWQYBSABKAkSGQoRZXNjcm93X3B1YmxpY19rZXkYBiABKAwSFQoNZXNjcm93X2tleV9pZBgHIAEoCRIWCg5lc2Nyb3dfZGVmYXVsdBgIIAEoCBIaChJlc2Nyb3dfcm9vdF9idW5kbGUYCSABKAwSPwoQZXNjcm93X3JvdGF0aW9ucxgKIAMoCzIlLnZhdWx0c3luYy52MS5Fc2Nyb3dSb3RhdGlvblN0YXRlbWVudCJZChdFc2Nyb3dSb3RhdGlvblN0YXRlbWVudBIXCg9vbGRfYnVuZGxlX2hhc2gYASABKAwSEgoKbmV3X2J1bmRsZRgCIAEoDBIRCglzaWduYXR1cmUYAyABKAwybwoRU2VydmVySW5mb1NlcnZpY2USWgoNR2V0U2VydmVySW5mbxIiLnZhdWx0c3luYy52MS5HZXRTZXJ2ZXJJbmZvUmVxdWVzdBojLnZhdWx0c3luYy52MS5HZXRTZXJ2ZXJJbmZvUmVzcG9uc2UiAEJAWj5naXRodWIuY29tL3NvbGlkRG9XYW50L3ZhdWx0LXN5bmMvZ2VuL3ZhdWx0c3luYy92MTt2YXVsdHN5bmN2MWIGcHJvdG8z");
+  fileDesc("Ch52YXVsdHN5bmMvdjEvc2VydmVyX2luZm8ucHJvdG8SDHZhdWx0c3luYy52MSIWChRHZXRTZXJ2ZXJJbmZvUmVxdWVzdCK+AgoVR2V0U2VydmVySW5mb1Jlc3BvbnNlEg8KB3ZlcnNpb24YASABKAkSGAoQcHJvdG9jb2xfdmVyc2lvbhgCIAEoDRIiChptYXhfcmVhbHRpbWVfc3Vic2NyaXB0aW9ucxgDIAEoDRIXCg9vaWRjX2lzc3Vlcl91cmwYBCABKAkSFgoOb2lkY19jbGllbnRfaWQYBSABKAkSGQoRZXNjcm93X3B1YmxpY19rZXkYBiABKAwSFQoNZXNjcm93X2tleV9pZBgHIAEoCRIWCg5lc2Nyb3dfZGVmYXVsdBgIIAEoCBIaChJlc2Nyb3dfcm9vdF9idW5kbGUYCSABKAwSPwoQZXNjcm93X3JvdGF0aW9ucxgKIAMoCzIlLnZhdWx0c3luYy52MS5Fc2Nyb3dSb3RhdGlvblN0YXRlbWVudCJoChdFc2Nyb3dSb3RhdGlvblN0YXRlbWVudBIXCg9vbGRfYnVuZGxlX2hhc2gYASABKAwSEgoKbmV3X2J1bmRsZRgCIAEoDBIRCglzaWduYXR1cmUYAyABKAwSDQoFcmVzZXQYBCABKAgybwoRU2VydmVySW5mb1NlcnZpY2USWgoNR2V0U2VydmVySW5mbxIiLnZhdWx0c3luYy52MS5HZXRTZXJ2ZXJJbmZvUmVxdWVzdBojLnZhdWx0c3luYy52MS5HZXRTZXJ2ZXJJbmZvUmVzcG9uc2UiAEJAWj5naXRodWIuY29tL3NvbGlkRG9XYW50L3ZhdWx0LXN5bmMvZ2VuL3ZhdWx0c3luYy92MTt2YXVsdHN5bmN2MWIGcHJvdG8z");
 
 /**
  * GetServerInfoRequest has no parameters.
@@ -136,8 +136,11 @@ export const GetServerInfoResponseSchema: GenMessage<GetServerInfoResponse> = /*
   messageDesc(file_vaultsync_v1_server_info, 1);
 
 /**
- * EscrowRotationStatement moves the escrow key from one bundle to the next,
- * signed by the previous bundle's escrow signing key (docs/design/crypto.md).
+ * EscrowRotationStatement moves the escrow key from one bundle to the next
+ * (docs/design/crypto.md). A signed rotation has reset false and the
+ * previous bundle's escrow signing key's signature. A reset point has reset
+ * true and an empty signature (docs/design/encryption.md, "The escrow
+ * chain"). Clients refuse any other combination.
  *
  * @generated from message vaultsync.v1.EscrowRotationStatement
  */
@@ -157,11 +160,20 @@ export type EscrowRotationStatement = Message<"vaultsync.v1.EscrowRotationStatem
   newBundle: Uint8Array;
 
   /**
-   * The previous escrow signing key's Ed25519 signature (64 bytes).
+   * The previous escrow signing key's Ed25519 signature (64 bytes), or
+   * empty for a reset point.
    *
    * @generated from field: bytes signature = 3;
    */
   signature: Uint8Array;
+
+  /**
+   * Whether this statement is a reset point: an admin started the chain
+   * again from new_bundle without the previous signing key.
+   *
+   * @generated from field: bool reset = 4;
+   */
+  reset: boolean;
 };
 
 /**

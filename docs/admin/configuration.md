@@ -48,6 +48,7 @@ The server and its subcommands are one binary. Each subcommand reads only some o
 | `vault-sync-server` (the server) | Every variable in the reference, except the ones marked for the export, the escrow rotation or `retention set` only. |
 | `vault-sync-server export` | The PostgreSQL, S3 and log-level variables, and `VAULT_SYNC_ESCROW_IDENTITY_FILE`. The S3 variables are required. See [export.md](backup-and-restore.md#the-export-job). |
 | `vault-sync-server export rotate-escrow` | The PostgreSQL and log-level variables, `VAULT_SYNC_ESCROW_IDENTITY_FILE`, `VAULT_SYNC_ESCROW_SIGNING_KEY_FILE` and `VAULT_SYNC_ESCROW_JOB_TOKEN_FILE`. See [Rotate the escrow key](encryption.md#rotate-the-escrow-key). |
+| `vault-sync-server export reset-escrow` | The PostgreSQL and log-level variables and `VAULT_SYNC_ESCROW_JOB_TOKEN_FILE`. See [Reset the escrow chain](encryption.md#reset-the-escrow-chain). |
 | `vault-sync-server escrow fingerprint` | Only `VAULT_SYNC_ESCROW_RECIPIENT` and `VAULT_SYNC_ESCROW_SIGNING_KEY`, and only when you do not give its flags. See [Publish the escrow fingerprint](encryption.md#publish-the-escrow-fingerprint). |
 | `vault-sync-server retention` | The PostgreSQL variables, `VAULT_SYNC_RETENTION_OVERRIDE_MIN_KEEP_ALL` and `VAULT_SYNC_RETENTION_OVERRIDE_MIN_KEEP_DAILY`. See [Per-vault retention](history-and-retention.md#per-vault-overrides). |
 | `vault-sync-server vault` | Only the PostgreSQL variables. See [Undeleting a vault](backup-and-restore.md#undelete-a-vault). |

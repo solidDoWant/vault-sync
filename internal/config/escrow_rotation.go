@@ -134,3 +134,62 @@ func LoadEscrowRotation(lookup func(string) (string, bool)) (EscrowRotationConfi
 
 	return cfg, nil
 }
+
+// EscrowResetConfig is the configuration of `export reset-escrow`
+// (docs/admin/encryption.md): the database it reads the escrow chain from and the job
+// token it writes the reset point with.
+type EscrowResetConfig struct {
+	// Database is the PostgreSQL connection configuration. Its pool is
+	// read-only: the reset point is written through the server's job-only
+	// endpoint.
+	Database store.Config
+	// LogLevel is the minimum level logged.
+	LogLevel slog.Level
+	// EscrowJobToken is the bearer token of the job-only endpoint, read from
+	// EscrowJobTokenFileEnv.
+	EscrowJobToken []byte
+}
+
+// LoadEscrowReset reads the escrow reset configuration through lookup, like
+// Load. The database and the job token file are required; a reset needs no
+// escrow identity and no signing key.
+func LoadEscrowReset(lookup func(string) (string, bool)) (EscrowResetConfig, error) {
+	get := func(name string) string {
+		value, _ := lookup(name)
+
+		return strings.TrimSpace(value)
+	}
+
+	cfg := EscrowResetConfig{
+		Database: store.Config{
+			DSN:         get(DatabaseURLEnv),
+			TLSCertFile: get(DatabaseTLSCertFileEnv),
+			TLSKeyFile:  get(DatabaseTLSKeyFileEnv),
+			TLSCAFile:   get(DatabaseTLSCAFileEnv),
+			ReadOnly:    true,
+		},
+		LogLevel: slog.LevelInfo,
+	}
+
+	problems := []error{checkDatabase(cfg.Database)}
+
+	if raw := get(LogLevelEnv); raw != "" {
+		if err := cfg.LogLevel.UnmarshalText([]byte(raw)); err != nil {
+			problems = append(problems, fmt.Errorf("%s: %q is not one of debug, info, warn, error", LogLevelEnv, raw))
+		}
+	}
+
+	var err error
+
+	if path := get(EscrowJobTokenFileEnv); path == "" {
+		problems = append(problems, fmt.Errorf("%s is required: the reset writes through the server's job-only endpoint", EscrowJobTokenFileEnv))
+	} else if cfg.EscrowJobToken, err = loadEscrowJobToken(path); err != nil {
+		problems = append(problems, err)
+	}
+
+	if err := errors.Join(problems...); err != nil {
+		return EscrowResetConfig{}, err
+	}
+
+	return cfg, nil
+}

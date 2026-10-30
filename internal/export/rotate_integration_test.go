@@ -147,6 +147,37 @@ func startEscrowJob(t *testing.T, deployment *deployment, jobStore api.EscrowJob
 	return server.URL, env
 }
 
+// createAdoptedVault creates an escrowed vault as a device creates it: its
+// membership log starts with a genesis entry, signed by its creator, that
+// names escrow as the vault's escrow bundle.
+func (deployment *deployment) createAdoptedVault(t *testing.T, name string, escrow e2ee.EscrowBundle) *escrowedStoreVault {
+	t.Helper()
+
+	secret, err := e2ee.GenerateUserSecret()
+	require.NoError(t, err)
+
+	creator, err := secret.Bundle(deployment.user.String())
+	require.NoError(t, err)
+
+	payload, err := e2ee.GenesisPayload(creator, &escrow)
+	require.NoError(t, err)
+
+	vaultID := uuid.Must(uuid.NewV7())
+
+	genesis, err := e2ee.Entry{
+		VaultID: vaultID.String(), Seq: 1, PrevHash: make([]byte, e2ee.HashSize), Type: e2ee.EntryGenesis, Payload: payload,
+	}.Sign(secret.SignKey())
+	require.NoError(t, err)
+
+	vault, err := deployment.store.CreateVault(t.Context(), deployment.user, store.NewVault{
+		ID: vaultID, Name: name, Encryption: store.EncryptionE2EE, Escrow: true,
+		Genesis: &store.LogEntry{Seq: 1, PrevHash: genesis.PrevHash, Type: byte(genesis.Type), Payload: genesis.Payload, Signatures: genesis.Signatures},
+	}, 100)
+	require.NoError(t, err)
+
+	return &escrowedStoreVault{id: vault.ID, keys: map[int32][]byte{}}
+}
+
 func TestEscrowRotationAgainstPostgreSQL(t *testing.T) {
 	t.Run("[P4-12] the export job re-wraps every escrow slot, deleted vaults included, catches a slot wrapped to the old key during the switch, and the age tool opens a slot with the new key", func(t *testing.T) {
 		deployment := newDeployment(t)
@@ -158,11 +189,11 @@ func TestEscrowRotationAgainstPostgreSQL(t *testing.T) {
 		_, err = deployment.store.EscrowChain(t.Context(), root)
 		require.NoError(t, err)
 
-		live := deployment.createEscrowedVault(t, "Live")
+		live := deployment.createAdoptedVault(t, "Live", oldKey.bundle)
 		deployment.rotate(t, live, oldKey.public, nil)
 		deployment.rotate(t, live, oldKey.public, nil)
 
-		deleted := deployment.createEscrowedVault(t, "Deleted last week")
+		deleted := deployment.createAdoptedVault(t, "Deleted last week", oldKey.bundle)
 		deployment.rotate(t, deleted, oldKey.public, nil)
 		require.NoError(t, deployment.store.DeleteVault(t.Context(), deleted.id))
 

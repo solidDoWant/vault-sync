@@ -209,16 +209,23 @@ func (x *GetServerInfoResponse) GetEscrowRotations() []*EscrowRotationStatement 
 	return nil
 }
 
-// EscrowRotationStatement moves the escrow key from one bundle to the next,
-// signed by the previous bundle's escrow signing key (docs/design/crypto.md).
+// EscrowRotationStatement moves the escrow key from one bundle to the next
+// (docs/design/crypto.md). A signed rotation has reset false and the
+// previous bundle's escrow signing key's signature. A reset point has reset
+// true and an empty signature (docs/design/encryption.md, "The escrow
+// chain"). Clients refuse any other combination.
 type EscrowRotationStatement struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// SHA-256 of the encoded previous bundle (32 bytes).
 	OldBundleHash []byte `protobuf:"bytes,1,opt,name=old_bundle_hash,json=oldBundleHash,proto3" json:"old_bundle_hash,omitempty"`
 	// The encoded new bundle.
 	NewBundle []byte `protobuf:"bytes,2,opt,name=new_bundle,json=newBundle,proto3" json:"new_bundle,omitempty"`
-	// The previous escrow signing key's Ed25519 signature (64 bytes).
-	Signature     []byte `protobuf:"bytes,3,opt,name=signature,proto3" json:"signature,omitempty"`
+	// The previous escrow signing key's Ed25519 signature (64 bytes), or
+	// empty for a reset point.
+	Signature []byte `protobuf:"bytes,3,opt,name=signature,proto3" json:"signature,omitempty"`
+	// Whether this statement is a reset point: an admin started the chain
+	// again from new_bundle without the previous signing key.
+	Reset_        bool `protobuf:"varint,4,opt,name=reset,proto3" json:"reset,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -274,6 +281,13 @@ func (x *EscrowRotationStatement) GetSignature() []byte {
 	return nil
 }
 
+func (x *EscrowRotationStatement) GetReset_() bool {
+	if x != nil {
+		return x.Reset_
+	}
+	return false
+}
+
 var File_vaultsync_v1_server_info_proto protoreflect.FileDescriptor
 
 const file_vaultsync_v1_server_info_proto_rawDesc = "" +
@@ -291,12 +305,13 @@ const file_vaultsync_v1_server_info_proto_rawDesc = "" +
 	"\x0eescrow_default\x18\b \x01(\bR\rescrowDefault\x12,\n" +
 	"\x12escrow_root_bundle\x18\t \x01(\fR\x10escrowRootBundle\x12P\n" +
 	"\x10escrow_rotations\x18\n" +
-	" \x03(\v2%.vaultsync.v1.EscrowRotationStatementR\x0fescrowRotations\"~\n" +
+	" \x03(\v2%.vaultsync.v1.EscrowRotationStatementR\x0fescrowRotations\"\x94\x01\n" +
 	"\x17EscrowRotationStatement\x12&\n" +
 	"\x0fold_bundle_hash\x18\x01 \x01(\fR\roldBundleHash\x12\x1d\n" +
 	"\n" +
 	"new_bundle\x18\x02 \x01(\fR\tnewBundle\x12\x1c\n" +
-	"\tsignature\x18\x03 \x01(\fR\tsignature2o\n" +
+	"\tsignature\x18\x03 \x01(\fR\tsignature\x12\x14\n" +
+	"\x05reset\x18\x04 \x01(\bR\x05reset2o\n" +
 	"\x11ServerInfoService\x12Z\n" +
 	"\rGetServerInfo\x12\".vaultsync.v1.GetServerInfoRequest\x1a#.vaultsync.v1.GetServerInfoResponse\"\x00B@Z>github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyncv1b\x06proto3"
 

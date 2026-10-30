@@ -12,7 +12,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file vaultsync/v1/errors.proto.
  */
 export const file_vaultsync_v1_errors: GenFile = /*@__PURE__*/
-  fileDesc("Chl2YXVsdHN5bmMvdjEvZXJyb3JzLnByb3RvEgx2YXVsdHN5bmMudjEiaAoLRXJyb3JEZXRhaWwSKQoGcmVhc29uGAEgASgOMhkudmF1bHRzeW5jLnYxLkVycm9yUmVhc29uEi4KCnJldHJ5X3RpbWUYAiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wKtUCCgtFcnJvclJlYXNvbhIcChhFUlJPUl9SRUFTT05fVU5TUEVDSUZJRUQQABIdChlFUlJPUl9SRUFTT05fREVWSUNFX0xJTUlUEAESLQopRVJST1JfUkVBU09OX1RPT19NQU5ZX0NPTkNVUlJFTlRfUkVRVUVTVFMQAhIhCh1FUlJPUl9SRUFTT05fREVWSUNFX05PVF9GT1VORBADEiEKHUVSUk9SX1JFQVNPTl9XUk9OR19QQVNTUEhSQVNFEAQSLgoqRVJST1JfUkVBU09OX1BBU1NQSFJBU0VfQVRURU1QVFNfRVhIQVVTVEVEEAUSIgoeRVJST1JfUkVBU09OX0VQT0NIX05PVF9DVVJSRU5UEAYSHgoaRVJST1JfUkVBU09OX1ZBVUxUX0RFTEVURUQQBxIgChxFUlJPUl9SRUFTT05fVkFVTFRfRU5DUllQVEVEEAhCQFo+Z2l0aHViLmNvbS9zb2xpZERvV2FudC92YXVsdC1zeW5jL2dlbi92YXVsdHN5bmMvdjE7dmF1bHRzeW5jdjFiBnByb3RvMw", [file_google_protobuf_timestamp]);
+  fileDesc("Chl2YXVsdHN5bmMvdjEvZXJyb3JzLnByb3RvEgx2YXVsdHN5bmMudjEiaAoLRXJyb3JEZXRhaWwSKQoGcmVhc29uGAEgASgOMhkudmF1bHRzeW5jLnYxLkVycm9yUmVhc29uEi4KCnJldHJ5X3RpbWUYAiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wKvoCCgtFcnJvclJlYXNvbhIcChhFUlJPUl9SRUFTT05fVU5TUEVDSUZJRUQQABIdChlFUlJPUl9SRUFTT05fREVWSUNFX0xJTUlUEAESLQopRVJST1JfUkVBU09OX1RPT19NQU5ZX0NPTkNVUlJFTlRfUkVRVUVTVFMQAhIhCh1FUlJPUl9SRUFTT05fREVWSUNFX05PVF9GT1VORBADEiEKHUVSUk9SX1JFQVNPTl9XUk9OR19QQVNTUEhSQVNFEAQSLgoqRVJST1JfUkVBU09OX1BBU1NQSFJBU0VfQVRURU1QVFNfRVhIQVVTVEVEEAUSIgoeRVJST1JfUkVBU09OX0VQT0NIX05PVF9DVVJSRU5UEAYSHgoaRVJST1JfUkVBU09OX1ZBVUxUX0RFTEVURUQQBxIgChxFUlJPUl9SRUFTT05fVkFVTFRfRU5DUllQVEVEEAgSIwofRVJST1JfUkVBU09OX0VTQ1JPV19OT1RfQURPUFRFRBAJQkBaPmdpdGh1Yi5jb20vc29saWREb1dhbnQvdmF1bHQtc3luYy9nZW4vdmF1bHRzeW5jL3YxO3ZhdWx0c3luY3YxYgZwcm90bzM", [file_google_protobuf_timestamp]);
 
 /**
  * ErrorDetail is attached to an error (as a Connect error detail) to give
@@ -137,6 +137,18 @@ export enum ErrorReason {
    * @generated from enum value: ERROR_REASON_VAULT_ENCRYPTED = 8;
    */
   VAULT_ENCRYPTED = 8,
+
+  /**
+   * FAILED_PRECONDITION from EscrowJobService.ReplaceEscrowSlot: the escrow
+   * chain's head is not reachable from the escrow bundle the vault's log
+   * named last through signed rotations alone, because a reset point lies
+   * between them. The vault waits for its owner to adopt the new escrow key
+   * (docs/design/encryption.md, "Escrow reset on the server"). The export
+   * job reports the vault and does not retry.
+   *
+   * @generated from enum value: ERROR_REASON_ESCROW_NOT_ADOPTED = 9;
+   */
+  ESCROW_NOT_ADOPTED = 9,
 }
 
 /**

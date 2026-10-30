@@ -332,6 +332,12 @@ type LogState struct {
 	lastRemoval uint64
 }
 
+// LastEscrow returns the escrow bundle the log named last, or nil when it
+// never named one. It stays while escrow is off.
+func (state LogState) LastEscrow() *EscrowBundle {
+	return state.lastEscrow
+}
+
 func (state LogState) clone() LogState {
 	state.Members = maps.Clone(state.Members)
 	state.Invitations = maps.Clone(state.Invitations)

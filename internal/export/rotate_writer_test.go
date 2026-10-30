@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"connectrpc.com/connect"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -19,13 +20,34 @@ import (
 	"github.com/solidDoWant/vault-sync/internal/api"
 	"github.com/solidDoWant/vault-sync/internal/auth"
 	"github.com/solidDoWant/vault-sync/internal/e2ee"
+	"github.com/solidDoWant/vault-sync/internal/e2ee/logtest"
 	"github.com/solidDoWant/vault-sync/internal/export"
 	"github.com/solidDoWant/vault-sync/internal/store"
 )
 
-// jobStore backs the server's EscrowJobService with a rotationServer.
+// jobStore backs the server's EscrowJobService with a rotationServer. Every
+// vault's membership log names escrow as its escrow bundle.
 type jobStore struct {
 	server *rotationServer
+	t      *testing.T
+	escrow e2ee.EscrowBundle
+}
+
+func (job jobStore) VaultLogEntries(_ context.Context, vaultID uuid.UUID, after int64, _ int) ([]store.LogEntry, error) {
+	if after > 0 {
+		return nil, nil
+	}
+
+	log := logtest.New(job.t, vaultID, uuid.New(), &job.escrow)
+	entries := make([]store.LogEntry, 0, len(log.Entries))
+
+	for _, entry := range log.Entries {
+		entries = append(entries, store.LogEntry{
+			Seq: int64(entry.Seq), PrevHash: entry.PrevHash, Type: byte(entry.Type), Payload: entry.Payload, Signatures: entry.Signatures, //nolint:gosec // small test seqs.
+		})
+	}
+
+	return entries, nil
 }
 
 func (job jobStore) EscrowChain(ctx context.Context, _ []byte) (store.EscrowChain, error) {
@@ -79,7 +101,7 @@ func TestRotateWritesThroughTheJobEndpoint(t *testing.T) {
 
 			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 			path, handler := vaultsyncv1connect.NewEscrowJobServiceHandler(
-				api.EscrowJobService{Store: jobStore{server: deployment}, Logger: logger},
+				api.EscrowJobService{Store: jobStore{server: deployment, t: t, escrow: oldKey.bundle}, Logger: logger},
 				connect.WithInterceptors(auth.NewJobTokenInterceptor([]byte(token))))
 
 			mux := http.NewServeMux()

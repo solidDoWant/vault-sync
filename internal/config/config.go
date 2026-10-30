@@ -253,8 +253,8 @@ const (
 
 	// Path to a file holding the static bearer token of the job-only escrow
 	// rotation endpoint (`EscrowJobService`: conditional escrow slot
-	// replacement and appending the next escrow rotation statement,
-	// `docs/design/encryption.md`, *Escrow*). One line, 32 to 4096 characters
+	// replacement, appending the next escrow rotation statement and appending
+	// an escrow reset point, `docs/design/encryption.md`, *Escrow*). One line, 32 to 4096 characters
 	// without spaces (for example `openssl rand -base64 32`), surrounding
 	// whitespace ignored. The server compares the presented token in constant
 	// time and accepts nothing else there, user (OIDC) tokens included. When
