@@ -398,6 +398,10 @@ export class MemoryVaultKeyServer {
               })),
             };
           },
+          listInvitations: (request) => {
+            this.owner(userId, request.vaultId);
+            return { invitations: this.encrypted ? [] : this.plaintextInvitations.map((id) => ({ id, role: VaultRole.EDITOR })) };
+          },
           removeMember: async (request) => {
             this.owner(userId, request.vaultId);
             if (!this.members.has(request.userId)) throw new ConnectError("not a member", Code.NotFound);

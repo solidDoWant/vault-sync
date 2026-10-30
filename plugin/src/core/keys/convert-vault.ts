@@ -36,7 +36,7 @@ import type { VerifiedLogStore } from "./verified-log";
 import { VaultKeyManager, buildEpoch, vaultKeyStatusMessage, type EpochKeyStore, type MemberKeyClient, type VaultKeyClient } from "./vault-keys";
 
 /** The MembershipService call listing the members and the keys the server reports for them. */
-export type ConversionMembersClient = Pick<Client<typeof MembershipService>, "listMembers">;
+export type ConversionMembersClient = Pick<Client<typeof MembershipService>, "listMembers" | "listInvitations">;
 /** The SyncService call the device reads the vault's live documents with. */
 export type ConversionSyncClient = Pick<Client<typeof SyncService>, "listChanges">;
 /** The VaultKeyService calls of a conversion. */
@@ -173,7 +173,8 @@ export async function convertVault(options: ConvertVaultOptions): Promise<bigint
   for (let attempt = 1; ; attempt++) {
     const members = await reportedMembers(options.membership, vaultId);
     const withoutKey = members.filter((member) => member.bundle === undefined).map((member) => member.userId);
-    if (withoutKey.length > 0) throw new ConversionRefusedError(withoutKey.sort(), []);
+    const pending = (await options.membership.listInvitations({ vaultId })).invitations.map((invitation) => invitation.id);
+    if (withoutKey.length > 0 || pending.length > 0) throw new ConversionRefusedError(withoutKey.sort(), pending.sort());
     if (!sameFingerprints(options.compared, members)) throw new FingerprintsChangedError();
     const creator = bundleOf({ kemSeed: userKey.privateKey, signSeed: userKey.signSeed }, userKey.userId);
     const self = members.find((member) => member.userId === userKey.userId);

@@ -163,6 +163,8 @@ describe("converting a plaintext vault in place", () => {
     expect(refused).toBeInstanceOf(ConversionRefusedError);
     expect((refused as ConversionRefusedError).pendingInvitations).toEqual([invitation]);
     expect(keys.encrypted).toBe(false);
+    // Refused before anything is written: no anchor names a genesis the vault does not have.
+    expect(keys.anchorLists.size).toBe(0);
   });
 });
 
