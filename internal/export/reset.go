@@ -133,7 +133,7 @@ func runReset(ctx context.Context, serverURL string, target e2ee.EscrowBundle, l
 	cfg, err := config.LoadEscrowReset(lookup)
 	if err != nil {
 		logger := slog.New(slog.NewJSONHandler(stderr, nil))
-		logger.ErrorContext(ctx, "invalid configuration; see docs/export.md", "problems", problemList(err))
+		logger.ErrorContext(ctx, "invalid configuration; see docs/admin/encryption.md", "problems", problemList(err))
 
 		return fmt.Errorf("invalid configuration: %s", strings.Join(problemList(err), "; "))
 	}

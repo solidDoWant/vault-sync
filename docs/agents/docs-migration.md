@@ -135,19 +135,19 @@ SPEC keeps its section numbers and its rules. The SPEC readability issue applies
 | Section | W | Class | Destination | Notes |
 |---|---|---|---|---|
 | [ ] Intro | 92 | delete | — | Reader lines replace it. |
-| [ ] In short | 118 | keep | `user/encryption.md` (user summary); `admin/encryption.md` (operator summary) | User part done in `user/`; admin summary left. |
-| [ ] What the server can and can't see | 240 | keep | `admin/encryption.md` (full list); `user/encryption.md` (short list) | User part done in `user/`; full list left for `admin/encryption.md`. |
-| [ ] Your key and your recovery passphrase | 371 | keep | `user/encryption.md`; Argon2id and the guess limit to `admin/encryption.md` | Key chain duplicates `docs/design/crypto.md`: delete. User part done in `user/`; Argon2id and the guess limit left for `admin/encryption.md`. |
-| [ ] Vault keys | 216 | keep | `admin/encryption.md` | Cipher names duplicate `docs/design/`: delete. Users don't need key slots. |
-| [ ] Creating an encrypted vault | 60 | keep | `user/encryption.md`; escrow default setting to `admin/encryption.md` | User part done in `user/`; escrow default setting left for `admin/encryption.md`. |
+| [x] In short | 118 | keep | `user/encryption.md` (user summary); `admin/encryption.md` (operator summary) | User part done in `user/`; admin summary left. Done: `admin/encryption.md`. |
+| [x] What the server can and can't see | 240 | keep | `admin/encryption.md` (full list); `user/encryption.md` (short list) | User part done in `user/`; full list left for `admin/encryption.md`. Done: `admin/encryption.md`. |
+| [x] Your key and your recovery passphrase | 371 | keep | `user/encryption.md`; Argon2id and the guess limit to `admin/encryption.md` | Key chain duplicates `docs/design/crypto.md`: delete. User part done in `user/`; Argon2id and the guess limit left for `admin/encryption.md`. Done: Argon2id and the guess limit are in `admin/encryption.md`. |
+| [x] Vault keys | 216 | keep | `admin/encryption.md` | Cipher names duplicate `docs/design/`: delete. Users don't need key slots. Done: `admin/encryption.md`. |
+| [x] Creating an encrypted vault | 60 | keep | `user/encryption.md`; escrow default setting to `admin/encryption.md` | User part done in `user/`; escrow default setting left for `admin/encryption.md`. Done: `admin/encryption.md`. |
 | [ ] Invitations | 252 | keep | `user/sharing.md` (how to invite to an encrypted vault) | Code format duplicates `docs/design/encryption.md`: delete after checking it is there. User part done in `user/`; code-format delete left. |
-| [ ] Rotation | 302 | keep | `user/sharing.md` (what a removed member keeps); `admin/encryption.md` (epochs) | User part done in `user/`; epochs left for `admin/encryption.md`. |
-| [ ] Re-encrypting history | 170 | keep | `admin/encryption.md`; one line to `user/encryption.md` | Rekey backlog alert links here. User part done in `user/`; admin part left. |
+| [x] Rotation | 302 | keep | `user/sharing.md` (what a removed member keeps); `admin/encryption.md` (epochs) | User part done in `user/`; epochs left for `admin/encryption.md`. Done: `admin/encryption.md`. |
+| [x] Re-encrypting history | 170 | keep | `admin/encryption.md`; one line to `user/encryption.md` | Rekey backlog alert links here. User part done in `user/`; admin part left. Done: `admin/encryption.md`. |
 | [x] Converting a plaintext vault | 196 | keep | `user/encryption.md` | |
-| [ ] Escrow | 344 | keep | `user/encryption.md` (what escrow means for you); `admin/encryption.md` | User part done in `user/`; admin part left. |
-| [ ] For operators: the escrow key | 416 | keep | `admin/encryption.md` | |
-| [ ] Losing your passphrase | 153 | keep | `user/encryption.md`; operator recovery steps to `admin/encryption.md` | User part done in `user/`; operator recovery steps left for `admin/encryption.md`. |
-| [ ] Recovery with `age` | 272 | keep | `admin/encryption.md` (or `admin/backup-and-restore.md`, linked from both) | |
+| [x] Escrow | 344 | keep | `user/encryption.md` (what escrow means for you); `admin/encryption.md` | User part done in `user/`; admin part left. Done: `admin/encryption.md`. |
+| [x] For operators: the escrow key | 416 | keep | `admin/encryption.md` | Done: `admin/encryption.md`. |
+| [x] Losing your passphrase | 153 | keep | `user/encryption.md`; operator recovery steps to `admin/encryption.md` | User part done in `user/`; operator recovery steps left for `admin/encryption.md`. Done: `admin/encryption.md`. |
+| [x] Recovery with `age` | 272 | keep | `admin/encryption.md` (or `admin/backup-and-restore.md`, linked from both) | Done: `admin/encryption.md`. |
 | [ ] Threat model | 30 | keep | `admin/security.md`; short user version in `user/encryption.md` | User part done in `user/`; admin part left. |
 | [ ] A stolen copy of the database or the bucket | 144 | keep | `admin/security.md`; user version: "choose a long passphrase" | User part done in `user/`; admin part left. |
 | [ ] An actively malicious server | 490 | keep | `admin/security.md` (≈150 W: what it can and can't do) | Mechanism duplicates `docs/design/encryption.md` "Protection against an active server": delete the mechanism here. |
@@ -163,8 +163,8 @@ SPEC keeps its section numbers and its rules. The SPEC readability issue applies
 | [ ] Authorization | 1,004 | keep | `admin/security.md` (≈300 W) | Per-procedure role lists duplicate SPEC §9.2 and the proto comments: delete. |
 | [ ] Blob storage | 404 | keep | `admin/postgresql-and-s3.md`; size and chunk limits to `admin/security.md` (limits) | The layout, permissions and cleanup are in `admin/postgresql-and-s3.md`; the size and chunk limits stay here for `admin/security.md`. |
 | [ ] Revisions and the change feed | 539 | keep | `admin/postgresql-and-s3.md` (≈150 W: page size and response limits as settings) | Protocol detail duplicates SPEC §6.1: delete. Page sizes and response limits are in `admin/postgresql-and-s3.md`; the rest is left to delete. |
-| [ ] Retention and history | 1,375 | keep | `admin/history-and-retention.md` (≈500 W) | Purge mechanics are developer depth (SPEC §11, `internal/retention`): delete here. |
-| [ ] Per-vault overrides | — | keep | `admin/history-and-retention.md` | Subsection of the row above. |
+| [x] Retention and history | 1,375 | keep | `admin/history-and-retention.md` (≈500 W) | Purge mechanics are developer depth (SPEC §11, `internal/retention`): delete here. Done: `admin/history-and-retention.md`; purge mechanics are in SPEC §11. |
+| [x] Per-vault overrides | — | keep | `admin/history-and-retention.md` | Subsection of the row above. Done: `admin/history-and-retention.md`. |
 | [ ] Realtime channel | 439 | keep | `admin/install.md` (ingress); limits to `admin/security.md` | The ingress needs are in `admin/install.md`; the limits stay here for `admin/security.md`. |
 | [x] PostgreSQL TLS | 125 | keep | `admin/postgresql-and-s3.md` | Done: `admin/postgresql-and-s3.md`. |
 | [ ] Endpoints | 138 | keep | `admin/configuration.md`; CORS and health detail to `admin/security.md`, `admin/monitoring.md` | The listeners are in `admin/configuration.md`; CORS and health detail stay here for `admin/security.md` and `admin/monitoring.md`. |
@@ -183,11 +183,11 @@ SPEC keeps its section numbers and its rules. The SPEC readability issue applies
 | [x] S3 (Ceph RGW) | 204 | keep | `admin/postgresql-and-s3.md` | Done: `admin/postgresql-and-s3.md`. |
 | [x] Authentik (the device-flow application) | 259 | keep | `admin/identity-provider.md` | Merge with `plugin.md` "Identity provider setup". Done: `admin/identity-provider.md`. |
 | [ ] The WAF body limit (Istio and Coraza) | 310 | keep | `admin/install.md`; limit relationship to `admin/security.md` | The ingress part is in `admin/install.md`; the limit relationship stays here for `admin/security.md`. |
-| [ ] The export job | 546 | keep | `admin/backup-and-restore.md` | Chart wiring duplicates the chart values: delete. |
+| [x] The export job | 546 | keep | `admin/backup-and-restore.md` | Chart wiring duplicates the chart values: delete. Done: `admin/backup-and-restore.md`. |
 | [x] Installing the chart | 220 | keep | `admin/install.md` | Done: `admin/install.md`. |
 | [x] Upgrading | 681 | keep | `admin/upgrades.md` | Done: `admin/upgrades.md`. |
-| [ ] Per-vault retention | 139 | keep | `admin/history-and-retention.md` | Merge with `configuration.md` "Per-vault overrides" (duplicate). |
-| [ ] Undeleting a vault | 128 | keep | `admin/backup-and-restore.md`; one line in `user/sharing.md` (ask your admin) | |
+| [x] Per-vault retention | 139 | keep | `admin/history-and-retention.md` | Merge with `configuration.md` "Per-vault overrides" (duplicate). Done: merged into `admin/history-and-retention.md`. |
+| [x] Undeleting a vault | 128 | keep | `admin/backup-and-restore.md`; one line in `user/sharing.md` (ask your admin) | Done: `admin/backup-and-restore.md`. |
 | [ ] Chart values (and Shared settings, PostgreSQL, S3, OIDC, Server, Export, Route, Grafana dashboards, Alerts, Overriding the computed resources) | 2,254 | generate | `admin/chart-values.md` (generated by `helm-docs`) | See Generators. Per-value text moves into `values.yaml` `# --` comments. "Overriding the computed resources" (323 W) explains a concept: keep ≈150 W of it in `admin/install.md` (sizing). |
 | [x] High availability | 117 | delete | — | Duplicate of `configuration.md` "High-availability deployment", which lands in `admin/upgrades.md`. Done: every fact is in `admin/upgrades.md`. |
 | [ ] Monitoring | 440 | keep | `admin/monitoring.md` | |
@@ -197,31 +197,31 @@ SPEC keeps its section numbers and its rules. The SPEC readability issue applies
 
 | Section | W | Class | Destination | Notes |
 |---|---|---|---|---|
-| [ ] Intro | 129 | keep | `admin/backup-and-restore.md`; user summary in `user/getting-your-notes-out.md` | User part done in `user/`; admin part left. |
-| [ ] Flags | 35 | keep | `admin/backup-and-restore.md` | |
-| [ ] Environment variables | 280 | generate | `admin/configuration-reference.md` (generated, export section) | The export's variables are `internal/config` constants too; one generator covers both. |
-| [ ] What an export contains | 429 | keep | `admin/backup-and-restore.md`; user summary in `user/getting-your-notes-out.md` | User part done in `user/`; admin part left. |
-| [ ] Output layout | 268 | keep | `admin/backup-and-restore.md` | |
-| [ ] End-to-end encrypted vaults | 258 | keep | `admin/backup-and-restore.md`; links `admin/encryption.md` | |
-| [ ] Documents that cannot be placed at their path | 168 | keep | `admin/backup-and-restore.md` | |
-| [ ] Manifest | 499 | move | `admin/backup-and-restore.md` (≈100 W: that it exists and what it is for) | Field-by-field format moves to the `internal/export` manifest type's doc comments (pinned by `internal/export/export_test.go`). |
-| [ ] Atomic replacement | 408 | move | `admin/backup-and-restore.md` (one paragraph: a failed run never leaves a half-written tree) | Mechanism moves to the `internal/export` package doc. |
-| [ ] Path safety | 164 | move | `admin/security.md` (one line) | Mechanism moves to `internal/export` comments (pinned by `internal/export/export_test.go`, `helpers_test.go`). |
-| [ ] Summary and exit status | 521 | keep | `admin/backup-and-restore.md` (≈250 W) | Log field lists restate code: delete. |
-| [ ] Rotating the escrow key | 696 | keep | `admin/encryption.md` | |
-| [ ] Signals | 26 | keep | `admin/backup-and-restore.md` | |
+| [x] Intro | 129 | keep | `admin/backup-and-restore.md`; user summary in `user/getting-your-notes-out.md` | User part done in `user/`; admin part left. Done: `admin/backup-and-restore.md`. |
+| [x] Flags | 35 | keep | `admin/backup-and-restore.md` | Done: `admin/backup-and-restore.md`. |
+| [x] Environment variables | 280 | generate | `admin/configuration-reference.md` (generated, export section) | The export's variables are `internal/config` constants too; one generator covers both. Done: the table is the per-command table in `admin/configuration.md` plus the generated reference; the export's own facts (read-only sessions, grants, S3 permissions) are in `admin/backup-and-restore.md`. |
+| [x] What an export contains | 429 | keep | `admin/backup-and-restore.md`; user summary in `user/getting-your-notes-out.md` | User part done in `user/`; admin part left. Done: `admin/backup-and-restore.md`. |
+| [x] Output layout | 268 | keep | `admin/backup-and-restore.md` | Done: `admin/backup-and-restore.md`. |
+| [x] End-to-end encrypted vaults | 258 | keep | `admin/backup-and-restore.md`; links `admin/encryption.md` | Done: `admin/backup-and-restore.md`. |
+| [x] Documents that cannot be placed at their path | 168 | keep | `admin/backup-and-restore.md` | Done: `admin/backup-and-restore.md`. |
+| [x] Manifest | 499 | move | `admin/backup-and-restore.md` (≈100 W: that it exists and what it is for) | Field-by-field format moves to the `internal/export` manifest type's doc comments (pinned by `internal/export/export_test.go`). Done: `admin/backup-and-restore.md`; the fields are in the doc comments in `internal/export/manifest.go`. |
+| [x] Atomic replacement | 408 | move | `admin/backup-and-restore.md` (one paragraph: a failed run never leaves a half-written tree) | Mechanism moves to the `internal/export` package doc. Done: `admin/backup-and-restore.md`; the mechanism is in the `internal/export` package doc. |
+| [ ] Path safety | 164 | move | `admin/security.md` (one line) | Mechanism moves to `internal/export` comments (pinned by `internal/export/export_test.go`, `helpers_test.go`). The mechanism is in the `internal/export` package doc; the one line stays in `export.md` for `admin/security.md`. |
+| [x] Summary and exit status | 521 | keep | `admin/backup-and-restore.md` (≈250 W) | Log field lists restate code: delete. Done: `admin/backup-and-restore.md`. |
+| [x] Rotating the escrow key | 696 | keep | `admin/encryption.md` | Done: `admin/encryption.md`. |
+| [x] Signals | 26 | keep | `admin/backup-and-restore.md` | Done: `admin/backup-and-restore.md`. |
 
 ## docs/import.md → admin (+ user) (1.5k W)
 
 | Section | W | Class | Destination | Notes |
 |---|---|---|---|---|
-| [ ] Intro | 236 | keep | `admin/backup-and-restore.md`; user line in `user/faq.md` (moving notes in) | User part done in `user/`; admin part left. |
-| [ ] What it imports | 127 | keep | `admin/backup-and-restore.md` | |
-| [ ] Importing into an end-to-end encrypted vault | 314 | keep | `admin/backup-and-restore.md`; links `admin/encryption.md` | |
-| [ ] Verification against the server | 187 | move | `admin/backup-and-restore.md` (one line) | Mechanism already in `docs/design/encryption.md` "Import": delete here. |
-| [ ] With the escrow identity | 327 | keep | `admin/backup-and-restore.md` | |
-| [ ] What it skips | 165 | keep | `admin/backup-and-restore.md` | |
-| [ ] Report and exit status | 128 | keep | `admin/backup-and-restore.md` | |
+| [x] Intro | 236 | keep | `admin/backup-and-restore.md`; user line in `user/faq.md` (moving notes in) | User part done in `user/`; admin part left. Done: `admin/backup-and-restore.md`. |
+| [x] What it imports | 127 | keep | `admin/backup-and-restore.md` | Done: `admin/backup-and-restore.md`. |
+| [x] Importing into an end-to-end encrypted vault | 314 | keep | `admin/backup-and-restore.md`; links `admin/encryption.md` | Done: `admin/backup-and-restore.md`. |
+| [x] Verification against the server | 187 | move | `admin/backup-and-restore.md` (one line) | Mechanism already in `docs/design/encryption.md` "Import": delete here. Done: `admin/backup-and-restore.md`. |
+| [x] With the escrow identity | 327 | keep | `admin/backup-and-restore.md` | Done: `admin/backup-and-restore.md`. |
+| [x] What it skips | 165 | keep | `admin/backup-and-restore.md` | Done: `admin/backup-and-restore.md`. |
+| [x] Report and exit status | 128 | keep | `admin/backup-and-restore.md` | Done: `admin/backup-and-restore.md`. |
 
 ## docs/alerts.md → admin (1.7k W)
 

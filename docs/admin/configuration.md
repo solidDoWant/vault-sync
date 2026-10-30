@@ -29,13 +29,13 @@ The reference has one section for each group below.
 
 [Sign-in (OIDC)](configuration-reference.md#sign-in-oidc): the issuer URL, the audience, and the client ID that the plugin signs in as. [Identity provider](identity-provider.md) explains what the provider must offer and how to set these values.
 
-[Escrow](configuration-reference.md#escrow): the public escrow key of the deployment and its signing key, the keys that a rotation retires, the escrow default for new vaults, and the token of the job-only rotation endpoint. `VAULT_SYNC_ESCROW_IDENTITY_FILE` and `VAULT_SYNC_ESCROW_SIGNING_KEY_FILE` are for the export and the escrow rotation only. Never give them to the server. [Encryption for operators](../encryption.md#for-operators-the-escrow-key) explains the escrow key.
+[Escrow](configuration-reference.md#escrow): the public escrow key of the deployment and its signing key, the keys that a rotation retires, the escrow default for new vaults, and the token of the job-only rotation endpoint. `VAULT_SYNC_ESCROW_IDENTITY_FILE` and `VAULT_SYNC_ESCROW_SIGNING_KEY_FILE` are for the export and the escrow rotation only. Never give them to the server. [Encryption for operators](encryption.md#the-escrow-key) explains the escrow key.
 
 [Object store (S3)](configuration-reference.md#object-store-s3): the bucket, the endpoint, the region, the credential files, the addressing style, the CA bundle and the idle timeout. If you set no `VAULT_SYNC_S3_*` variable, the server starts without an object store and logs a warning. Then every `BlobService` RPC returns `unimplemented`. [PostgreSQL and S3](postgresql-and-s3.md) explains how to set up the bucket.
 
 [Blob uploads](configuration-reference.md#blob-uploads): the chunk size, the largest file, the number of uploads in progress in one vault, and how long an idle upload stays.
 
-[Retention and history](configuration-reference.md#retention-and-history): how long the server keeps old versions, how long it keeps the marker of a purged version, how long a blob that no version uses stays before the server deletes it, and the lowest values that a per-vault override can have. [Retention and history](../configuration.md#retention-and-history) explains the policy.
+[Retention and history](configuration-reference.md#retention-and-history): how long the server keeps old versions, how long it keeps the marker of a purged version, how long a blob that no version uses stays before the server deletes it, and the lowest values that a per-vault override can have. [Retention and history](history-and-retention.md#the-retention-policy) explains the policy.
 
 [Realtime channel](configuration-reference.md#realtime-channel): the limits on realtime connections for each replica and each user, and on the vaults that one connection can follow.
 
@@ -46,13 +46,13 @@ The server and its subcommands are one binary. Each subcommand reads only some o
 | Command | Variables it reads |
 |---|---|
 | `vault-sync-server` (the server) | Every variable in the reference, except the ones marked for the export, the escrow rotation or `retention set` only. |
-| `vault-sync-server export` | The PostgreSQL, S3 and log-level variables, and `VAULT_SYNC_ESCROW_IDENTITY_FILE`. The S3 variables are required. See [export.md](../export.md). |
-| `vault-sync-server export rotate-escrow` | The PostgreSQL and log-level variables, `VAULT_SYNC_ESCROW_IDENTITY_FILE`, `VAULT_SYNC_ESCROW_SIGNING_KEY_FILE` and `VAULT_SYNC_ESCROW_JOB_TOKEN_FILE`. See [Rotating the escrow key](../export.md#rotating-the-escrow-key). |
-| `vault-sync-server export reset-escrow` | The PostgreSQL and log-level variables and `VAULT_SYNC_ESCROW_JOB_TOKEN_FILE`. See [Resetting the escrow chain](../export.md#resetting-the-escrow-chain). |
-| `vault-sync-server escrow fingerprint` | Only `VAULT_SYNC_ESCROW_RECIPIENT` and `VAULT_SYNC_ESCROW_SIGNING_KEY`, and only when you do not give its flags. See [Encryption for operators](../encryption.md#for-operators-the-escrow-key). |
-| `vault-sync-server retention` | The PostgreSQL variables, `VAULT_SYNC_RETENTION_OVERRIDE_MIN_KEEP_ALL` and `VAULT_SYNC_RETENTION_OVERRIDE_MIN_KEEP_DAILY`. See [Per-vault retention](../deployment.md#per-vault-retention). |
-| `vault-sync-server vault` | Only the PostgreSQL variables. See [Undeleting a vault](../deployment.md#undeleting-a-vault). |
-| `vault-sync-server import` | Only `VAULT_SYNC_LOG_LEVEL` and `VAULT_SYNC_BLOB_MAX_SIZE_BYTES`. The import talks to the server through its API, not to PostgreSQL or S3. See [import.md](../import.md). |
+| `vault-sync-server export` | The PostgreSQL, S3 and log-level variables, and `VAULT_SYNC_ESCROW_IDENTITY_FILE`. The S3 variables are required. See [export.md](backup-and-restore.md#the-export-job). |
+| `vault-sync-server export rotate-escrow` | The PostgreSQL and log-level variables, `VAULT_SYNC_ESCROW_IDENTITY_FILE`, `VAULT_SYNC_ESCROW_SIGNING_KEY_FILE` and `VAULT_SYNC_ESCROW_JOB_TOKEN_FILE`. See [Rotate the escrow key](encryption.md#rotate-the-escrow-key). |
+| `vault-sync-server export reset-escrow` | The PostgreSQL and log-level variables and `VAULT_SYNC_ESCROW_JOB_TOKEN_FILE`. See [Reset the escrow chain](encryption.md#reset-the-escrow-chain). |
+| `vault-sync-server escrow fingerprint` | Only `VAULT_SYNC_ESCROW_RECIPIENT` and `VAULT_SYNC_ESCROW_SIGNING_KEY`, and only when you do not give its flags. See [Publish the escrow fingerprint](encryption.md#publish-the-escrow-fingerprint). |
+| `vault-sync-server retention` | The PostgreSQL variables, `VAULT_SYNC_RETENTION_OVERRIDE_MIN_KEEP_ALL` and `VAULT_SYNC_RETENTION_OVERRIDE_MIN_KEEP_DAILY`. See [Per-vault retention](history-and-retention.md#per-vault-overrides). |
+| `vault-sync-server vault` | Only the PostgreSQL variables. See [Undeleting a vault](backup-and-restore.md#undelete-a-vault). |
+| `vault-sync-server import` | Only `VAULT_SYNC_LOG_LEVEL` and `VAULT_SYNC_BLOB_MAX_SIZE_BYTES`. The import talks to the server through its API, not to PostgreSQL or S3. See [import.md](backup-and-restore.md#import-markdown). |
 
 The Helm chart never sets `VAULT_SYNC_ESCROW_SIGNING_KEY_FILE`. Keep the escrow signing keys offline, and never give them to a pod in the cluster.
 

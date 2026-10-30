@@ -3,18 +3,18 @@
 // on SIGTERM or SIGINT.
 //
 // `vault-sync-server export -out DIR` instead writes a plaintext copy of
-// every vault to DIR and exits (docs/export.md, SPEC.md §4).
+// every vault to DIR and exits (docs/admin/backup-and-restore.md, SPEC.md §4).
 //
 // `vault-sync-server export rotate-escrow -server URL -recipient R
 // -signing-public-key K` rotates the deployment's escrow key and exits
-// (docs/export.md). `vault-sync-server export reset-escrow` takes the same
-// flags and appends an escrow reset point instead.
+// (docs/admin/encryption.md). `vault-sync-server export reset-escrow` takes the
+// same flags and appends an escrow reset point instead.
 //
 // `vault-sync-server escrow fingerprint` prints the fingerprint of the
-// deployment's escrow key pair and exits (docs/encryption.md).
+// deployment's escrow key pair and exits (docs/admin/encryption.md).
 //
 // `vault-sync-server import SERVER_URL VAULT_ID DIR` loads a folder of Markdown notes
-// and attachments into an empty vault and exits (docs/import.md).
+// and attachments into an empty vault and exits (docs/admin/backup-and-restore.md).
 //
 // `vault-sync-server retention set|unset|list` manages per-vault retention
 // overrides and exits (docs/configuration.md, SPEC.md §11).

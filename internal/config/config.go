@@ -270,7 +270,7 @@ const (
 	// output): one `AGE-SECRET-KEY-PQ-1…` identity per line, blank lines and
 	// `#` comments ignored, at most 64 KiB. Give both identities during an
 	// escrow key rotation. The export decrypts escrowed vaults with it
-	// ([export.md](../export.md)); when unset, it skips every encrypted vault.
+	// ([Backup and restore](backup-and-restore.md#the-export-job)); when unset, it skips every encrypted vault.
 	// A file that is missing, holds no identity or holds anything but age
 	// hybrid identities stops the export at startup, without quoting the file.
 	// Never give it to the server.
@@ -279,7 +279,7 @@ const (
 	EscrowIdentityFileEnv = "VAULT_SYNC_ESCROW_IDENTITY_FILE"
 
 	// **Escrow rotation only** (`export rotate-escrow`,
-	// [export.md](../export.md#rotating-the-escrow-key)). Path to the escrow
+	// [Rotate the escrow key](encryption.md#rotate-the-escrow-key)). Path to the escrow
 	// signing keys: one standard base64 Ed25519 seed (32 bytes) per line, blank
 	// lines and `#` comments ignored, at most 64 KiB. They are matched to
 	// escrow bundles by their public keys; during a rotation it holds the chain
@@ -432,8 +432,8 @@ const (
 
 // Retention and history.
 const (
-	// Every revision younger than this is kept (see [Retention and
-	// history](../configuration.md#retention-and-history)). A Go duration of at
+	// Every revision younger than this is kept (see [The retention
+	// policy](history-and-retention.md#the-retention-policy)). A Go duration of at
 	// least `24h`. Set it very high (for example `876000h`) to keep every
 	// revision forever.
 	//
@@ -449,7 +449,7 @@ const (
 	RetentionKeepDailyEnv = "VAULT_SYNC_RETENTION_KEEP_DAILY"
 
 	// How long the purge marker of a purged revision is kept after its purge
-	// (see [Retention and history](../configuration.md#retention-and-history)).
+	// (see [Purge markers](history-and-retention.md#purge-markers)).
 	// A device that has not pulled for longer than this since a purge of the
 	// revision at its cursor resyncs once, merging every note, instead of
 	// pulling on. A Go duration of at least `24h`.
@@ -459,7 +459,7 @@ const (
 
 	// Read only by `vault-sync-server retention set`: the shortest keep-all a
 	// per-vault override may have (see [Per-vault
-	// overrides](../configuration.md#per-vault-overrides)). A Go duration of at
+	// overrides](history-and-retention.md#per-vault-overrides)). A Go duration of at
 	// least `24h`.
 	//
 	// Default: `24h`

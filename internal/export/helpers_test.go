@@ -259,7 +259,7 @@ func files(t *testing.T, directory string) map[string]string {
 }
 
 // manifestDocument is a document line of a vault manifest, decoded with the
-// field names docs/export.md specifies.
+// field names the manifest types in manifest.go document.
 type manifestDocument struct {
 	Type       string    `json:"type"`
 	DocumentID uuid.UUID `json:"document_id"`

@@ -83,7 +83,7 @@ func TestOnlyAnOKExportAdvancesTheLastSuccessfulExport(t *testing.T) {
 }
 
 // exportRoleConfig returns cfg connecting as a new role with exactly the
-// database privileges docs/export.md grants the export, on a ReadOnly
+// database privileges docs/admin/backup-and-restore.md grants the export, on a ReadOnly
 // pool as the export opens it.
 func exportRoleConfig(t *testing.T, cfg store.Config, adminExec func(string)) store.Config {
 	t.Helper()

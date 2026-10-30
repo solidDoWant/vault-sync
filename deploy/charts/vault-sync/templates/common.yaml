@@ -545,17 +545,17 @@
 {{- end -}}
 
 {{/* The escrow signing private key stays offline and is used only by a
-   manual escrow key rotation (export rotate-escrow, docs/export.md). No
+   manual escrow key rotation (export rotate-escrow, docs/admin/encryption.md). No
    controller may receive its file or run the rotation, so the render fails
    if anything in a controller or the default pod options names either. */}}
 {{- $namesSigningKey := "VAULT_SYNC_ESCROW_SIGNING_KEY_FILE|rotate-escrow" -}}
 {{- range $id, $controller := $merged.controllers -}}
   {{- if regexMatch $namesSigningKey (toYaml $controller) -}}
-    {{- fail (printf "resources.controllers.%s gets the escrow signing key (VAULT_SYNC_ESCROW_SIGNING_KEY_FILE or export rotate-escrow); it stays offline and is used only by a manual rotation (docs/export.md)" $id) -}}
+    {{- fail (printf "resources.controllers.%s gets the escrow signing key (VAULT_SYNC_ESCROW_SIGNING_KEY_FILE or export rotate-escrow); it stays offline and is used only by a manual rotation (docs/admin/encryption.md)" $id) -}}
   {{- end -}}
 {{- end -}}
 {{- if regexMatch $namesSigningKey (toYaml (.Values.resources.defaultPodOptions | default dict)) -}}
-  {{- fail "resources.defaultPodOptions gets the escrow signing key (VAULT_SYNC_ESCROW_SIGNING_KEY_FILE or export rotate-escrow); it stays offline and is used only by a manual rotation (docs/export.md)" -}}
+  {{- fail "resources.defaultPodOptions gets the escrow signing key (VAULT_SYNC_ESCROW_SIGNING_KEY_FILE or export rotate-escrow); it stays offline and is used only by a manual rotation (docs/admin/encryption.md)" -}}
 {{- end -}}
 
 {{/* ============================================================ */}}

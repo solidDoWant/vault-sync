@@ -18,7 +18,7 @@ Every 5 minutes, a cleanup routine removes old uploads:
 
 Every replica runs the cleanup on the same schedule. Runs at the same time on different replicas are safe. If another replica already removed an upload or an object, that is not an error. If a run still continues when the next run must start (for example because the object store stopped answering), the server stops the run and logs it as a failure. The next run starts on schedule, and later runs do the work that remains.
 
-The retention job deletes blobs that no revision uses any more. See [Retention and history](../configuration.md#retention-and-history).
+The retention job deletes blobs that no revision uses any more. See [Retention and history](history-and-retention.md#the-retention-policy).
 
 ## PostgreSQL
 
@@ -42,7 +42,7 @@ spec:
       - hostssl vault_sync vault_sync all cert
 ```
 
-The role owns the database, so it can create the tables. The export job can use its own role. [Plaintext export](../export.md#environment-variables) lists the grants that role needs.
+The role owns the database, so it can create the tables. The export job can use its own role. [Plaintext export](backup-and-restore.md#configuration-and-permissions) lists the grants that role needs.
 
 ### Client certificates
 

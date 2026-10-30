@@ -188,14 +188,14 @@ config:
         # the service-wide metrics from PostgreSQL (served on 9091).
         interval: null
 
-  # export configures the plaintext export CronJob (docs/export.md). It runs
+  # export configures the plaintext export CronJob (docs/admin/backup-and-restore.md). It runs
   # `vault-sync-server export -out /export/<directory>` with its own Secret
   # mounts; the server Deployment never mounts the export's output or its
   # escrow key.
   #
   # Off by default, so a minimal install needs only the database, S3 and
   # OIDC settings. Turning it on is recommended: the export is the plaintext
-  # disaster-recovery copy of every vault (docs/export.md).
+  # disaster-recovery copy of every vault (docs/admin/backup-and-restore.md).
   export:
     enabled: false
     # schedule is the CronJob schedule; timeZone is an optional IANA time
@@ -221,7 +221,7 @@ config:
       # directory beside it, at the top of the volume.
       directory: vaults
     # database overrides config.database for the export, so it can use its
-    # own read-only role (docs/export.md lists the grants it needs). Empty
+    # own read-only role (docs/admin/backup-and-restore.md lists the grants it needs). Empty
     # fields fall back to config.database; the CA is always shared.
     database:
       url:
@@ -249,7 +249,7 @@ config:
     # to decrypt escrowed vaults; the chart refuses to render if any value
     # would put it into the server. The escrow signing keys never go into
     # the cluster: they stay offline and are used only by a manual escrow key
-    # rotation (export rotate-escrow, docs/export.md), and the chart refuses
+    # rotation (export rotate-escrow, docs/admin/encryption.md), and the chart refuses
     # to render if any controller would get them.
     escrow:
       secretName: ""
