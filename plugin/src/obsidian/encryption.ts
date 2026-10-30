@@ -206,9 +206,15 @@ export function pluginDataEscrowPin(
       );
     },
     save: async (bundle) => {
+      const previous = stored();
       data.escrowPins = [
         ...others(),
-        { serverUrl, bundle: bytesToHex(encodeEscrowBundle(bundle)) },
+        {
+          serverUrl,
+          bundle: bytesToHex(encodeEscrowBundle(bundle)),
+          ...(previous?.chainLength === undefined ? {} : { chainLength: previous.chainLength, chainHeadHash: previous.chainHeadHash }),
+          ...(previous?.accepted === undefined ? {} : { accepted: previous.accepted }),
+        },
       ];
       await save();
     },
@@ -226,6 +232,36 @@ export function pluginDataEscrowPin(
       data.escrowPins = [
         ...others(),
         { ...pin, declined: bytesToHex(encodeEscrowBundle(bundle)) },
+      ];
+      await save();
+    },
+    loadChain: () => {
+      const pin = stored();
+      return Promise.resolve(
+        pin?.chainLength === undefined || pin.chainHeadHash === undefined
+          ? undefined
+          : { length: pin.chainLength, headHash: hexToBytes(pin.chainHeadHash) },
+      );
+    },
+    saveChain: async (chain) => {
+      const pin = stored();
+      if (pin === undefined) return;
+      data.escrowPins = [
+        ...others(),
+        { ...pin, chainLength: chain.length, chainHeadHash: bytesToHex(chain.headHash) },
+      ];
+      await save();
+    },
+    loadAccepted: () => {
+      const accepted = stored()?.accepted;
+      return Promise.resolve(accepted === undefined ? undefined : hexToBytes(accepted));
+    },
+    saveAccepted: async (bundleHash) => {
+      const pin = stored();
+      if (pin === undefined) throw new Error("no escrow key is pinned on this device");
+      data.escrowPins = [
+        ...others(),
+        { ...pin, accepted: bytesToHex(bundleHash) },
       ];
       await save();
     },

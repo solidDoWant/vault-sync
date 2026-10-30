@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { KeyRecipientKind } from "../../gen/vaultsync/v1/vault_key_pb";
 import { VaultEncryption, VaultRole } from "../../gen/vaultsync/v1/types_pb";
 import { ageRecipient, generateKeyPair } from "../e2ee/hybrid";
-import { anchorKey, encodeEscrowBundle, openAnchorList, signEscrowRotation, signPublicKey, type EscrowRotation } from "../e2ee/identity";
+import { anchorKey, encodeEscrowBundle, escrowResetPoint, openAnchorList, signEscrowRotation, signPublicKey, type EscrowRotation } from "../e2ee/identity";
 import { entryHash, replayLog } from "../e2ee/memberlog";
 import { openKeySlot, verifyKeyCommitment } from "../e2ee/keyslot";
 import { createProtocolClient } from "../protocol/client";
@@ -188,7 +188,7 @@ function statement(rotation: EscrowRotation) {
     oldBundleHash: rotation.oldBundleHash,
     newBundle: encodeEscrowBundle(rotation.newBundle),
     signature: rotation.signature,
-    reset: false,
+    reset: rotation.reset ?? false,
   };
 }
 
@@ -341,13 +341,20 @@ describe("an escrow change without signed rotation statements", () => {
 
   it("asks again after a decline when the server offers another key", async () => {
     const pinned = escrowKey(9);
+    const first = escrowKey(10);
+    const other = escrowKey(11);
+    const toFirst = statement(escrowResetPoint(pinned.recipient.bundle, first.recipient.bundle));
     const pin = new MemoryEscrowPin(pinned.recipient.bundle);
-    const offer = await escrowOffer(serverInfo(escrowKey(10)), pin);
+    const offer = await escrowOffer(serverInfo(first, pinned.encodedBundle, [toFirst]), pin);
     if (offer.change === undefined) throw new Error("no escrow change");
     await declineEscrowChange(pin, offer.change);
 
-    const other = escrowKey(11);
-    expect((await escrowOffer(serverInfo(other), pin)).change).toEqual({ pinned: pinned.recipient.bundle, offered: other.recipient.bundle, declined: false });
+    const toOther = statement(escrowResetPoint(first.recipient.bundle, other.recipient.bundle));
+    expect((await escrowOffer(serverInfo(other, pinned.encodedBundle, [toFirst, toOther]), pin)).change).toEqual({
+      pinned: pinned.recipient.bundle,
+      offered: other.recipient.bundle,
+      declined: false,
+    });
   });
 
   it("moves the pin to the new key once the user accepts it", async () => {
@@ -360,7 +367,7 @@ describe("an escrow change without signed rotation statements", () => {
     await acceptEscrowChange(pin, offer.change);
 
     expect(pin.bundle).toEqual(reset.recipient.bundle);
-    expect(await escrowOffer(serverInfo(reset), pin)).toEqual({ recipient: reset.recipient, byDefault: true });
+    expect(await escrowOffer(serverInfo(reset), pin)).toEqual({ recipient: { ...reset.recipient, adopt: true }, byDefault: true });
   });
 });
 
@@ -380,16 +387,18 @@ describe("an owner rotating an escrowed vault's key", () => {
     });
   }
 
+  // The swapped key gets no slot: the new epoch is escrowed to the key the log names.
   it("[P4-22] refuses to rotate to an escrow key other than the one the vault's log names, and wraps the key to no one", async () => {
-    const created = await create(escrowKey(9).recipient);
+    const named = escrowKey(9);
+    const created = await create(named.recipient);
     const swapped = escrowKey(10);
-    const rotations = created.server.count("RotateEpoch");
 
-    await expect(manager(created, swapped.recipient).rotate()).rejects.toThrow(/names another escrow key/);
+    await manager(created, swapped.recipient).rotate();
 
-    expect(created.server.count("RotateEpoch")).toBe(rotations);
-    expect(created.server.currentEpoch).toBe(1);
-    expect(created.server.slotsOf(2)).toEqual([]);
+    expect(created.server.currentEpoch).toBe(2);
+    const escrowSlots = created.server.slotsOf(2).filter((slot) => slot.recipientKind === KeyRecipientKind.ESCROW);
+    expect(escrowSlots.map((slot) => slot.recipientId)).toEqual([named.recipient.keyId]);
+    expect(created.server.logState().escrow).toEqual(named.recipient.bundle);
   });
 
   it("rotates to the escrow key the vault's log names", async () => {
@@ -482,12 +491,14 @@ describe("an owner of a vault escrowed under a rotated-away escrow key", () => {
   });
 
   it("[P4-22] still refuses to rotate to an escrow key the published chain does not link to the log's", async () => {
-    const { created, escrow } = await rotatedAway();
-    const rotations = created.server.count("RotateEpoch");
+    const { created, escrow, current } = await rotatedAway();
 
-    await expect(manager(created, escrow, []).rotate()).rejects.toThrow(/names another escrow key/);
+    await manager(created, escrow, []).rotate();
 
-    expect(created.server.count("RotateEpoch")).toBe(rotations);
-    expect(created.server.currentEpoch).toBe(1);
+    expect(created.server.currentEpoch).toBe(2);
+    const escrowSlots = created.server.slotsOf(2).filter((slot) => slot.recipientKind === KeyRecipientKind.ESCROW);
+    expect(escrowSlots).toHaveLength(1);
+    expect(escrowSlots[0]?.recipientId).not.toBe(current.recipient.keyId);
+    expect(created.server.logState().escrow).not.toEqual(current.recipient.bundle);
   });
 });

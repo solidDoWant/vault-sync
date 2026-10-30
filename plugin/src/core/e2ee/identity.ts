@@ -382,11 +382,18 @@ export function escrowKeyId(bundle: EscrowBundle): string {
   return `sha256:${Array.from(sha256(key), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
-/** A statement, signed by the old escrow signing key, that the escrow key moves to `newBundle`. */
+/**
+ * One position after the root of the escrow chain: a signed rotation (the
+ * old escrow signing key signed the move to `newBundle`), or, with `reset`,
+ * a reset point with an empty signature, which an admin appended when the
+ * old signing key was lost (docs/design/encryption.md, "The escrow chain").
+ */
 export interface EscrowRotation {
   oldBundleHash: Uint8Array;
   newBundle: EscrowBundle;
   signature: Uint8Array;
+  /** Whether this is a reset point rather than a signed rotation. */
+  reset?: boolean;
 }
 
 function escrowRotationMessage(oldBundleHash: Uint8Array, newBundle: EscrowBundle): Uint8Array {
@@ -399,9 +406,15 @@ export function signEscrowRotation(oldSignSeed: Uint8Array, oldBundle: EscrowBun
   return { oldBundleHash, newBundle, signature: sign(oldSignSeed, escrowRotationMessage(oldBundleHash, newBundle)) };
 }
 
+/** A reset point from `oldBundle` to `newBundle`: no signature. */
+export function escrowResetPoint(oldBundle: EscrowBundle, newBundle: EscrowBundle): EscrowRotation {
+  return { oldBundleHash: sha256(encodeEscrowBundle(oldBundle)), newBundle, signature: new Uint8Array(), reset: true };
+}
+
 /** Verifies one rotation step from `current`; returns whether it is from `current` and signed by its key. */
 function rotationStepValid(current: EscrowBundle, rotation: EscrowRotation): "valid" | "other" | "unsigned" {
   if (!equalBytes(sha256(encodeEscrowBundle(current)), rotation.oldBundleHash)) return "other";
+  if (rotation.reset === true) return "unsigned";
   let message: Uint8Array;
   try {
     message = escrowRotationMessage(rotation.oldBundleHash, rotation.newBundle);
@@ -412,32 +425,44 @@ function rotationStepValid(current: EscrowBundle, rotation: EscrowRotation): "va
 }
 
 /**
- * Follows rotation statements from the pinned escrow bundle and returns the
- * bundle the chain ends at. Throws {@link SignatureError} unless every
- * statement names the bundle before it and is signed by its key.
+ * Checks the escrow chain in order from `root` and returns its head. Every
+ * statement names the bundle before it; a signed rotation is signed by that
+ * bundle's key, and a reset point has an empty signature. No bundle appears
+ * twice. Throws {@link SignatureError} otherwise, so an unmarked statement
+ * with an empty signature, or a reset point with a signature, is refused.
  */
-export function verifyEscrowChain(pinned: EscrowBundle, rotations: readonly EscrowRotation[]): EscrowBundle {
-  let current = pinned;
+export function verifyEscrowChain(root: EscrowBundle, rotations: readonly EscrowRotation[]): EscrowBundle {
+  const seen = [root];
+  let current = root;
   for (const rotation of rotations) {
-    if (rotationStepValid(current, rotation) !== "valid") throw new SignatureError();
+    if (rotation.reset === true) {
+      if (rotation.signature.length !== 0 || !equalBytes(sha256(encodeEscrowBundle(current)), rotation.oldBundleHash)) throw new SignatureError();
+    } else if (rotationStepValid(current, rotation) !== "valid") {
+      throw new SignatureError();
+    }
+    if (seen.some((bundle) => escrowEqual(bundle, rotation.newBundle))) throw new SignatureError();
+    seen.push(rotation.newBundle);
     current = rotation.newBundle;
   }
   return current;
 }
 
 /**
- * Whether `target` is `from` or a bundle the published chain reaches from
- * it, each step signed by the key it replaces. Statements before `from`'s
- * position in the chain are skipped. Returns the reason it is not.
+ * Whether `target` is `from` or a bundle that signed rotations alone lead
+ * to from it in the published chain. The walk starts at `from`'s position
+ * (the statement that names it, or the root) and takes the statements after
+ * it in order; it never crosses a reset point. Returns the reason it is not.
  */
 export function escrowReachable(from: EscrowBundle, target: EscrowBundle, rotations: readonly EscrowRotation[]): string | undefined {
+  if (escrowEqual(from, target)) return undefined;
+  const position = rotations.findIndex((rotation) => escrowEqual(rotation.newBundle, from));
   let current = from;
-  for (const rotation of rotations) {
-    if (escrowEqual(current, target)) return undefined;
+  for (const rotation of rotations.slice(position + 1)) {
     const step = rotationStepValid(current, rotation);
-    if (step === "other") continue;
-    if (step === "unsigned") return "unsigned escrow rotation";
+    if (step === "other") return "unchained escrow key";
+    if (step === "unsigned") return rotation.reset === true ? "unchained escrow key" : "unsigned escrow rotation";
     current = rotation.newBundle;
+    if (escrowEqual(current, target)) return undefined;
   }
-  return escrowEqual(current, target) ? undefined : "unchained escrow key";
+  return "unchained escrow key";
 }

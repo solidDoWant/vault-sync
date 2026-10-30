@@ -94,7 +94,9 @@ The plugin opens the **The server's escrow key changed** window when you open th
 3. If they are the same, type the last group of the new fingerprint (four characters) and select **Accept the new escrow key**.
 4. If they are different, select **Decline**, and tell your admin.
 
-If you accept, the keys of the vaults that you own are also encrypted to the new escrow key from now on, and new vaults use it. Each of your devices asks you on its own.
+If you accept, the keys of the vaults that you own are also encrypted to the new escrow key from now on, and new vaults use it. Each of your devices asks you on its own. At the next sync of each vault with escrow that you own, your device makes a new vault key that is encrypted to the new escrow key. This happens one time for each vault.
+
+If you are a member and an owner accepts a new escrow key, the plugin shows the notice "An owner of this vault accepted a new escrow key". The notice shows the name of the owner, the fingerprint of the previous key and the fingerprint of the new key. The notice shows one time for each change, and it also stays in the **Fingerprints** line of the **Sharing** section. Your notes keep syncing. Compare the new fingerprint with the one that your admin publishes, as in the steps above. If the fingerprints are different, tell the owner and your admin.
 
 If you decline, or close the window, escrow keeps the previous key. Your notes keep syncing. Your vaults with escrow show "Escrow uses the previous key: the server's escrow key changed", with a **Review the change** button that opens the window again. You cannot create or convert a vault with escrow until you accept. The plugin does not ask again by itself, unless the server offers another new key.
 

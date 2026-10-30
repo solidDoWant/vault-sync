@@ -76,6 +76,12 @@ export interface PluginData {
    * on sign-out.
    */
   escrowPins?: PinnedEscrowBundle[];
+  /**
+   * The owners' escrow reset entries this device showed a notice for, as
+   * "vault id/seq" (docs/design/encryption.md, "Adoption in a vault"): the
+   * notice shows once for each entry.
+   */
+  escrowResetsNoticed?: string[];
 }
 
 /** The Argon2id parameters an account's key was seen with on this device. */
@@ -98,6 +104,12 @@ export interface PinnedEscrowBundle {
   bundle: string;
   /** The encoded unchained escrow bundle the user declined on this device, in lowercase hex. */
   declined?: string;
+  /** The length of the escrow chain this device verified last. */
+  chainLength?: number;
+  /** The SHA-256 of that chain's head bundle, in lowercase hex. */
+  chainHeadHash?: string;
+  /** The SHA-256 of the bundle the user accepted in the escrow reset prompt last, in lowercase hex. */
+  accepted?: string;
 }
 
 /** A vault's epoch keys as cached on the device, hex-encoded by epoch, with the account and vault they belong to. */
@@ -238,6 +250,8 @@ export function parsePluginData(raw: unknown): PluginData {
   if (passphraseParams.length > 0) data.passphraseParams = passphraseParams;
   const escrowPins = list(stored.escrowPins, parseEscrowPin);
   if (escrowPins.length > 0) data.escrowPins = escrowPins;
+  const noticed = list(stored.escrowResetsNoticed, (raw) => (typeof raw === "string" && /^[0-9a-f-]{36}\/[1-9][0-9]*$/u.test(raw) ? raw : undefined));
+  if (noticed.length > 0) data.escrowResetsNoticed = noticed;
   return data;
 }
 
@@ -262,8 +276,15 @@ function parsePassphraseParams(raw: unknown): RememberedPassphraseParams | undef
 function parseEscrowPin(raw: unknown): PinnedEscrowBundle | undefined {
   const pin = record(raw, ["serverUrl", "bundle"]);
   if (pin === undefined || !hexBytes.test(pin.bundle)) return undefined;
-  const declined = (raw as { declined?: unknown }).declined;
-  return typeof declined === "string" && hexBytes.test(declined) ? { ...pin, declined } : pin;
+  const { declined, chainLength, chainHeadHash, accepted } = raw as { declined?: unknown; chainLength?: unknown; chainHeadHash?: unknown; accepted?: unknown };
+  const parsed: PinnedEscrowBundle = { ...pin };
+  if (typeof declined === "string" && hexBytes.test(declined)) parsed.declined = declined;
+  if (typeof chainLength === "number" && Number.isSafeInteger(chainLength) && chainLength > 0 && typeof chainHeadHash === "string" && hexKey.test(chainHeadHash)) {
+    parsed.chainLength = chainLength;
+    parsed.chainHeadHash = chainHeadHash;
+  }
+  if (typeof accepted === "string" && hexKey.test(accepted)) parsed.accepted = accepted;
+  return parsed;
 }
 
 /** Bytes in lowercase hex. */

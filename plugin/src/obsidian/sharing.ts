@@ -10,6 +10,7 @@ import type { ConversionMember } from "../core/keys/convert-vault";
 import type { VaultKeyManager } from "../core/keys/vault-keys";
 import { reencryptHistory, type RekeyResult } from "../core/sync/rekey";
 import { readMemberLog, type LogTrust } from "../core/keys/verified-log";
+import { escrowResets } from "../core/keys/escrow-resets";
 import { escrowEqual, escrowFingerprint, fingerprint, formatFingerprint, type EscrowBundle } from "../core/e2ee/identity";
 import { listRemoteVaults } from "./controller";
 import { isolated, shownName } from "./display-text";
@@ -75,7 +76,24 @@ export interface MemberRow {
  * user's anchor list, or why it could not be read (such as a locked key).
  * With escrow on, also the escrow fingerprints ({@link EscrowFingerprints}).
  */
-export type VaultKeys = { kind: "verified"; vaultFingerprint: string; escrow?: EscrowFingerprints } | { kind: "unavailable"; reason: string };
+export type VaultKeys = { kind: "verified"; vaultFingerprint: string; escrow?: EscrowFingerprints; escrowReset?: EscrowResetView } | { kind: "unavailable"; reason: string };
+
+/**
+ * The last escrow reset entry of the vault's verified log
+ * (docs/design/encryption.md, "Adoption in a vault"): an owner accepted a
+ * new escrow key that no signed rotation leads to. Members see it as a
+ * notice with both fingerprints and the owner's name.
+ */
+export interface EscrowResetView {
+  /** The entry's position in the log: the notice shows once for each entry. */
+  seq: number;
+  /** The owner who signed it, as the member list names them. */
+  owner: string;
+  /** The fingerprint of the escrow key before the entry. */
+  previous: string;
+  /** The fingerprint of the escrow key the entry adopted. */
+  adopted: string;
+}
 
 /**
  * The escrow key of an escrowed vault as its encryption details show it
@@ -132,7 +150,7 @@ export async function loadSharing(
 ): Promise<Sharing> {
   const vault = (await listRemoteVaults(client)).find((listed) => listed.id === vaultId);
   if (vault === undefined) return { kind: "not-member" };
-  const encrypted = vault.encryption === VaultEncryption.E2EE && trust !== undefined ? await verifiedKeys(vaultId, trust, pinnedEscrow) : undefined;
+  const encrypted = vault.encryption === VaultEncryption.E2EE && trust !== undefined ? await verifiedKeys(client, vaultId, trust, pinnedEscrow) : undefined;
   const keys = encrypted === undefined ? {} : { keys: encrypted.keys };
   if (vault.role !== VaultRole.OWNER) return { kind: "member", role: vault.role, ...keys };
   const [members, invitations] = await Promise.all([client.membership.listMembers({ vaultId }), client.membership.listInvitations({ vaultId })]);
@@ -154,22 +172,54 @@ export async function loadSharing(
  * fingerprints from the vault's verified log, or why they are unavailable.
  */
 async function verifiedKeys(
+  client: ProtocolClient,
   vaultId: string,
   trust: () => Promise<LogTrust>,
   pinnedEscrow: (() => Promise<EscrowBundle | undefined>) | undefined,
 ): Promise<{ keys: VaultKeys; fingerprints: ReadonlyMap<string, string> }> {
   try {
-    const { states } = await readMemberLog(await trust(), vaultId);
+    const { entries, states } = await readMemberLog(await trust(), vaultId);
     const genesis = states[0];
     const head = states.at(-1);
     if (genesis === undefined || head === undefined) throw new Error("the vault's membership log is empty");
     const fingerprints = new Map<string, string>();
     for (const [userId, member] of head.members) fingerprints.set(userId, formatFingerprint(fingerprint(member.bundle)));
     const escrow = head.escrow === undefined ? {} : { escrow: await escrowFingerprints(head.escrow, pinnedEscrow) };
-    return { keys: { kind: "verified", vaultFingerprint: vaultFingerprint(genesis.hash), ...escrow }, fingerprints };
+    const reset = escrowResets(entries, states).at(-1);
+    const escrowReset =
+      reset === undefined
+        ? {}
+        : {
+            escrowReset: {
+              seq: reset.seq,
+              owner: await memberName(client, vaultId, reset.ownerId),
+              previous: escrowKeyFingerprint(reset.previous),
+              adopted: escrowKeyFingerprint(reset.adopted),
+            },
+          };
+    return { keys: { kind: "verified", vaultFingerprint: vaultFingerprint(genesis.hash), ...escrow, ...escrowReset }, fingerprints };
   } catch (error) {
     return { keys: { kind: "unavailable", reason: errorMessage(error) }, fingerprints: new Map() };
   }
+}
+
+/** How the member list names `userId`, or a short form of the id when the list is not readable. */
+async function memberName(client: ProtocolClient, vaultId: string, userId: string): Promise<string> {
+  const fallback = `user ${userId.slice(0, 8)}`;
+  try {
+    const member = (await client.membership.listMembers({ vaultId })).members.find((listed) => listed.userId === userId);
+    return member === undefined ? fallback : memberRow(member, () => "").label;
+  } catch {
+    return fallback;
+  }
+}
+
+/** Where the user guide explains comparing escrow fingerprints. */
+export const ESCROW_FINGERPRINT_GUIDE = "https://github.com/solidDoWant/vault-sync/blob/master/docs/user/encryption.md#when-the-escrow-key-changes";
+
+/** The notice a member's device shows once for an owner's escrow reset entry. */
+export function escrowResetText(reset: EscrowResetView): string {
+  return `An owner of this vault accepted a new escrow key: ${reset.owner}. Previous escrow key fingerprint: ${reset.previous}. New escrow key fingerprint: ${reset.adopted}. Compare the new one with the fingerprint your admin publishes: ${ESCROW_FINGERPRINT_GUIDE}`;
 }
 
 async function escrowFingerprints(named: EscrowBundle, pinnedEscrow: (() => Promise<EscrowBundle | undefined>) | undefined): Promise<EscrowFingerprints> {
@@ -225,8 +275,9 @@ export function vaultKeysText(keys: VaultKeys): string {
   if (keys.kind !== "verified") return `Key fingerprints are not shown: ${keys.reason}`;
   const text = `Vault fingerprint: ${keys.vaultFingerprint}. Compare fingerprints with the other members outside Vault Sync; the server cannot forge them. An operator restoring the vault from escrow needs this vault fingerprint.`;
   if (keys.escrow === undefined) return text;
+  const reset = keys.escrowReset === undefined ? "" : ` ${escrowResetText(keys.escrowReset)}`;
   const pinned = keys.escrow.pinned === undefined ? "" : ` Escrow key fingerprint pinned on this device: ${keys.escrow.pinned}.`;
-  return `${text} Escrow key fingerprint of this vault: ${keys.escrow.vault}.${pinned} Compare it with the one your admin publishes.`;
+  return `${text} Escrow key fingerprint of this vault: ${keys.escrow.vault}.${pinned} Compare it with the one your admin publishes.${reset}`;
 }
 
 /**
