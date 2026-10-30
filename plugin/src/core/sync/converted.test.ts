@@ -7,16 +7,17 @@ import { createProtocolClient } from "../protocol/client";
 import { InMemoryServer } from "./memory-server";
 import { reencryptHistory } from "./rekey";
 import { RemoteContentError } from "./remote";
+import type { SyncEngineOptions } from "./engine";
 import { Device, TestKeyring } from "./testing";
 
 /**
  * A plaintext vault with history (edits, a folder, a rename and a delete) on
  * two devices, then converted in place to encryption at epoch 1.
  */
-async function convertedVault() {
+async function convertedVault(bOptions: Partial<SyncEngineOptions> = {}) {
   const server = new InMemoryServer({ vaultId: "0190d6e4-8c1e-7a3b-9d2f-5e6a7b8c9d0e" });
   const a = new Device(server, "device-a");
-  const b = new Device(server, "device-b");
+  const b = new Device(server, "device-b", bOptions);
   await a.vault.createFolder("Projects");
   await a.write("Projects/plan.md", "one\n");
   await a.write("gone.md", "deleted\n");
@@ -78,6 +79,27 @@ describe("reading a converted vault", () => {
     const after = new Device(server, "device-d", { keys });
     await after.sync();
     expect(await after.files()).toEqual({ "Projects/plan.md": "one\ntwo\n", "renamed.md": "kept\nencrypted\n" });
+  });
+
+  it("pauses a device whose plaintext commit a conversion refused, keeps its files, and lands the edit encrypted once the device is unlocked", async () => {
+    // The device's options, which unlocking it gives the vault's keys.
+    const options: Partial<SyncEngineOptions> = {};
+    const { server, keys, b } = await convertedVault(options);
+    await b.write("late.md", "written before the device saw the conversion\n");
+    const refused = await b.engine.start().then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(isVaultEncrypted(refused)).toBe(true);
+    // Paused until the user unlocks: no retry is scheduled, and the files stay.
+    expect(b.timers.delays()).toEqual([]);
+    expect(await b.files()).toEqual({ "Projects/plan.md": "one\ntwo\n", "late.md": "written before the device saw the conversion\n", "renamed.md": "kept\n" });
+
+    options.keys = keys;
+    b.restart();
+    await b.sync();
+    expect(server.revisionAt(server.currentHeadSeq).epoch).toBe(1);
+    expect(server.liveFiles().get("late.md")).toBe("written before the device saw the conversion\n");
   });
 
   it("[P4-10] refuses an epoch-0 revision committed after the conversion", async () => {

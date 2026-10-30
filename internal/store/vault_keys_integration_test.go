@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
+	"slices"
 	"sync"
 	"testing"
 
@@ -697,4 +698,54 @@ func TestAddKeySlotsTakesOneEscrowSlotPerEpoch(t *testing.T) {
 	added, err := fixture.vault.AddKeySlots(t.Context(), fixture.owner, []store.KeySlot{escrowSlot("escrow-key")})
 	require.NoError(t, err)
 	assert.Equal(t, 1, added)
+}
+
+// Concurrent grants of the same missing slot, on separate connections and
+// each with its own wrapping, converge: every grant succeeds, exactly one
+// stores the slot, and the stored slot is one of the granted wrappings.
+func TestConcurrentGrantsOfAMissingSlotConverge(t *testing.T) {
+	fixture := newKeyFixture(t, 0)
+
+	joiner := fixture.keyedUser(t, "joiner")
+	_, err := fixture.pool.Exec(t.Context(), `INSERT INTO vault_members (vault_id, user_id, role) VALUES ($1, $2, 'editor')`, fixture.vault.VaultID(), joiner)
+	require.NoError(t, err)
+
+	const grants = 8
+
+	wrappings := make([][]byte, grants)
+	added := make([]int, grants)
+	results := make([]error, grants)
+
+	var group sync.WaitGroup
+
+	for index := range grants {
+		wrappings[index] = randomBytes(t, 105)
+		slot := store.KeySlot{Epoch: 1, RecipientKind: store.RecipientUser, RecipientID: joiner.String(), WrappedKey: wrappings[index]}
+
+		group.Go(func() {
+			added[index], results[index] = fixture.vault.AddKeySlots(t.Context(), fixture.owner, []store.KeySlot{slot})
+		})
+	}
+
+	group.Wait()
+
+	stored := 0
+
+	for index, err := range results {
+		require.NoError(t, err, "grant %d", index)
+
+		stored += added[index]
+	}
+
+	assert.Equal(t, 1, stored, "exactly one grant stores the slot")
+
+	slots, err := fixture.vault.ListKeySlots(t.Context(), store.RecipientUser, joiner.String(), 0, 10)
+	require.NoError(t, err)
+	require.Len(t, slots, 1)
+	assert.True(t, slices.ContainsFunc(wrappings, func(wrapping []byte) bool { return bytes.Equal(wrapping, slots[0].WrappedKey) }),
+		"the stored slot is one of the granted wrappings")
+
+	missing, err := fixture.vault.ListMissingSlots(t.Context(), 0, uuid.Nil, 100)
+	require.NoError(t, err)
+	assert.Empty(t, missing)
 }

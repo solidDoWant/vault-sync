@@ -400,3 +400,53 @@ func TestPlaintextMembershipChangesTakeNoLogEntryAgainstPostgres(t *testing.T) {
 	assert.Zero(t, fixture.count(t, "vault_log_entries", vaultID), "a plaintext vault has no log")
 	assert.Equal(t, vaultsyncv1.VaultRole_VAULT_ROLE_UNSPECIFIED, fixture.roleIn(t, bob.token, vaultID), "bob was removed")
 }
+
+// An owner demoted in the log no longer signs owner entries: the demoted
+// owner's append built before the demotion is refused (PERMISSION_DENIED),
+// and an entry signed with their key on the new head is refused by the
+// signer check even when a current owner sends it. Nothing changes.
+func TestADemotedOwnerNoLongerSignsOwnerEntriesAgainstPostgres(t *testing.T) {
+	fixture := newSyncFixture(t, api.SyncLimits{})
+	alice := fixture.keyedMember(t, "alice")
+	bob := fixture.keyedMember(t, "bob")
+
+	vaultID := fixture.e2eeVault(t, alice, false)
+	fixture.join(t, alice, bob, vaultsyncv1.VaultRole_VAULT_ROLE_OWNER)
+
+	first, err := e2ee.GenerateKey()
+	require.NoError(t, err)
+
+	_, err = fixture.rotate(t, 0, alice, nextEpoch(t, vaultID, 0, first, alice, bob))
+	require.NoError(t, err)
+
+	members := fixture.members(0)
+
+	// Bob's device builds an invitation while bob is still an owner.
+	inFlight := fixture.signedInvitation(t, bob, vaultsyncv1.VaultRole_VAULT_ROLE_EDITOR)
+	inFlightRequest := fixture.inviteRequest(t, bob, vaultsyncv1.VaultRole_VAULT_ROLE_EDITOR, inFlight)
+
+	// Alice demotes bob to editor first.
+	setRole, err := e2ee.SetRolePayload(bob.userID.String(), e2ee.RoleEditor)
+	require.NoError(t, err)
+
+	_, err = members.UpdateMemberRole(t.Context(), authorized(&vaultsyncv1.UpdateMemberRoleRequest{
+		VaultId: vaultID, UserId: bob.userID.String(), Role: vaultsyncv1.VaultRole_VAULT_ROLE_EDITOR,
+		LogEntry: fixture.nextEntry(t, alice, e2ee.EntrySetRole, setRole, alice.secret.SignKey()),
+	}, alice.token))
+	require.NoError(t, err)
+
+	before := fixture.membershipSnapshot(t, vaultID)
+
+	_, err = members.CreateInvitation(t.Context(), authorized(inFlightRequest, bob.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err), err)
+	assert.Equal(t, before, fixture.membershipSnapshot(t, vaultID), "the demoted owner's append changes nothing")
+
+	// An entry on the new head that only the demoted owner signed.
+	resigned := fixture.signedInvitation(t, bob, vaultsyncv1.VaultRole_VAULT_ROLE_EDITOR)
+
+	_, err = members.CreateInvitation(t.Context(), authorized(fixture.inviteRequest(t, alice, vaultsyncv1.VaultRole_VAULT_ROLE_EDITOR, resigned), alice.token))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err), err)
+	assert.Equal(t, before, fixture.membershipSnapshot(t, vaultID), "an entry the demoted owner signed changes nothing")
+}

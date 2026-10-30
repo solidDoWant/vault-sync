@@ -1,5 +1,6 @@
 import { Code, ConnectError } from "@connectrpc/connect";
 
+import { ErrorDetailSchema, ErrorReason } from "../../gen/vaultsync/v1/errors_pb";
 import { DocumentSchema } from "../../gen/vaultsync/v1/types_pb";
 
 /** The Connect code of `error`, or undefined if it is not a ConnectError. */
@@ -19,4 +20,17 @@ export function headMoved(error: unknown): boolean {
  */
 export function blobMissing(error: unknown): boolean {
   return errorCode(error) === Code.FailedPrecondition && !headMoved(error);
+}
+
+/**
+ * A commit refused with FAILED_PRECONDITION and reason VAULT_ENCRYPTED: an
+ * owner converted the vault to end-to-end encryption, and this device must
+ * be unlocked before it can commit (docs/design/encryption.md).
+ */
+export function vaultEncrypted(error: unknown): boolean {
+  return (
+    error instanceof ConnectError &&
+    error.code === Code.FailedPrecondition &&
+    error.findDetails(ErrorDetailSchema).some((detail) => detail.reason === ErrorReason.VAULT_ENCRYPTED)
+  );
 }

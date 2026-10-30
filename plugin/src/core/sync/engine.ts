@@ -3,7 +3,7 @@ import { Code, ConnectError } from "@connectrpc/connect";
 
 import { DocumentKind, type Revision } from "../../gen/vaultsync/v1/types_pb";
 import { backoffDelay, globalTimers, type Backoff, type Timers } from "../backoff";
-import { errorCode, headMoved } from "./errors";
+import { errorCode, headMoved, vaultEncrypted } from "./errors";
 import { type IncomingRevision, type PullApi } from "./remote";
 import { EncryptedCodec, PlaintextCodec, type ContentRefFields, type RevisionCodec, type VaultKeyring } from "./codec";
 import { LogVerificationError } from "../keys/verified-log";
@@ -293,6 +293,8 @@ export class SyncEngine {
           this.halted = error;
           this.stop();
         }
+        // A vault converted to encryption refuses this device's plaintext commits: the vault pauses, keeping its files, until the user unlocks it and a keyed engine takes over.
+        if (vaultEncrypted(error)) this.stop();
         this.setStatus("error");
         this.scheduleRetry();
         throw error;
