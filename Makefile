@@ -63,6 +63,10 @@ test-integration: $(PLUGIN_DIR)/node_modules/.package-lock.json ## Run integrati
 test-integration-postgres14: ## Run the store/migration integration tests and the rolling-upgrade test against PostgreSQL 14, the minimum supported version (docker compose; needs Docker).
 	./scripts/test-integration-postgres14.sh
 
+.PHONY: docs-screenshots
+docs-screenshots: plugin-build ## Regenerate the settings-tab screenshots in docs/user/images/ with the plugin e2e harness (docker compose; needs Docker).
+	./scripts/docs-screenshots.sh
+
 .PHONY: test-e2e
 test-e2e: plugin-build ## Run the plugin e2e suite in a pinned real Obsidian (wdio-obsidian-service; headless via xvfb) against a real server (docker compose; VAULT_SYNC_E2E_MOBILE=1 emulates mobile).
 	./scripts/test-e2e.sh

@@ -55,6 +55,13 @@ const acceptanceSpecs = readdirSync(specDir)
   .filter((name) => /\bit\(\s*["'`]\[(?:AC|P3)-\d+\]/.test(readFileSync(path.join(specDir, name), "utf8")))
   .map((name) => `./test/e2e/specs/${name}`);
 
+// VAULT_SYNC_E2E_SCREENSHOTS_DIR (`make docs-screenshots`,
+// scripts/docs-screenshots.sh) runs only the spec that takes the user
+// guide's screenshots of the settings tab, and writes them to that directory.
+// Without it, that spec skips itself.
+const screenshotsDir = process.env.VAULT_SYNC_E2E_SCREENSHOTS_DIR;
+const screenshotSpecs = ["./test/e2e/specs/docs-screenshots.e2e.ts"];
+
 // Windows: render in software inside Obsidian's main process. On a loaded
 // Windows runner (no GPU) Electron's separate GPU process kept dying until
 // Chromium gave up and ended Obsidian with "GPU process isn't usable.
@@ -95,7 +102,7 @@ await copyFile(path.join(harnessDir, "manifest.json"), path.join(harnessOut, "ma
 export const config: WebdriverIO.Config = {
   runner: "local",
   framework: "mocha",
-  specs: acceptanceResults === undefined ? ["./test/e2e/specs/**/*.e2e.ts"] : acceptanceSpecs,
+  specs: screenshotsDir !== undefined ? screenshotSpecs : acceptanceResults === undefined ? ["./test/e2e/specs/**/*.e2e.ts"] : acceptanceSpecs,
   // Device checks (process kill, background, airplane mode) need a real
   // Android device; only wdio.android.conf.mts runs them.
   exclude: ["./test/e2e/specs/**/*.android.e2e.ts"],
