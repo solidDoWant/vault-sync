@@ -133,7 +133,7 @@ The realtime channel only makes changes arrive sooner; sync never depends on it 
 
 ### Status
 
-The status bar (desktop) shows the sync status. Mobile has no status bar, so there a ribbon icon shows it instead: a check mark when idle, an upload cloud while local changes wait to be pushed, a warning triangle while conflicts are unresolved, and its own icon for syncing, offline, error, sign-in needed, device removed, no longer a member, vault deleted and no vault connected. Click the status bar or tap the icon, or run **Vault Sync: Show sync status**, for details. The settings show it too.
+The status bar (desktop) shows the sync status. Mobile has no status bar, so there a ribbon icon shows it instead: a check mark when idle, an upload cloud while local changes wait to be pushed, a warning triangle while conflicts are unresolved, and its own icon for syncing, offline, error, sign-in needed, device removed, no longer a member, vault deleted, key data that doesn't verify and no vault connected. Click the status bar or tap the icon, or run **Vault Sync: Show sync status**, for details. The settings show it too.
 
 | Status | Meaning |
 |---|---|
@@ -146,6 +146,7 @@ The status bar (desktop) shows the sync status. Mobile has no status bar, so the
 | `signed out` / `no vault connected` | Sync is off until you sign in and connect a vault. |
 | `no longer a member` | You were removed from the connected vault or left it. Sync is stopped and your files stay; disconnect the vault in the settings. |
 | `vault deleted` | An owner deleted the connected vault. Sync is stopped and your files stay; disconnect the vault in the settings. |
+| `stopped: key data doesn't verify` | In an end-to-end encrypted vault, the server sent key or membership data that doesn't verify (a key or member it added or swapped, an epoch no owner signed, or a rolled-back log or epoch). Sync of that vault is stopped for good and your files stay; the details say what failed. The plugin never falls back to trusting the server (`docs/encryption.md`). Restarting Obsidian checks again. |
 | `device removed` | This device was removed from your account on another device. Sync is stopped until you click **Register again** in the settings; local changes are kept and pushed then (see [Devices](#devices)). |
 
 After the status, `N pending` counts local changes that the server has not acknowledged yet, and `N conflicts` counts the conflict copies this device made that still exist. The [conflict view](#conflicts) lists them.

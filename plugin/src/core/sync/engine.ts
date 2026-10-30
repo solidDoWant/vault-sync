@@ -6,6 +6,7 @@ import { backoffDelay, globalTimers, type Backoff, type Timers } from "../backof
 import { errorCode, headMoved } from "./errors";
 import { type IncomingRevision, type PullApi } from "./remote";
 import { EncryptedCodec, PlaintextCodec, type ContentRefFields, type RevisionCodec, type VaultKeyring } from "./codec";
+import { LogVerificationError } from "../keys/verified-log";
 import { sha256Hex } from "../hash";
 import { pathKey } from "../pathkey/pathkey";
 import { v7 as uuidv7 } from "uuid";
@@ -176,6 +177,12 @@ export class SyncEngine {
   private again = false;
   private failures = 0;
   private stopped = true;
+  /**
+   * The server sent key or membership data that doesn't verify
+   * (docs/design/encryption.md, "Hard stop"): the engine stopped syncing
+   * the vault for good. Files and journal stay as they are.
+   */
+  private halted: LogVerificationError | undefined;
   private unwatch: (() => void) | undefined;
   private debounceTimer: unknown;
   private intervalTimer: unknown;
@@ -224,6 +231,7 @@ export class SyncEngine {
    * (the engine then retries after a backoff).
    */
   start(): Promise<void> {
+    if (this.halted !== undefined) return Promise.reject(this.halted);
     if (!this.stopped) return this.running ?? Promise.resolve();
     this.stopped = false;
     this.unwatch = this.vault.watch((event) => {
@@ -260,6 +268,7 @@ export class SyncEngine {
    * when started, the engine then retries after a growing backoff.
    */
   sync(): Promise<void> {
+    if (this.halted !== undefined) return Promise.reject(this.halted);
     if (this.running !== undefined) {
       this.again = true;
       return this.running;
@@ -279,6 +288,11 @@ export class SyncEngine {
       } catch (error) {
         this.failures++;
         this.lastError = error;
+        // A verification failure is a hard stop: no retry, and no later sync, ever falls back to trusting the server.
+        if (error instanceof LogVerificationError) {
+          this.halted = error;
+          this.stop();
+        }
         this.setStatus("error");
         this.scheduleRetry();
         throw error;
