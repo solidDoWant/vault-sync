@@ -24,14 +24,14 @@ For: people who use the Obsidian plugin. For the server's terms, admins can read
 
 **Owner.** A member who can change notes, manage members and invitations, and delete the vault.
 
-**Plaintext vault.** A vault without end-to-end encryption. The server can read its files.
+**Plaintext vault.** A vault without end-to-end encryption.
 
 **Recovery passphrase.** The passphrase that unlocks your encryption key on a new device. Nobody can recover it for you.
 
-**Remote vault.** The vault on the server that your Obsidian vault syncs with.
+**Remote vault.** The server vault that your Obsidian vault syncs with.
 
 **Rotate key.** For an owner: give an encrypted vault a new key, so that new changes use it.
 
-**Viewer.** A member who can only read notes.
+**Viewer.** A member who reads only.
 
 **Vault.** In Obsidian, a folder of notes. On the server, the shared copy that your Obsidian vault syncs with.

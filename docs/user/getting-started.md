@@ -18,6 +18,8 @@ Do these steps on each device that you want to sync.
 
 Open **Settings → Vault Sync**. In **Server URL**, enter the address your admin gave you, for example `https://sync.example.com`. Usually this is the only thing that you enter.
 
+![The settings tab before you sign in.](images/settings-signed-out.png)
+
 The address must start with `https`. Plain `http` works only for `localhost`, `127.0.0.1` and `::1`, for local tests.
 
 ## Sign in
@@ -68,13 +70,15 @@ Open **Settings → Vault Sync**. The sections are in the order that you set thi
 | Section | What it shows |
 |---|---|
 | **Sync** | The sync status. After this device was removed, **Register this device again** (see [Devices](devices.md)). |
-| **Server** | **Server URL** and **Device name** (see [Devices](devices.md#device-name)). |
-| **Account** | **Sign in**, **Sign out**, or **Sign in again**. |
+| **Server** | **Server URL**. |
+| **Account** | **Sign in**, **Sign out** or **Sign in again**, and **Device name** (see [Devices](devices.md#device-name)). |
 | **End-to-end encryption** | While signed in: **Enable** or **Unlock** (see [Encryption](encryption.md)). |
 | **Remote vault** | While signed in: the connected vault, or the choices to connect one. |
 | **Sharing** | While a vault is connected: your role, and for owners the members and invitations (see [Sharing](sharing.md)). |
 | **Devices** | While signed in: your devices (see [Devices](devices.md)). |
 | **Advanced** | Settings that few people need. It stays open or closed on this device as you left it. |
+
+![The Remote vault and Sharing sections, with a vault connected.](images/settings-connected.png)
 
 Everything that you need to recover from a problem is outside **Advanced**: the status and its errors, **Sign in again**, **Unlock** and **Register again**.
 

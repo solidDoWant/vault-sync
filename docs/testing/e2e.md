@@ -16,6 +16,7 @@ VAULT_SYNC_E2E_MOBILE=1 make test-e2e    # Obsidian's emulated mobile UI
 | `VAULT_SYNC_E2E_MOBILE` | unset | `1` runs Obsidian with `emulateMobile` (the mobile UI on the desktop app, at a 390×844 viewport). This is not a real Android device; what only a device can check is in `docs/testing/android.md`. |
 | `VAULT_SYNC_E2E_ANDROID` | unset | `1` runs the suite on the real Obsidian Android app in an Android emulator that is already booted (`plugin/wdio.android.conf.mts`), with Appium installed by `npm ci --prefix plugin/test/e2e/android`. See "Android emulator job". |
 | `VAULT_SYNC_E2E_CACHE_DIR` | `plugin/.wdio-obsidian-cache` | Where Obsidian downloads are cached. |
+| `VAULT_SYNC_E2E_SCREENSHOTS_DIR` | unset | A directory: runs only `docs-screenshots.e2e.ts`, which saves the screenshots of the settings tab for the user guide there. `make docs-screenshots` sets it to `docs/user/images/`. Without it, that spec skips itself. |
 | `E2E_TIMEOUT` | `20m` | `go test -timeout` for the whole run. |
 | `VAULT_SYNC_E2E_LOG_DIR` | unset | A directory for each spec's WebdriverIO and verbose chromedriver logs, which include Obsidian's own (Electron's) stderr. The native CI jobs set it and upload the directory as an artifact when they fail. |
 
