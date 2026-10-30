@@ -11,7 +11,7 @@ There are two severities:
 - `critical`: Users cannot sync, or data is at risk. Act now.
 - `warning`: The service is degraded, or a backlog grows. Act within working hours.
 
-[Per-replica metrics](../configuration.md#metrics) come from port `metrics`. A per-replica alert fires once for each affected replica, with its `instance` label. [Service-wide metrics](../configuration.md#service-wide-metrics) come from port `service-metrics`. Service-wide alerts aggregate with `by ()`, so they fire once, whether Prometheus scrapes one replica or all of them. They need a scrape of the service-wide port (`config.server.metrics.serviceWide.enabled`).
+[Per-replica metrics](metrics-reference.md#per-replica-metrics) come from port `metrics`. A per-replica alert fires once for each affected replica, with its `instance` label. [Service-wide metrics](metrics-reference.md#service-wide-metrics) come from port `service-metrics`. Service-wide alerts aggregate with `by ()`, so they fire once, whether Prometheus scrapes one replica or all of them. They need a scrape of the service-wide port (`config.server.metrics.serviceWide.enabled`).
 
 The thresholds come from the server's schedules and defaults: retention runs every hour, the upload TTL is 24 hours, the blob GC grace is 24 hours, and the service-wide refresh runs every minute. They also come from what a healthy deployment does in the e2e and load runs: no server errors, and sync RPCs well under a second. Each runbook says why its threshold has its value. If you change the matching server setting, change the threshold with it.
 

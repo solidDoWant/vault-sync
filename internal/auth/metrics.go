@@ -28,13 +28,13 @@ func NewMetrics() *Metrics {
 	metrics := &Metrics{
 		refreshFailures: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "vault_sync_oidc_jwks_refresh_failures_total",
-			Help: "Fetches of the OIDC issuer's discovery document and key set that failed.",
+			Help: "Fetches of the OIDC issuer's discovery document and key set that failed; the server keeps using the keys it has.",
 		}),
 	}
 
 	metrics.age = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
 		Name: "vault_sync_oidc_jwks_age_seconds",
-		Help: "Seconds since the OIDC issuer's key set was last fetched successfully; NaN before the first fetch.",
+		Help: "Seconds since this replica last fetched the OIDC issuer's key set successfully; NaN before the first fetch. Keys are fetched when a token needs them and at most hourly, so on an idle replica the age keeps growing; alert on a high age together with refresh failures.",
 	}, metrics.ageSeconds)
 
 	return metrics

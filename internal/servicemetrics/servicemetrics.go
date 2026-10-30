@@ -1,6 +1,6 @@
 // Package servicemetrics serves the service-wide metrics: values that
 // describe the whole deployment rather than one replica, read from
-// PostgreSQL (docs/configuration.md, Service-wide metrics).
+// PostgreSQL (docs/admin/metrics-reference.md, Service-wide metrics).
 //
 // A scrape never queries the database. Refresher reads every value in the
 // background on an interval, each query under its own timeout, and the
@@ -88,47 +88,47 @@ func NewMetrics() *Metrics {
 	metrics := &Metrics{
 		devices:            gauge("vault_sync_service_devices", "Devices registered and not removed."),
 		usersWithDevices:   gauge("vault_sync_service_users_with_devices", "Users with at least one device not removed."),
-		activeDevicesDay:   gauge("vault_sync_service_active_devices_24h", "Devices not removed that committed within the last 24 hours."),
+		activeDevicesDay:   gauge("vault_sync_service_active_devices_24h", "Devices not removed that committed within the last 24 hours (a device's last activity is recorded at most once a minute)."),
 		activeDevicesMonth: gauge("vault_sync_service_active_devices_30d", "Devices not removed that committed within the last 30 days."),
 		vaults: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "vault_sync_service_vaults",
-			Help: "Vaults not deleted, by encryption (none, e2ee) and shared (true when the vault has more than one member).",
+			Help: "Vaults not deleted, by encryption (none, e2ee) and shared (true when the vault has more than one member, false otherwise). Every combination is always exported.",
 		}, []string{"encryption", "shared"}),
 		memberships:        gauge("vault_sync_service_vault_memberships", "Memberships of vaults not deleted."),
 		pendingInvitations: gauge("vault_sync_service_pending_invitations", "Unexpired invitations to vaults not deleted."),
 		documents: gauge("vault_sync_service_live_documents_approximate",
-			"Approximate documents not deleted, from PostgreSQL planner statistics (pg_class.reltuples), which autovacuum and ANALYZE update; 0 until the table is first analyzed."),
+			"Approximate documents not deleted, read from PostgreSQL planner statistics (pg_class.reltuples) instead of counting rows, which autovacuum and ANALYZE update; 0 until the table is first analyzed. Deleted vaults' documents count until the vault is purged."),
 		revisions: gauge("vault_sync_service_revisions_approximate",
 			"Approximate stored revisions, from PostgreSQL planner statistics (pg_class.reltuples), which autovacuum and ANALYZE update; 0 until the table is first analyzed."),
-		schemaVersion: gauge("vault_sync_service_schema_version", "Highest database migration version applied."),
+		schemaVersion: gauge("vault_sync_service_schema_version", "Highest database migration version applied. During a rolling upgrade it shows when the schema is ahead of the replicas."),
 		blobs: gauge("vault_sync_service_blobs",
-			"Stored blobs. Exact below 100,000; beyond that approximate, from PostgreSQL planner statistics (pg_class.reltuples), which autovacuum and ANALYZE update."),
+			"Stored blobs, from the blob rows (not an S3 listing), deleted vaults' included until purged. Exact while the planner estimates fewer than 100,000; beyond that it is that estimate (pg_class.reltuples), since every revision with content has a blob and an exact count would scan the table."),
 		blobBytes: gauge("vault_sync_service_blob_bytes",
-			"Recorded size in bytes of the stored blobs. Exact below 100,000 blobs; beyond that approximate: the approximate blob count times the mean size in a 1% page sample (TABLESAMPLE SYSTEM)."),
-		uploadSessions: gauge("vault_sync_service_upload_sessions", "Open blob upload sessions."),
+			"Recorded size in bytes of the stored blobs. Exact below 100,000 blobs; beyond that approximate: the estimated blob count times the mean size in a sample of 1% of the table's pages (TABLESAMPLE SYSTEM)."),
+		uploadSessions: gauge("vault_sync_service_upload_sessions", "Open blob upload sessions (not yet committed, discarded or expired)."),
 		uploadReserved: gauge("vault_sync_service_upload_session_reserved_bytes", "Declared size in bytes of the open blob upload sessions."),
 		uploadOldestAge: gauge("vault_sync_service_upload_session_oldest_age_seconds",
 			"Age in seconds of the oldest open blob upload session at the last refresh; 0 without one."),
 		gcPendingBlobs: gauge("vault_sync_service_gc_pending_blobs",
 			"Blobs released by a retention purge that the garbage collector has not deleted yet (still inside the grace period, or not yet collected)."),
 		gcPendingBytes: gauge("vault_sync_service_gc_pending_blob_bytes", "Recorded size in bytes of the blobs awaiting garbage collection."),
-		deletedVaults:  gauge("vault_sync_service_deleted_vaults", "Deleted vaults the vault purge has not removed yet."),
+		deletedVaults:  gauge("vault_sync_service_deleted_vaults", "Deleted vaults the vault purge has not removed yet (restorable, or waiting for the purge)."),
 		rekeyVaults: gauge("vault_sync_service_rekey_vaults",
-			"Encrypted vaults not deleted with a revision not on the vault's current epoch: a re-key in progress."),
+			"Encrypted vaults not deleted with at least one revision not on the vault's current epoch: a re-key in progress."),
 		staleRevisions: gauge("vault_sync_service_stale_epoch_revisions",
-			"Revisions of encrypted vaults not deleted that are not on their vault's current epoch: the re-encryption backlog."),
+			"Revisions of encrypted vaults not deleted that are not on their vault's current epoch: the re-encryption backlog (ListStaleRevisions), summed over every vault."),
 		escrowVaults: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "vault_sync_service_encrypted_vaults_by_escrow",
-			Help: "Encrypted vaults not deleted, by escrow (true when escrow is on).",
+			Help: "Encrypted vaults not deleted, by escrow (true when escrow is on). Both values are always exported.",
 		}, []string{"escrow"}),
 		escrowRewrapSlots: gauge("vault_sync_service_escrow_rewrap_slots",
-			"Escrow key slots of vaults not deleted that still name a retiring escrow key id (VAULT_SYNC_ESCROW_RETIRING_KEY_IDS); 0 without one."),
+			"Escrow key slots of vaults not deleted that still name a retiring escrow key id (VAULT_SYNC_ESCROW_RETIRING_KEY_IDS): the re-wrap backlog of an escrow key rotation. 0 without retiring ids."),
 		lastRetention: gauge("vault_sync_service_retention_last_success_timestamp_seconds",
-			"Unix time at which a retention run last finished without errors, on any replica; 0 before the first."),
+			"Unix time at which a retention run last finished without errors, on any replica; 0 before the first. Each replica runs the job every hour, so alert when it falls well behind."),
 		lastExport: gauge("vault_sync_service_export_last_success_timestamp_seconds",
-			"Unix time at which an export last finished with status ok; 0 before the first."),
+			"Unix time at which an export (vault-sync-server export) last finished with status ok; 0 before the first. A partial or failed export does not advance it."),
 		lastSuccess: gauge("vault_sync_service_metrics_last_refresh_success_timestamp_seconds",
-			"Unix time of the last refresh in which every service-wide query succeeded; 0 before the first. A failed query keeps its metrics' previous values."),
+			"Unix time of the last refresh on this replica in which every service-wide query succeeded; 0 before the first. A failed query keeps its metrics' previous values."),
 	}
 
 	for _, encryption := range encryptions {
@@ -146,7 +146,7 @@ func NewMetrics() *Metrics {
 
 // Collectors returns every vault_sync_service_* collector. Every such
 // metric must be registered through this function: the Service-wide
-// metrics table in docs/configuration.md is checked against it.
+// metrics table in docs/admin/metrics-reference.md is generated from it.
 func (metrics *Metrics) Collectors() []prometheus.Collector {
 	return []prometheus.Collector{
 		metrics.devices, metrics.usersWithDevices, metrics.activeDevicesDay, metrics.activeDevicesMonth,

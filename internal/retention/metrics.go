@@ -19,27 +19,27 @@ func NewMetrics() *Metrics {
 	return &Metrics{
 		revisionsPurged: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "vault_sync_retention_revisions_purged_total",
-			Help: "Revisions the retention job purged.",
+			Help: "Revisions this replica's retention job purged.",
 		}),
 		blobsCollected: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "vault_sync_retention_blobs_collected_total",
-			Help: "Blobs no revision references whose rows the retention job deleted.",
+			Help: "Blobs no revision references whose rows this replica's retention job deleted.",
 		}),
 		objectsDeleted: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "vault_sync_retention_objects_deleted_total",
-			Help: "Collected blobs' objects the retention job deleted.",
+			Help: "Collected blobs' S3 objects this replica's retention job deleted.",
 		}),
 		markersPruned: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "vault_sync_retention_purge_markers_pruned_total",
-			Help: "Purge markers older than the horizon that the retention job deleted.",
+			Help: "Purge markers older than VAULT_SYNC_RETENTION_PURGE_MARKER_HORIZON that this replica's retention job deleted. A run prunes at most 100,000: growth by that much every run means pruning is falling behind the purges.",
 		}),
 		vaultsPurged: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "vault_sync_retention_vaults_purged_total",
-			Help: "Vaults deleted more than 30 days ago whose rows and objects the retention job purged.",
+			Help: "Vaults deleted more than 30 days ago whose rows and S3 objects this replica's retention job purged.",
 		}),
 		runFailures: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "vault_sync_retention_run_failures_total",
-			Help: "Retention runs that failed in part; the next run retries.",
+			Help: "Retention runs on this replica that failed in part (logged as retention run failed); the next run retries. Alert if it keeps rising.",
 		}),
 	}
 }

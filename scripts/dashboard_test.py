@@ -9,15 +9,15 @@ For every deploy/charts/vault-sync/dashboards/*.json:
     variables "namespace" and "job", and every panel and query variable
     uses ${datasource};
   - every metric a query or variable references is documented in the
-    Metrics or Service-wide metrics table of docs/configuration.md (a
-    histogram's _bucket, _sum and _count series count as the histogram;
-    go_* and process_* as documented there), so renaming a metric breaks
+    generated docs/admin/metrics-reference.md (a histogram's _bucket,
+    _sum and _count series count as the histogram; go_* and process_* as
+    documented there), so renaming a metric breaks
     the build;
   - every query of a service-wide metric (vault_sync_service_*) takes the
     max over replicas and never sums them, since every replica serves the
     same values.
 
-Usage: dashboard_test.py [DASHBOARD_DIR [CONFIGURATION_MD]]
+Usage: dashboard_test.py [DASHBOARD_DIR [METRICS_REFERENCE_MD]]
 """
 
 import json
@@ -31,16 +31,16 @@ KEYWORDS = {"by", "without", "on", "ignoring", "group_left", "group_right", "and
 HISTOGRAM_SUFFIXES = ("_bucket", "_sum", "_count")
 
 
-def documented_metrics(configuration):
+def documented_metrics(reference):
     """Returns (names, histograms, prefixes) from the metrics tables."""
-    text = configuration.read_text()
+    text = reference.read_text()
     names, histograms, prefixes = set(), set(), set()
     section = None
     for line in text.splitlines():
         if line.startswith("## "):
             section = line[3:].strip()
             continue
-        if section not in ("Metrics", "Service-wide metrics"):
+        if section not in ("Per-replica metrics", "Service-wide metrics"):
             continue
         row = re.match(r"^\| `([a-z_:][a-z0-9_:]*)` \| (\w+) \|", line)
         if row:
@@ -129,7 +129,7 @@ def check_dashboard(path, documented, uids, errors):
             fail(f"{where} references no metric: {expr}")
         for metric in sorted(metrics):
             if not is_documented(metric, *documented):
-                fail(f"{where} references {metric}, which docs/configuration.md does not document")
+                fail(f"{where} references {metric}, which docs/admin/metrics-reference.md does not document")
         if any(metric.startswith("vault_sync_service_") for metric in metrics) and not where.startswith("variable"):
             if re.search(r"\b(sum|count|avg)\b", expr) or not re.search(r"\bmax\b", expr):
                 fail(f"{where} must take the max of a service-wide metric over replicas, never sum it: {expr}")
@@ -137,10 +137,10 @@ def check_dashboard(path, documented, uids, errors):
 
 def main(argv):
     directory = pathlib.Path(argv[1]) if len(argv) > 1 else REPO / "deploy/charts/vault-sync/dashboards"
-    configuration = pathlib.Path(argv[2]) if len(argv) > 2 else REPO / "docs/configuration.md"
-    documented = documented_metrics(configuration)
+    reference = pathlib.Path(argv[2]) if len(argv) > 2 else REPO / "docs/admin/metrics-reference.md"
+    documented = documented_metrics(reference)
     if not documented[0]:
-        print(f"dashboard_test: found no metrics in {configuration}", file=sys.stderr)
+        print(f"dashboard_test: found no metrics in {reference}", file=sys.stderr)
         return 1
     files = sorted(directory.glob("*.json"))
     if not files:

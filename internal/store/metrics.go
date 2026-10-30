@@ -28,26 +28,26 @@ func NewMetrics() *Metrics {
 	metrics := &Metrics{
 		waiting: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "vault_sync_db_pool_waiting_acquires",
-			Help: "Requests for a PostgreSQL connection from the pool that are in progress.",
+			Help: "Requests for a PostgreSQL connection from this replica's pool in progress. Sustained values near the pool size mean the pool is too small or the database is slow.",
 		}),
 		acquireTime: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name:    "vault_sync_db_pool_acquire_duration_seconds",
-			Help:    "Time to get a PostgreSQL connection from the pool, including waiting for one and connecting.",
+			Help:    "Time to get a PostgreSQL connection from this replica's pool, including waiting for one and opening it.",
 			Buckets: prometheus.DefBuckets,
 		}),
 		queryErrors: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "vault_sync_db_query_errors_total",
-			Help: "PostgreSQL queries and statements that failed.",
+			Help: "PostgreSQL queries and statements that failed, including those the server expects and handles (such as a commit losing a race) and those canceled with their request. Alert on a sustained rise.",
 		}),
 	}
 
 	metrics.acquired = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
 		Name: "vault_sync_db_pool_acquired_connections",
-		Help: "PostgreSQL connections in use.",
+		Help: "PostgreSQL connections of this replica's pool in use.",
 	}, func() float64 { return metrics.stat(func(stat *pgxpool.Stat) int32 { return stat.AcquiredConns() }) })
 	metrics.idle = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
 		Name: "vault_sync_db_pool_idle_connections",
-		Help: "Open PostgreSQL connections idle in the pool.",
+		Help: "Open PostgreSQL connections idle in this replica's pool.",
 	}, func() float64 { return metrics.stat(func(stat *pgxpool.Stat) int32 { return stat.IdleConns() }) })
 
 	return metrics

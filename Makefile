@@ -95,6 +95,14 @@ check-generate: generate ## Fail if committed generated protobuf code differs fr
 	@git diff --exit-code -- gen $(PLUGIN_DIR)/src/gen || { echo "generated code is stale: run 'make generate' and commit the result" >&2; exit 1; }
 	@test -z "$$(git ls-files --others --exclude-standard -- gen $(PLUGIN_DIR)/src/gen)" || { echo "untracked generated files: run 'make generate' and commit the result" >&2; exit 1; }
 
+.PHONY: generate-docs
+generate-docs: ## Regenerate the reference pages in docs/admin/ (go test fails while one is stale).
+	go test ./internal/server/ -run '^TestMetricsReferenceIsCurrent$$' -count=1 -update
+
+.PHONY: check-generate-docs
+check-generate-docs: ## Fail if a generated reference page in docs/admin/ is stale (also part of make test).
+	go test ./internal/server/ -run '^TestMetricsReferenceIsCurrent$$' -count=1
+
 ##@ Plugin
 
 $(PLUGIN_DIR)/node_modules/.package-lock.json: $(PLUGIN_DIR)/package.json $(PLUGIN_DIR)/package-lock.json

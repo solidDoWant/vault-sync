@@ -421,7 +421,7 @@ resources:
 
 ## Monitoring
 
-The server exposes per-instance metrics on port `metrics` (9090) and service-wide metrics on port `service-metrics` (9091), listed in [configuration.md](configuration.md#metrics). `config.server.metrics.serviceMonitor.enabled` scrapes the first with a prometheus-operator ServiceMonitor, and `config.server.metrics.serviceWide.enabled` adds the second (see [Server](#server)).
+The server exposes per-instance metrics on port `metrics` (9090) and service-wide metrics on port `service-metrics` (9091), listed in [metrics-reference.md](admin/metrics-reference.md). `config.server.metrics.serviceMonitor.enabled` scrapes the first with a prometheus-operator ServiceMonitor, and `config.server.metrics.serviceWide.enabled` adds the second (see [Server](#server)).
 
 The chart ships three Grafana dashboards (JSON in `deploy/charts/vault-sync/dashboards/`, packaged with the chart). Links in each lead to the others; their UIDs are stable, so links and bookmarks survive upgrades:
 

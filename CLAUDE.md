@@ -50,6 +50,7 @@ Run `make help` for the full list (keep it and this section current as targets a
 - `make fmt` / `make vet` / `make lint` (`lint-fix`) — format, vet, lint (Go + plugin).
 - `make test` — Go unit tests with `-race` + plugin vitest.
 - `make generate` / `make check-generate`: regenerate protobuf code, or fail on drift.
+- `make generate-docs` / `make check-generate-docs`: regenerate the reference pages in `docs/admin/` (today the metrics reference, from the metrics' `Help` text), or fail on drift. `make test` also fails on drift.
 - `make test-integration` — `integration`-tagged Go tests against real PostgreSQL + S3 (`docker compose`, torn down afterwards; tests skip without Docker). Extra `go test` args: `./scripts/test-integration.sh -run X ./internal/store/`.
 - `make test-integration-postgres14` — the `./internal/store/` and rolling-upgrade integration tests on PostgreSQL 14, the minimum supported version (`VAULT_SYNC_TEST_POSTGRES_VERSION=14`; needs Docker). Run it when touching migrations or SQL.
 - `make acceptance`: run every `[AC-nn]` acceptance test and print the scoreboard (scenarios passing out of the total in `docs/acceptance/phase-2.md`).

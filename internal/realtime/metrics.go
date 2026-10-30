@@ -22,15 +22,15 @@ func newMetrics() *metrics {
 	return &metrics{
 		connections: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "vault_sync_realtime_connections",
-			Help: "Open realtime WebSocket connections on this instance.",
+			Help: "Open realtime WebSocket connections on this replica.",
 		}),
 		refusals: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "vault_sync_realtime_refused_upgrades_total",
-			Help: "Realtime WebSocket upgrades refused, by reason.",
+			Help: "Realtime WebSocket upgrades refused, by reason: origin, unauthenticated, protocol, user_limit, instance_limit, draining, unavailable.",
 		}, []string{"reason"}),
 		disconnects: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "vault_sync_realtime_disconnects_total",
-			Help: "Realtime WebSocket connections ended, by reason.",
+			Help: "Realtime WebSocket connections ended, by reason: client, drain, slow_client, rate_limit, invalid_frame, frame_too_large, token_expired, ping_timeout, write_failed.",
 		}, []string{"reason"}),
 		notifications: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "vault_sync_realtime_notifications_total",
@@ -38,7 +38,7 @@ func newMetrics() *metrics {
 		}),
 		listenerUp: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "vault_sync_realtime_listener_up",
-			Help: "1 while this instance listens for commits (PostgreSQL LISTEN), 0 while it reconnects.",
+			Help: "1 while this replica listens for commits (PostgreSQL LISTEN), 0 while it reconnects. Alert if it stays 0.",
 		}),
 		listenerReconnects: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "vault_sync_realtime_listener_reconnects_total",
