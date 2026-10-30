@@ -110,8 +110,7 @@ func (source *fakeSource) addEncryptedDocument(t *testing.T, vault *encryptedVau
 	sealedContent, err := e2ee.Seal(subkey(e2ee.LabelContent), content, contentAD)
 	require.NoError(t, err)
 
-	blobID, err := e2ee.BlobID(subkey(e2ee.LabelBlobIDSecret), content)
-	require.NoError(t, err)
+	blobID := e2ee.BlobID(sealedContent)
 
 	source.content[hex.EncodeToString(blobID)] = sealedContent
 	source.documents[vault.id] = append(source.documents[vault.id], store.LiveDocument{

@@ -332,24 +332,15 @@ func (service BlobService) CommitBlob(ctx context.Context, request *connect.Requ
 		return response, err
 	}
 
-	encryption, err := vault.Encryption(ctx)
-	if err != nil {
-		return nil, service.internal(ctx, "cannot commit blob", err)
-	}
-
-	// Plaintext vaults are content-addressed by SHA-256, which the server
-	// verifies. In end-to-end encrypted vaults the id is an HMAC of the
-	// plaintext the server never sees, so clients verify it after
-	// decryption (SPEC.md §5).
-	var verify func(sum []byte) error
-	if encryption != store.EncryptionE2EE {
-		verify = func(sum []byte) error {
-			if !bytes.Equal(sum, blobID) {
-				return blobstore.ErrHashMismatch
-			}
-
-			return nil
+	// Blobs are content-addressed by SHA-256 of the stored bytes, which the
+	// server verifies: the plaintext in a plaintext vault, the sealed bytes
+	// in an end-to-end encrypted one (SPEC.md §5).
+	verify := func(sum []byte) error {
+		if !bytes.Equal(sum, blobID) {
+			return blobstore.ErrHashMismatch
 		}
+
+		return nil
 	}
 
 	// The garbage collector may be deleting an earlier object of this blob

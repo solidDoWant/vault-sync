@@ -245,7 +245,7 @@ describe("deriveSubkey", () => {
   const epochKey = new Uint8Array(KEY_SIZE).fill(7);
 
   it("derives a different key for every label", () => {
-    const labels: SubkeyLabel[] = ["content", "path", "path_key_secret", "blob_id_secret"];
+    const labels: SubkeyLabel[] = ["content", "path", "path_key_secret"];
     const subkeys = new Set(labels.map((label) => bytesToHex(deriveSubkey(epochKey, label))));
     expect(subkeys.size).toBe(labels.length);
   });

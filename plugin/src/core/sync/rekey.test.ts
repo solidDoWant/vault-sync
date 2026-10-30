@@ -205,8 +205,8 @@ describe("re-encrypting history (the re-key job)", () => {
     const key = keys.epochKey(2);
     if (key === undefined) throw new Error("no key");
     const content = encoder.encode("moved under the reader\n");
-    const newBlobId = blobId(deriveSubkey(key, "blob_id_secret"), content);
     const sealed = seal(deriveSubkey(key, "content"), content, contentAad(server.vaultId, 2));
+    const newBlobId = blobId(sealed);
     await uploadBlob(owner(server), server.vaultId, newBlobId, sealed);
     const oldBlob = bytesToHex(stored.contentRef.blobId);
     let moves = 0;

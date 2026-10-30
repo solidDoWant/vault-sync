@@ -64,8 +64,9 @@ type BlobServiceClient interface {
 	// max_chunk_size or extends past the declared size; PERMISSION_DENIED for
 	// viewers; NOT_FOUND for non-members.
 	PutBlobChunk(context.Context, *connect.Request[v1.PutBlobChunkRequest]) (*connect.Response[v1.PutBlobChunkResponse], error)
-	// CommitBlob completes an upload. For plaintext vaults the server verifies
-	// SHA-256(content) == blob_id. Committing an already-complete blob
+	// CommitBlob completes an upload. The server verifies
+	// SHA-256(content) == blob_id, the stored bytes in every vault (ciphertext
+	// in E2EE vaults). Committing an already-complete blob
 	// succeeds (idempotent).
 	//
 	// Errors: FAILED_PRECONDITION if fewer than size bytes were received;
@@ -166,8 +167,9 @@ type BlobServiceHandler interface {
 	// max_chunk_size or extends past the declared size; PERMISSION_DENIED for
 	// viewers; NOT_FOUND for non-members.
 	PutBlobChunk(context.Context, *connect.Request[v1.PutBlobChunkRequest]) (*connect.Response[v1.PutBlobChunkResponse], error)
-	// CommitBlob completes an upload. For plaintext vaults the server verifies
-	// SHA-256(content) == blob_id. Committing an already-complete blob
+	// CommitBlob completes an upload. The server verifies
+	// SHA-256(content) == blob_id, the stored bytes in every vault (ciphertext
+	// in E2EE vaults). Committing an already-complete blob
 	// succeeds (idempotent).
 	//
 	// Errors: FAILED_PRECONDITION if fewer than size bytes were received;

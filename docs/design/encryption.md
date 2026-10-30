@@ -9,7 +9,7 @@ Status: approved by the owner on 2026-10-29. It adds to `SPEC.md` §9.3–§9.4,
   - every member;
   - every pending invitation;
   - the deployment's escrow key, if escrow is on for the vault.
-- **Path keys and blob ids** are HMACs. The server compares them without learning names or contents. Path keys use one secret for the vault's lifetime and blob ids use the revision's epoch (*Formats and rules*, below).
+- **Path keys** are HMACs, and **blob ids** are the SHA-256 of the sealed content. The server compares path keys without learning names, and verifies blob ids without learning contents. Path keys use one secret for the vault's lifetime (*Formats and rules*, below).
 - **Merging happens on the device.** A device decrypts, applies `engine.md` rule M, and encrypts the result. The engine itself is unchanged.
 
 ## Suite 2: hybrid post-quantum

@@ -107,13 +107,6 @@ type pathKeyVector struct {
 	PathKey string `json:"path_key"`
 }
 
-type blobIDVector struct {
-	Name      string `json:"name"`
-	Secret    string `json:"secret"`
-	Plaintext string `json:"plaintext"`
-	BlobID    string `json:"blob_id"`
-}
-
 type passphraseVector struct {
 	Name        string `json:"name"`
 	Passphrase  string `json:"passphrase"`
@@ -189,7 +182,6 @@ type vectorFile struct {
 	AEAD        []aeadVector       `json:"aead"`
 	Hybrid      []hybridVector     `json:"hybrid"`
 	PathKey     []pathKeyVector    `json:"path_key"`
-	BlobID      []blobIDVector     `json:"blob_id"`
 	Passphrase  []passphraseVector `json:"passphrase"`
 	Rejected    []rejectedVector   `json:"rejected"`
 
@@ -304,7 +296,7 @@ func generate(t *testing.T) vectorFile {
 	// Sub-keys.
 	for _, epoch := range []string{"epoch key 1", "epoch key 2"} {
 		epochKey := fixed(epoch, KeySize)
-		for _, label := range []Label{LabelContent, LabelPath, LabelPathKeySecret, LabelBlobIDSecret} {
+		for _, label := range []Label{LabelContent, LabelPath, LabelPathKeySecret} {
 			file.Subkeys = append(file.Subkeys, subkeyVector{
 				Name:     epoch + " " + string(label),
 				EpochKey: hex.EncodeToString(epochKey),
@@ -377,24 +369,6 @@ func generate(t *testing.T) vectorFile {
 			Secret:  hex.EncodeToString(pathKeySecret),
 			Path:    testCase.path,
 			PathKey: hex.EncodeToString(must(PathKey(pathKeySecret, testCase.path))),
-		})
-	}
-
-	// blob_id.
-	blobIDSecret := fixed("blob_id_secret", KeySize)
-	for _, testCase := range []struct {
-		name      string
-		plaintext []byte
-	}{
-		{"empty", nil},
-		{"text", []byte("# Hello\n")},
-		{"1 KiB binary", fixed("blob 1k", 1024)},
-	} {
-		file.BlobID = append(file.BlobID, blobIDVector{
-			Name:      testCase.name,
-			Secret:    hex.EncodeToString(blobIDSecret),
-			Plaintext: hex.EncodeToString(testCase.plaintext),
-			BlobID:    hex.EncodeToString(must(BlobID(blobIDSecret, testCase.plaintext))),
 		})
 	}
 
@@ -892,16 +866,6 @@ func TestSharedVectors(t *testing.T) {
 			for _, vector := range file.PathKey {
 				t.Run(vector.Name, func(t *testing.T) {
 					assert.Equal(t, vector.PathKey, hex.EncodeToString(must(PathKey(unhex(t, vector.Secret), vector.Path))))
-				})
-			}
-		})
-
-		t.Run("blob_id", func(t *testing.T) {
-			require.NotEmpty(t, file.BlobID)
-
-			for _, vector := range file.BlobID {
-				t.Run(vector.Name, func(t *testing.T) {
-					assert.Equal(t, vector.BlobID, hex.EncodeToString(must(BlobID(unhex(t, vector.Secret), unhex(t, vector.Plaintext)))))
 				})
 			}
 		})
