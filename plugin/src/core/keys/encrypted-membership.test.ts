@@ -30,7 +30,7 @@ import {
 import { MemoryVaultKeyServer } from "./memory-vault-keys";
 import type { UserKeyPair } from "./user-key";
 import { MemoryEpochKeyStore, VaultKeyManager } from "./vault-keys";
-import { MemoryVerifiedLogStore } from "./verified-log";
+import { LogVerificationError, MemoryVerifiedLogStore } from "./verified-log";
 
 function user(n: number): UserKeyPair {
   return {
@@ -80,6 +80,7 @@ async function aliceVault() {
     keys: client.vaultKeys,
     membership: client.membership,
     store,
+    trust: { userKey: alice, log: client.vaultKeys, anchors: client.userKeys, verifiedLogs: verifiedLogs(alice) },
   });
   await manager.sync();
   const context = (key: UserKeyPair): EncryptedMembershipContext => {
@@ -118,6 +119,7 @@ async function aliceVault() {
       keys: own.vaultKeys,
       membership: own.membership,
       store: new MemoryEpochKeyStore(),
+      trust: { userKey: key, log: own.vaultKeys, anchors: own.userKeys, verifiedLogs: verifiedLogs(key) },
     });
   };
   /** Adds the vault's genesis to the anchor list of a member the server seeded. */
@@ -249,7 +251,7 @@ describe("membership changes of an encrypted vault", () => {
 
     await setEncryptedMemberRole(context(alice), bob.userId, VaultRole.OWNER);
     expect(server.members.get(bob.userId)?.role).toBe(VaultRole.OWNER);
-    await manager.removeMember(carol.userId, context(alice));
+    await manager.removeMember(carol.userId);
     expect(server.members.has(carol.userId)).toBe(false);
     await leaveEncryptedVault(context(alice));
     expect(server.members.has(alice.userId)).toBe(false);
@@ -336,6 +338,25 @@ describe("membership changes of an encrypted vault", () => {
     await expect(
       redeemEncryptedInvitation(redeemer(bob), { ...link, anchor }),
     ).rejects.toThrow(/does not match the invitation/);
+    expect(server.members.has(bob.userId)).toBe(false);
+  });
+
+  it("refuses an epoch the server lists without its owner-signed record, before redeeming", async () => {
+    const { server, context, redeemer, epochKey } = await aliceVault();
+    const created = await createEncryptedInvitation(
+      { ...context(alice), currentEpoch: 1, epochKey },
+      VaultRole.VIEWER,
+      0,
+    );
+    const link = parseInviteLink(created.link);
+    if (link === undefined) throw new Error("malformed link");
+    const epoch = server.epochs[0];
+    if (epoch === undefined) throw new Error("no epoch");
+    delete epoch.record;
+
+    await expect(
+      redeemEncryptedInvitation(redeemer(bob), link),
+    ).rejects.toBeInstanceOf(LogVerificationError);
     expect(server.members.has(bob.userId)).toBe(false);
   });
 

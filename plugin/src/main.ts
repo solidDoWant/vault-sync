@@ -466,6 +466,8 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
     const account = await currentAccount(this.data, options.accessToken);
     const escrow = vault.escrow ? (await this.escrowOffer()).recipient : undefined;
     if (vault.escrow && escrow === undefined) throw new Error("this server has no escrow key");
+    const verifiedLogs = deviceVerifiedLogStore(this.app, account);
+    const trust = { userKey, log: client.vaultKeys, anchors: client.userKeys, verifiedLogs };
     const manager = new VaultKeyManager({
       vaultId,
       userKey,
@@ -473,10 +475,10 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
       keys: client.vaultKeys,
       membership: client.membership,
       store: pluginDataEpochKeyStore(this.data, () => this.saveSettings(), account, vaultId),
+      trust,
       escrow,
     });
-    const verifiedLogs = deviceVerifiedLogStore(this.app, account);
-    return { context: { vaultId, userKey, membership: client.membership, log: client.vaultKeys, anchors: client.userKeys, verifiedLogs }, manager };
+    return { context: { vaultId, membership: client.membership, ...trust }, manager };
   }
 
   /**

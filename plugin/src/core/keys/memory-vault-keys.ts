@@ -20,14 +20,14 @@ import { MembershipService } from "../../gen/vaultsync/v1/membership_pb";
 import { VaultEncryption, VaultRole } from "../../gen/vaultsync/v1/types_pb";
 import { UserKeyService } from "../../gen/vaultsync/v1/user_key_pb";
 import { VaultService } from "../../gen/vaultsync/v1/vault_pb";
-import { KeyRecipientKind, VaultKeyService, type NextEpoch } from "../../gen/vaultsync/v1/vault_key_pb";
+import { KeyRecipientKind, VaultKeyService, type EpochRecord as EpochRecordMessage, type NextEpoch } from "../../gen/vaultsync/v1/vault_key_pb";
 import type { LogEntry } from "../../gen/vaultsync/v1/types_pb";
 import { equalBytes, randomBytes } from "@noble/ciphers/utils.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { base64urlnopad } from "@scure/base";
 import { bundleOf, invitationKeyPair, inviteSignSeed, signPublicKey, uuidString } from "../e2ee/identity";
 import { uuidBytes } from "../e2ee/keyslot";
-import { EntryType, LogError, genesisPayload, idPayload, invitePayload, redeemPayload, replayLog, type Entry, type LogState } from "../e2ee/memberlog";
+import { EntryType, LogError, genesisPayload, idPayload, invitePayload, redeemPayload, replayLog, verifyEpochRecord, type Entry, type LogState } from "../e2ee/memberlog";
 import { logRole } from "./encrypted-membership";
 import { fromLogEntry, genesisEntry, nextEntry, toLogEntry } from "./member-log";
 import type { UserKeyPair } from "./user-key";
@@ -44,6 +44,8 @@ export interface StoredEpoch {
   epoch: number;
   commitment: Uint8Array;
   creator: string;
+  /** The owner's signed record, as RotateEpoch or RemoveMember stored it. */
+  record?: EpochRecordMessage;
 }
 
 /** A stored key slot, to a member or to the escrow key. */
@@ -254,7 +256,7 @@ export class MemoryVaultKeyServer {
             this.member(userId, request.vaultId);
             const { items, next } = this.page(this.epochs, request.pageToken);
             return {
-              epochs: items.map((epoch) => ({ epoch: epoch.epoch, commitment: epoch.commitment, creatorUserId: epoch.creator })),
+              epochs: items.map((epoch) => ({ epoch: epoch.epoch, commitment: epoch.commitment, creatorUserId: epoch.creator, record: epoch.record })),
               nextPageToken: next,
               currentEpoch: this.currentEpoch,
               rotationPending: this.rotationPending,
@@ -275,9 +277,11 @@ export class MemoryVaultKeyServer {
           },
           rotateEpoch: async (request) => {
             this.owner(userId, request.vaultId);
-            const nextEpoch = this.checkNextEpoch(request.nextEpoch, undefined);
+            const nextEpoch = this.checkNextEpoch(request.nextEpoch);
             await this.hold();
-            const epoch = this.applyNextEpoch(userId, nextEpoch);
+            this.checkEpochCurrent(nextEpoch);
+            this.checkRecord(nextEpoch, request.record, this.log, undefined);
+            const epoch = this.applyNextEpoch(userId, nextEpoch, request.record);
             return { epoch: { epoch: epoch.epoch, commitment: epoch.commitment, creatorUserId: epoch.creator } };
           },
           addKeySlots: (request) => {
@@ -312,13 +316,21 @@ export class MemoryVaultKeyServer {
           removeMember: async (request) => {
             this.owner(userId, request.vaultId);
             if (!this.members.has(request.userId)) throw new ConnectError("not a member", Code.NotFound);
-            const nextEpoch = this.checkNextEpoch(request.nextEpoch, request.userId);
+            const nextEpoch = this.checkNextEpoch(request.nextEpoch);
             await this.hold();
             if (!this.members.has(request.userId)) throw new ConnectError("not a member", Code.NotFound);
-            this.checkRecipients(nextEpoch, request.userId);
             this.checkEpochCurrent(nextEpoch);
-            this.appendEntry(request.logEntry, EntryType.removeMember, (_entry, before, after) => before.members.has(request.userId) && !after.members.has(request.userId));
-            this.applyNextEpoch(userId, nextEpoch);
+            this.appendEntryChecked(
+              request.logEntry,
+              EntryType.removeMember,
+              (_entry, before, after) => before.members.has(request.userId) && !after.members.has(request.userId),
+              () => {
+                if (request.logEntry === undefined) return;
+                const entry = fromLogEntry(this.vaultId, request.logEntry);
+                this.checkRecord(nextEpoch, request.record, [...this.log, entry], entry.seq);
+              },
+            );
+            this.applyNextEpoch(userId, nextEpoch, request.record);
             this.members.delete(request.userId);
             return {};
           },
@@ -374,7 +386,7 @@ export class MemoryVaultKeyServer {
               vaultId: this.vaultId,
               role: invitation.role,
               slots: [...invitation.slots].sort((a, b) => a.epoch - b.epoch).map((slot) => ({ epoch: slot.epoch, recipientKind: slot.recipientKind, recipientId: slot.recipientId, wrappedKey: slot.wrappedKey, creatorUserId: slot.creator })),
-              epochs: this.epochs.map((epoch) => ({ epoch: epoch.epoch, commitment: epoch.commitment, creatorUserId: epoch.creator })),
+              epochs: this.epochs.map((epoch) => ({ epoch: epoch.epoch, commitment: epoch.commitment, creatorUserId: epoch.creator, record: epoch.record })),
               inviteAnchor: invitation.anchor,
             };
           },
@@ -444,35 +456,47 @@ export class MemoryVaultKeyServer {
     return { items: items.slice(start, end), next: end < items.length ? String(end) : "" };
   }
 
-  private checkNextEpoch(nextEpoch: NextEpoch | undefined, removed: string | undefined): NextEpoch {
+  private checkNextEpoch(nextEpoch: NextEpoch | undefined): NextEpoch {
     if (nextEpoch === undefined) throw new ConnectError("next_epoch is required in an E2EE vault", Code.InvalidArgument);
     if (nextEpoch.commitment.length !== 32) throw new ConnectError("commitment must be 32 bytes", Code.InvalidArgument);
     if (nextEpoch.slots.length > MAX_EPOCH_SLOTS) throw new ConnectError("too many slots", Code.InvalidArgument);
     for (const slot of nextEpoch.slots) checkWrappedKey(slot.wrappedKey);
-    this.checkRecipients(nextEpoch, removed);
     return nextEpoch;
   }
 
-  /** The slots must be exactly the members with a user key, but `removed`, plus at most one escrow slot in a vault with escrow. */
-  private checkRecipients(nextEpoch: NextEpoch, removed: string | undefined): void {
-    const seen = new Set<string>();
-    let escrowSlots = 0;
-    for (const slot of nextEpoch.slots) {
-      if (slot.recipientKind === KeyRecipientKind.ESCROW && this.escrow) {
-        if (++escrowSlots > 1) throw new ConnectError("at most one escrow slot", Code.InvalidArgument);
-        if (slot.recipientId.length < 1 || slot.recipientId.length > 255) throw new ConnectError("escrow recipient id must be 1 to 255 bytes", Code.InvalidArgument);
-        continue;
-      }
-      if (slot.recipientKind !== KeyRecipientKind.USER) throw new ConnectError("no escrow in this vault", Code.InvalidArgument);
-      if (slot.recipientId === removed || this.members.get(slot.recipientId)?.publicKey === undefined) {
-        throw new ConnectError(`user ${slot.recipientId} is not a recipient`, Code.InvalidArgument);
-      }
-      if (seen.has(slot.recipientId)) throw new ConnectError("duplicate slot", Code.InvalidArgument);
-      seen.add(slot.recipientId);
+  /**
+   * Checks the new epoch's record as the server does: signed by an owner at
+   * its position of `log` (`position` when the request appends an entry with
+   * the epoch) over the new epoch's commitment and the current one's, its
+   * recipients the log's there, and the slots exactly one per recipient.
+   */
+  private checkRecord(nextEpoch: NextEpoch, record: EpochRecordMessage | undefined, log: readonly Entry[], position: number | undefined): void {
+    if (record === undefined) throw new ConnectError("an E2EE vault's epoch needs its signed record", Code.InvalidArgument);
+    if (position !== undefined && Number(record.logSeq) !== position) throw new ConnectError("the record must name the entry appended with the epoch", Code.InvalidArgument);
+    const previous = this.epochs.find((stored) => stored.epoch === nextEpoch.expectedEpoch)?.commitment ?? new Uint8Array(32);
+    const recipients = record.recipients.map((recipient) => ({ kind: recipient.kind, id: recipient.recipientId, keyHash: recipient.keyHash }));
+    try {
+      verifyEpochRecord(this.vaultId, replayLog(this.vaultId, log), {
+        vaultId: this.vaultId,
+        epoch: nextEpoch.expectedEpoch + 1,
+        commitment: nextEpoch.commitment,
+        prevCommitment: previous,
+        logSeq: Number(record.logSeq),
+        logHash: record.logHash,
+        recipients,
+        signature: record.signature,
+      });
+    } catch {
+      throw new ConnectError("the record is not signed by an owner at its log position, or its recipients are not the log's", Code.InvalidArgument);
     }
-    for (const [memberId, member] of this.members) {
-      if (memberId !== removed && member.publicKey !== undefined && !seen.has(memberId)) throw new ConnectError(`no slot for ${memberId}`, Code.InvalidArgument);
+    const expected = new Set(
+      recipients.map((recipient) => `${String(recipient.kind)}/${recipient.kind === 0x02 ? new TextDecoder().decode(recipient.id) : uuidString(recipient.id)}`),
+    );
+    const sent = new Set(nextEpoch.slots.map((slot) => `${String(slot.recipientKind)}/${slot.recipientId}`));
+    if (sent.size !== nextEpoch.slots.length || sent.size !== expected.size || [...sent].some((key) => !expected.has(key))) {
+      throw new ConnectError("next_epoch.slots are not the record's recipients", Code.InvalidArgument);
     }
+    if (!this.escrow && nextEpoch.slots.some((slot) => slot.recipientKind === KeyRecipientKind.ESCROW)) throw new ConnectError("no escrow in this vault", Code.InvalidArgument);
   }
 
   private checkEpochCurrent(nextEpoch: NextEpoch): void {
@@ -483,11 +507,16 @@ export class MemoryVaultKeyServer {
     }
   }
 
-  private applyNextEpoch(creator: string, nextEpoch: NextEpoch): StoredEpoch {
+  private applyNextEpoch(creator: string, nextEpoch: NextEpoch, record: EpochRecordMessage | undefined): StoredEpoch {
     this.checkEpochCurrent(nextEpoch);
-    const epoch: StoredEpoch = { epoch: this.currentEpoch + 1, commitment: nextEpoch.commitment, creator };
+    const epoch: StoredEpoch = { epoch: this.currentEpoch + 1, commitment: nextEpoch.commitment, creator, record };
     this.epochs.push(epoch);
-    for (const slot of nextEpoch.slots) this.slots.push({ epoch: epoch.epoch, recipientKind: slot.recipientKind, recipientId: slot.recipientId, wrappedKey: slot.wrappedKey, creator });
+    for (const slot of nextEpoch.slots) {
+      const stored = { epoch: epoch.epoch, recipientKind: slot.recipientKind, recipientId: slot.recipientId, wrappedKey: slot.wrappedKey, creator };
+      const invitation = slot.recipientKind === KeyRecipientKind.INVITATION ? this.invitations.get(slot.recipientId) : undefined;
+      if (invitation !== undefined) invitation.slots.push(stored);
+      else this.slots.push(stored);
+    }
     this.currentEpoch = epoch.epoch;
     this.rotationPending = false;
     return epoch;
