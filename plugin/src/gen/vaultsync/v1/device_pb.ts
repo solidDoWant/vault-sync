@@ -12,7 +12,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file vaultsync/v1/device.proto.
  */
 export const file_vaultsync_v1_device: GenFile = /*@__PURE__*/
-  fileDesc("Chl2YXVsdHN5bmMvdjEvZGV2aWNlLnByb3RvEgx2YXVsdHN5bmMudjEiUgoVUmVnaXN0ZXJEZXZpY2VSZXF1ZXN0EgwKBG5hbWUYASABKAkSEgoKcHVibGljX2tleRgCIAEoDBIXCg9yZWdpc3RyYXRpb25faWQYAyABKAkiPgoWUmVnaXN0ZXJEZXZpY2VSZXNwb25zZRIkCgZkZXZpY2UYASABKAsyFC52YXVsdHN5bmMudjEuRGV2aWNlIhQKEkxpc3REZXZpY2VzUmVxdWVzdCI8ChNMaXN0RGV2aWNlc1Jlc3BvbnNlEiUKB2RldmljZXMYASADKAsyFC52YXVsdHN5bmMudjEuRGV2aWNlIigKE1JlbW92ZURldmljZVJlcXVlc3QSEQoJZGV2aWNlX2lkGAEgASgJIhYKFFJlbW92ZURldmljZVJlc3BvbnNlMp0CCg1EZXZpY2VTZXJ2aWNlEl0KDlJlZ2lzdGVyRGV2aWNlEiMudmF1bHRzeW5jLnYxLlJlZ2lzdGVyRGV2aWNlUmVxdWVzdBokLnZhdWx0c3luYy52MS5SZWdpc3RlckRldmljZVJlc3BvbnNlIgASVAoLTGlzdERldmljZXMSIC52YXVsdHN5bmMudjEuTGlzdERldmljZXNSZXF1ZXN0GiEudmF1bHRzeW5jLnYxLkxpc3REZXZpY2VzUmVzcG9uc2UiABJXCgxSZW1vdmVEZXZpY2USIS52YXVsdHN5bmMudjEuUmVtb3ZlRGV2aWNlUmVxdWVzdBoiLnZhdWx0c3luYy52MS5SZW1vdmVEZXZpY2VSZXNwb25zZSIAQkBaPmdpdGh1Yi5jb20vc29saWREb1dhbnQvdmF1bHQtc3luYy9nZW4vdmF1bHRzeW5jL3YxO3ZhdWx0c3luY3YxYgZwcm90bzM", [file_vaultsync_v1_types]);
+  fileDesc("Chl2YXVsdHN5bmMvdjEvZGV2aWNlLnByb3RvEgx2YXVsdHN5bmMudjEiUgoVUmVnaXN0ZXJEZXZpY2VSZXF1ZXN0EgwKBG5hbWUYASABKAkSEgoKcHVibGljX2tleRgCIAEoDBIXCg9yZWdpc3RyYXRpb25faWQYAyABKAkiPgoWUmVnaXN0ZXJEZXZpY2VSZXNwb25zZRIkCgZkZXZpY2UYASABKAsyFC52YXVsdHN5bmMudjEuRGV2aWNlIhQKEkxpc3REZXZpY2VzUmVxdWVzdCI8ChNMaXN0RGV2aWNlc1Jlc3BvbnNlEiUKB2RldmljZXMYASADKAsyFC52YXVsdHN5bmMudjEuRGV2aWNlIigKE1JlbW92ZURldmljZVJlcXVlc3QSEQoJZGV2aWNlX2lkGAEgASgJIhYKFFJlbW92ZURldmljZVJlc3BvbnNlIjYKE1JlbmFtZURldmljZVJlcXVlc3QSEQoJZGV2aWNlX2lkGAEgASgJEgwKBG5hbWUYAiABKAkiPAoUUmVuYW1lRGV2aWNlUmVzcG9uc2USJAoGZGV2aWNlGAEgASgLMhQudmF1bHRzeW5jLnYxLkRldmljZTL2AgoNRGV2aWNlU2VydmljZRJdCg5SZWdpc3RlckRldmljZRIjLnZhdWx0c3luYy52MS5SZWdpc3RlckRldmljZVJlcXVlc3QaJC52YXVsdHN5bmMudjEuUmVnaXN0ZXJEZXZpY2VSZXNwb25zZSIAElQKC0xpc3REZXZpY2VzEiAudmF1bHRzeW5jLnYxLkxpc3REZXZpY2VzUmVxdWVzdBohLnZhdWx0c3luYy52MS5MaXN0RGV2aWNlc1Jlc3BvbnNlIgASVwoMUmVtb3ZlRGV2aWNlEiEudmF1bHRzeW5jLnYxLlJlbW92ZURldmljZVJlcXVlc3QaIi52YXVsdHN5bmMudjEuUmVtb3ZlRGV2aWNlUmVzcG9uc2UiABJXCgxSZW5hbWVEZXZpY2USIS52YXVsdHN5bmMudjEuUmVuYW1lRGV2aWNlUmVxdWVzdBoiLnZhdWx0c3luYy52MS5SZW5hbWVEZXZpY2VSZXNwb25zZSIAQkBaPmdpdGh1Yi5jb20vc29saWREb1dhbnQvdmF1bHQtc3luYy9nZW4vdmF1bHRzeW5jL3YxO3ZhdWx0c3luY3YxYgZwcm90bzM", [file_vaultsync_v1_types]);
 
 /**
  * RegisterDeviceRequest describes the device to register.
@@ -150,6 +150,56 @@ export const RemoveDeviceResponseSchema: GenMessage<RemoveDeviceResponse> = /*@_
   messageDesc(file_vaultsync_v1_device, 5);
 
 /**
+ * RenameDeviceRequest names the device to rename and its new name.
+ *
+ * @generated from message vaultsync.v1.RenameDeviceRequest
+ */
+export type RenameDeviceRequest = Message<"vaultsync.v1.RenameDeviceRequest"> & {
+  /**
+   * Id of one of the caller's devices (Device.id), a canonical lowercase
+   * UUID.
+   *
+   * @generated from field: string device_id = 1;
+   */
+  deviceId: string;
+
+  /**
+   * The new name, under the same rules as RegisterDeviceRequest.name.
+   *
+   * @generated from field: string name = 2;
+   */
+  name: string;
+};
+
+/**
+ * Describes the message vaultsync.v1.RenameDeviceRequest.
+ * Use `create(RenameDeviceRequestSchema)` to create a new message.
+ */
+export const RenameDeviceRequestSchema: GenMessage<RenameDeviceRequest> = /*@__PURE__*/
+  messageDesc(file_vaultsync_v1_device, 6);
+
+/**
+ * RenameDeviceResponse returns the renamed device.
+ *
+ * @generated from message vaultsync.v1.RenameDeviceResponse
+ */
+export type RenameDeviceResponse = Message<"vaultsync.v1.RenameDeviceResponse"> & {
+  /**
+   * The device, with its new name.
+   *
+   * @generated from field: vaultsync.v1.Device device = 1;
+   */
+  device?: Device | undefined;
+};
+
+/**
+ * Describes the message vaultsync.v1.RenameDeviceResponse.
+ * Use `create(RenameDeviceResponseSchema)` to create a new message.
+ */
+export const RenameDeviceResponseSchema: GenMessage<RenameDeviceResponse> = /*@__PURE__*/
+  messageDesc(file_vaultsync_v1_device, 7);
+
+/**
  * DeviceService manages the calling user's devices (plugin installations).
  *
  * @generated from service vaultsync.v1.DeviceService
@@ -218,6 +268,24 @@ export const DeviceService: GenService<{
     methodKind: "unary";
     input: typeof RemoveDeviceRequestSchema;
     output: typeof RemoveDeviceResponseSchema;
+  },
+  /**
+   * RenameDevice renames one of the caller's devices that is not removed.
+   * The device keeps its id; ListDevices and the history of the revisions it
+   * committed (GetDocumentHistoryResponse.device_names) show the new name.
+   *
+   * Errors: INVALID_ARGUMENT when device_id is not a canonical lowercase
+   * UUID, or for a name that RegisterDevice would refuse (blank, over 256
+   * bytes, or containing a Cc, Cf, Zl or Zp character); NOT_FOUND when the
+   * caller has no such device, including a device of another user and one
+   * that is removed.
+   *
+   * @generated from rpc vaultsync.v1.DeviceService.RenameDevice
+   */
+  renameDevice: {
+    methodKind: "unary";
+    input: typeof RenameDeviceRequestSchema;
+    output: typeof RenameDeviceResponseSchema;
   },
 }> = /*@__PURE__*/
   serviceDesc(file_vaultsync_v1_device, 0);

@@ -96,6 +96,21 @@ func (memory *memoryStore) RemoveDevice(_ context.Context, userID, deviceID uuid
 	return store.ErrDeviceNotFound
 }
 
+func (memory *memoryStore) RenameDevice(_ context.Context, userID, deviceID uuid.UUID, name string) (store.Device, error) {
+	memory.mu.Lock()
+	defer memory.mu.Unlock()
+
+	for index, device := range memory.devices {
+		if device.ID == deviceID && device.UserID == userID {
+			memory.devices[index].Name = name
+
+			return memory.devices[index], nil
+		}
+	}
+
+	return store.Device{}, store.ErrDeviceNotFound
+}
+
 func (memory *memoryStore) userCount() int {
 	memory.mu.Lock()
 	defer memory.mu.Unlock()

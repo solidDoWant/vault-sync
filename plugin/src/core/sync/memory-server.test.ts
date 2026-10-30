@@ -1,7 +1,8 @@
-import { Code, ConnectError } from "@connectrpc/connect";
+import { Code, ConnectError, createClient } from "@connectrpc/connect";
 import { hexToBytes } from "@noble/hashes/utils.js";
 import { describe, expect, it } from "vitest";
 
+import { DeviceService } from "../../gen/vaultsync/v1/device_pb";
 import { DocumentKind } from "../../gen/vaultsync/v1/types_pb";
 import { sha256Hex } from "../hash";
 import { createProtocolClient } from "../protocol/client";
@@ -246,5 +247,43 @@ describe("InMemoryServer's upload session limit (SPEC.md §6.2, #370)", () => {
     clock += 1;
     expect(await begin(server, "three")).toBe("ok");
     expect(server.openUploads()).toBe(1);
+  });
+});
+
+describe("InMemoryServer's RenameDevice", () => {
+  /** Renames `deviceId` to `name`; returns the error code, or "ok". */
+  async function rename(server: InMemoryServer, deviceId: string, name: string): Promise<string> {
+    const client = createClient(DeviceService, server.transport);
+    try {
+      const response = await client.renameDevice({ deviceId, name });
+      expect(response.device?.id).toBe(deviceId);
+      expect(response.device?.name).toBe(name);
+      return "ok";
+    } catch (error) {
+      return Code[ConnectError.from(error).code];
+    }
+  }
+
+  it("renames a registered device, which history then names by its new name", async () => {
+    const server = new InMemoryServer();
+    server.deviceNames.set("laptop", "Laptop");
+    expect(await rename(server, "laptop", "Work laptop")).toBe("ok");
+    expect(server.deviceNames.get("laptop")).toBe("Work laptop");
+  });
+
+  it("answers NOT_FOUND for an unknown device", async () => {
+    const server = new InMemoryServer();
+    expect(await rename(server, "phone", "Phone")).toBe("NotFound");
+    expect(server.deviceNames.has("phone")).toBe(false);
+  });
+
+  it("refuses a name RegisterDevice would refuse, at exactly 256 and 257 bytes", async () => {
+    const server = new InMemoryServer();
+    server.deviceNames.set("laptop", "Laptop");
+    expect(await rename(server, "laptop", "a".repeat(256))).toBe("ok");
+    for (const name of ["a".repeat(257), "é".repeat(128) + "a", "", "  ", "Lap\u0000top", "Lap\u200btop", "Lap\u2028top", "Lap\u2029top"]) {
+      expect(await rename(server, "laptop", name)).toBe("InvalidArgument");
+    }
+    expect(server.deviceNames.get("laptop")).toBe("a".repeat(256));
   });
 });

@@ -51,6 +51,12 @@ func (recorder *recordingStore) RemoveDevice(context.Context, uuid.UUID, uuid.UU
 	return nil
 }
 
+func (recorder *recordingStore) RenameDevice(_ context.Context, userID, deviceID uuid.UUID, name string) (store.Device, error) {
+	recorder.writes++
+
+	return store.Device{ID: deviceID, UserID: userID, Name: name}, nil
+}
+
 // TestDisplayNamesRejectInvisibleCharactersAndInvalidUTF8 calls the handlers
 // directly: the generated protobuf client refuses to marshal invalid UTF-8,
 // so this is the only way to hand the handlers such a name. Format
@@ -72,6 +78,12 @@ func TestDisplayNamesRejectInvisibleCharactersAndInvalidUTF8(t *testing.T) {
 		"RegisterDevice": func(recorder *recordingStore, name string) error {
 			service := api.DeviceService{Devices: recorder, Logger: slog.New(slog.DiscardHandler)}
 			_, err := service.RegisterDevice(ctx, connect.NewRequest(&vaultsyncv1.RegisterDeviceRequest{Name: name}))
+
+			return err
+		},
+		"RenameDevice": func(recorder *recordingStore, name string) error {
+			service := api.DeviceService{Devices: recorder, Logger: slog.New(slog.DiscardHandler)}
+			_, err := service.RenameDevice(ctx, connect.NewRequest(&vaultsyncv1.RenameDeviceRequest{DeviceId: uuid.NewString(), Name: name}))
 
 			return err
 		},

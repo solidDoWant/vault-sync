@@ -4,6 +4,7 @@ import { Code, ConnectError, createRouterTransport, type Transport } from "@conn
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 
 import { BlobService } from "../../gen/vaultsync/v1/blob_pb";
+import { DeviceService } from "../../gen/vaultsync/v1/device_pb";
 import { ErrorDetailSchema, ErrorReason } from "../../gen/vaultsync/v1/errors_pb";
 import { SyncService, type CommitRevisionRequest } from "../../gen/vaultsync/v1/sync_pb";
 import { ContentRefSchema, DocumentKind, DocumentSchema, RevisionSchema, type Revision } from "../../gen/vaultsync/v1/types_pb";
@@ -11,6 +12,14 @@ import { VaultKeyService, type ReplaceRevisionCiphertextRequest } from "../../ge
 import { sha256Hex } from "../hash";
 import { pathKey } from "../pathkey/pathkey";
 import { fitsPathKeyLimit, isNewVaultPath, isPathText, isVaultRelativePath } from "../vaultpath/vaultpath";
+
+/** Largest device name, in UTF-8 bytes (RegisterDeviceRequest.name). */
+const maxDeviceNameBytes = 256;
+
+/** Whether `name` passes the server's device name rule: non-blank, at most 256 UTF-8 bytes, no Cc, Cf, Zl or Zp character. */
+function isDeviceName(name: string): boolean {
+  return name.trim() !== "" && new TextEncoder().encode(name).length <= maxDeviceNameBytes && !/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(name);
+}
 
 /** A copy of an InMemoryServer's database (InMemoryServer.backup). */
 export interface ServerBackup {
@@ -316,6 +325,16 @@ export class InMemoryServer {
           const length = Math.min(request.length === 0 ? this.maxDownloadBytes : request.length, this.maxDownloadBytes);
           const start = Number(request.offset);
           return this.respond("DownloadBlob", request, { data: blob.slice(start, start + length), size: BigInt(blob.length) });
+        },
+      });
+      // RenameDevice (proto/vaultsync/v1/device.proto) over the registered device names: the name rules of RegisterDevice, NOT_FOUND for an unknown device.
+      service(DeviceService, {
+        renameDevice: (request) => {
+          this.intercept("RenameDevice", request);
+          if (!isDeviceName(request.name)) throw new ConnectError("name is not a valid device name", Code.InvalidArgument);
+          if (!this.deviceNames.has(request.deviceId)) throw new ConnectError("device not found", Code.NotFound);
+          this.deviceNames.set(request.deviceId, request.name);
+          return this.respond("RenameDevice", request, { device: { id: request.deviceId, name: request.name } });
         },
       });
     });

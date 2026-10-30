@@ -42,6 +42,9 @@ const (
 	// DeviceServiceRemoveDeviceProcedure is the fully-qualified name of the DeviceService's
 	// RemoveDevice RPC.
 	DeviceServiceRemoveDeviceProcedure = "/vaultsync.v1.DeviceService/RemoveDevice"
+	// DeviceServiceRenameDeviceProcedure is the fully-qualified name of the DeviceService's
+	// RenameDevice RPC.
+	DeviceServiceRenameDeviceProcedure = "/vaultsync.v1.DeviceService/RenameDevice"
 )
 
 // DeviceServiceClient is a client for the vaultsync.v1.DeviceService service.
@@ -86,6 +89,16 @@ type DeviceServiceClient interface {
 	// UUID; NOT_FOUND when the caller has no such device, including a device
 	// of another user and one that is already removed.
 	RemoveDevice(context.Context, *connect.Request[v1.RemoveDeviceRequest]) (*connect.Response[v1.RemoveDeviceResponse], error)
+	// RenameDevice renames one of the caller's devices that is not removed.
+	// The device keeps its id; ListDevices and the history of the revisions it
+	// committed (GetDocumentHistoryResponse.device_names) show the new name.
+	//
+	// Errors: INVALID_ARGUMENT when device_id is not a canonical lowercase
+	// UUID, or for a name that RegisterDevice would refuse (blank, over 256
+	// bytes, or containing a Cc, Cf, Zl or Zp character); NOT_FOUND when the
+	// caller has no such device, including a device of another user and one
+	// that is removed.
+	RenameDevice(context.Context, *connect.Request[v1.RenameDeviceRequest]) (*connect.Response[v1.RenameDeviceResponse], error)
 }
 
 // NewDeviceServiceClient constructs a client for the vaultsync.v1.DeviceService service. By
@@ -117,6 +130,12 @@ func NewDeviceServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(deviceServiceMethods.ByName("RemoveDevice")),
 			connect.WithClientOptions(opts...),
 		),
+		renameDevice: connect.NewClient[v1.RenameDeviceRequest, v1.RenameDeviceResponse](
+			httpClient,
+			baseURL+DeviceServiceRenameDeviceProcedure,
+			connect.WithSchema(deviceServiceMethods.ByName("RenameDevice")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -125,6 +144,7 @@ type deviceServiceClient struct {
 	registerDevice *connect.Client[v1.RegisterDeviceRequest, v1.RegisterDeviceResponse]
 	listDevices    *connect.Client[v1.ListDevicesRequest, v1.ListDevicesResponse]
 	removeDevice   *connect.Client[v1.RemoveDeviceRequest, v1.RemoveDeviceResponse]
+	renameDevice   *connect.Client[v1.RenameDeviceRequest, v1.RenameDeviceResponse]
 }
 
 // RegisterDevice calls vaultsync.v1.DeviceService.RegisterDevice.
@@ -140,6 +160,11 @@ func (c *deviceServiceClient) ListDevices(ctx context.Context, req *connect.Requ
 // RemoveDevice calls vaultsync.v1.DeviceService.RemoveDevice.
 func (c *deviceServiceClient) RemoveDevice(ctx context.Context, req *connect.Request[v1.RemoveDeviceRequest]) (*connect.Response[v1.RemoveDeviceResponse], error) {
 	return c.removeDevice.CallUnary(ctx, req)
+}
+
+// RenameDevice calls vaultsync.v1.DeviceService.RenameDevice.
+func (c *deviceServiceClient) RenameDevice(ctx context.Context, req *connect.Request[v1.RenameDeviceRequest]) (*connect.Response[v1.RenameDeviceResponse], error) {
+	return c.renameDevice.CallUnary(ctx, req)
 }
 
 // DeviceServiceHandler is an implementation of the vaultsync.v1.DeviceService service.
@@ -184,6 +209,16 @@ type DeviceServiceHandler interface {
 	// UUID; NOT_FOUND when the caller has no such device, including a device
 	// of another user and one that is already removed.
 	RemoveDevice(context.Context, *connect.Request[v1.RemoveDeviceRequest]) (*connect.Response[v1.RemoveDeviceResponse], error)
+	// RenameDevice renames one of the caller's devices that is not removed.
+	// The device keeps its id; ListDevices and the history of the revisions it
+	// committed (GetDocumentHistoryResponse.device_names) show the new name.
+	//
+	// Errors: INVALID_ARGUMENT when device_id is not a canonical lowercase
+	// UUID, or for a name that RegisterDevice would refuse (blank, over 256
+	// bytes, or containing a Cc, Cf, Zl or Zp character); NOT_FOUND when the
+	// caller has no such device, including a device of another user and one
+	// that is removed.
+	RenameDevice(context.Context, *connect.Request[v1.RenameDeviceRequest]) (*connect.Response[v1.RenameDeviceResponse], error)
 }
 
 // NewDeviceServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -211,6 +246,12 @@ func NewDeviceServiceHandler(svc DeviceServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(deviceServiceMethods.ByName("RemoveDevice")),
 		connect.WithHandlerOptions(opts...),
 	)
+	deviceServiceRenameDeviceHandler := connect.NewUnaryHandler(
+		DeviceServiceRenameDeviceProcedure,
+		svc.RenameDevice,
+		connect.WithSchema(deviceServiceMethods.ByName("RenameDevice")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/vaultsync.v1.DeviceService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case DeviceServiceRegisterDeviceProcedure:
@@ -219,6 +260,8 @@ func NewDeviceServiceHandler(svc DeviceServiceHandler, opts ...connect.HandlerOp
 			deviceServiceListDevicesHandler.ServeHTTP(w, r)
 		case DeviceServiceRemoveDeviceProcedure:
 			deviceServiceRemoveDeviceHandler.ServeHTTP(w, r)
+		case DeviceServiceRenameDeviceProcedure:
+			deviceServiceRenameDeviceHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -238,4 +281,8 @@ func (UnimplementedDeviceServiceHandler) ListDevices(context.Context, *connect.R
 
 func (UnimplementedDeviceServiceHandler) RemoveDevice(context.Context, *connect.Request[v1.RemoveDeviceRequest]) (*connect.Response[v1.RemoveDeviceResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("vaultsync.v1.DeviceService.RemoveDevice is not implemented"))
+}
+
+func (UnimplementedDeviceServiceHandler) RenameDevice(context.Context, *connect.Request[v1.RenameDeviceRequest]) (*connect.Response[v1.RenameDeviceResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("vaultsync.v1.DeviceService.RenameDevice is not implemented"))
 }

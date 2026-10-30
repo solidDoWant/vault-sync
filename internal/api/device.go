@@ -33,8 +33,9 @@ const (
 // DeviceStore persists devices. *store.Store implements it.
 type DeviceStore interface {
 	// RegisterDeviceOnce registers a device for userID; a retry with the
-	// same valid registrationID, name and public key returns the device
-	// already registered (store.ErrRegistrationConflict when they differ).
+	// same valid registrationID and public key returns the device already
+	// registered, with its current name (store.ErrRegistrationConflict when
+	// the public key differs).
 	RegisterDeviceOnce(ctx context.Context, userID uuid.UUID, registrationID uuid.NullUUID, name string, publicKey []byte, limit int) (store.Device, error)
 	// ListDevices returns userID's devices that have not been removed,
 	// oldest first.
@@ -42,6 +43,9 @@ type DeviceStore interface {
 	// RemoveDevice removes userID's device deviceID, returning
 	// store.ErrDeviceNotFound if userID has no such device left.
 	RemoveDevice(ctx context.Context, userID, deviceID uuid.UUID) error
+	// RenameDevice renames userID's device deviceID, returning
+	// store.ErrDeviceNotFound if userID has no such device left.
+	RenameDevice(ctx context.Context, userID, deviceID uuid.UUID, name string) (store.Device, error)
 }
 
 // DeviceService implements vaultsync.v1.DeviceService for the authenticated
@@ -62,16 +66,8 @@ func (service DeviceService) RegisterDevice(ctx context.Context, request *connec
 	}
 
 	name := request.Msg.GetName()
-	if strings.TrimSpace(name) == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("name must not be empty"))
-	}
-
-	if len(name) > MaxDeviceNameBytes {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("name must be at most %d bytes", MaxDeviceNameBytes))
-	}
-
-	if !textcheck.DisplayName(name) {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("name must be valid UTF-8 without control, format or line separator characters"))
+	if err := checkDeviceName(name); err != nil {
+		return nil, err
 	}
 
 	publicKey := request.Msg.GetPublicKey()
@@ -98,7 +94,7 @@ func (service DeviceService) RegisterDevice(ctx context.Context, request *connec
 		}
 
 		if errors.Is(err, store.ErrRegistrationConflict) {
-			return nil, connect.NewError(connect.CodeAlreadyExists, errors.New("registration_id already names a device with a different name or public key"))
+			return nil, connect.NewError(connect.CodeAlreadyExists, errors.New("registration_id already names a device with a different public key"))
 		}
 
 		service.Logger.ErrorContext(ctx, "cannot register device", "error", err)
@@ -113,6 +109,25 @@ func (service DeviceService) RegisterDevice(ctx context.Context, request *connec
 			CreateTime: timestamppb.New(device.CreatedAt),
 		},
 	}), nil
+}
+
+// checkDeviceName returns an INVALID_ARGUMENT error unless name is a valid
+// device name: non-blank, at most MaxDeviceNameBytes, and a display name
+// (textcheck.DisplayName).
+func checkDeviceName(name string) error {
+	if strings.TrimSpace(name) == "" {
+		return connect.NewError(connect.CodeInvalidArgument, errors.New("name must not be empty"))
+	}
+
+	if len(name) > MaxDeviceNameBytes {
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("name must be at most %d bytes", MaxDeviceNameBytes))
+	}
+
+	if !textcheck.DisplayName(name) {
+		return connect.NewError(connect.CodeInvalidArgument, errors.New("name must be valid UTF-8 without control, format or line separator characters"))
+	}
+
+	return nil
 }
 
 // ListDevices lists the caller's devices that have not been removed. It
@@ -170,4 +185,44 @@ func (service DeviceService) RemoveDevice(ctx context.Context, request *connect.
 	}
 
 	return connect.NewResponse(&vaultsyncv1.RemoveDeviceResponse{}), nil
+}
+
+// RenameDevice renames one of the caller's devices that is not removed.
+func (service DeviceService) RenameDevice(ctx context.Context, request *connect.Request[vaultsyncv1.RenameDeviceRequest]) (*connect.Response[vaultsyncv1.RenameDeviceResponse], error) {
+	user, ok := auth.UserFromContext(ctx)
+	if !ok {
+		return nil, connect.NewError(connect.CodeUnauthenticated, auth.ErrUnauthenticated)
+	}
+
+	deviceID, err := authz.ParseID(request.Msg.GetDeviceId())
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("device_id: %w", err))
+	}
+
+	name := request.Msg.GetName()
+	if err := checkDeviceName(name); err != nil {
+		return nil, err
+	}
+
+	device, err := service.Devices.RenameDevice(ctx, user.ID, deviceID, name)
+	if err != nil {
+		if errors.Is(err, store.ErrDeviceNotFound) {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("device not found"))
+		}
+
+		service.Logger.ErrorContext(ctx, "cannot rename device", "error", err)
+
+		return nil, connect.NewError(connect.CodeInternal, errors.New("cannot rename device"))
+	}
+
+	renamed := &vaultsyncv1.Device{
+		Id:         device.ID.String(),
+		Name:       device.Name,
+		CreateTime: timestamppb.New(device.CreatedAt),
+	}
+	if device.LastSeen != nil {
+		renamed.LastActivityTime = timestamppb.New(*device.LastSeen)
+	}
+
+	return connect.NewResponse(&vaultsyncv1.RenameDeviceResponse{Device: renamed}), nil
 }

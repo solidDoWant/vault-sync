@@ -50,6 +50,17 @@ service DeviceService {
   // UUID; NOT_FOUND when the caller has no such device, including a device
   // of another user and one that is already removed.
   rpc RemoveDevice(RemoveDeviceRequest) returns (RemoveDeviceResponse) {}
+
+  // RenameDevice renames one of the caller's devices that is not removed.
+  // The device keeps its id; ListDevices and the history of the revisions it
+  // committed (GetDocumentHistoryResponse.device_names) show the new name.
+  //
+  // Errors: INVALID_ARGUMENT when device_id is not a canonical lowercase
+  // UUID, or for a name that RegisterDevice would refuse (blank, over 256
+  // bytes, or containing a Cc, Cf, Zl or Zp character); NOT_FOUND when the
+  // caller has no such device, including a device of another user and one
+  // that is removed.
+  rpc RenameDevice(RenameDeviceRequest) returns (RenameDeviceResponse) {}
 }
 
 // RegisterDeviceRequest describes the device to register.
@@ -92,3 +103,18 @@ message RemoveDeviceRequest {
 
 // RemoveDeviceResponse confirms the removal. It has no fields.
 message RemoveDeviceResponse {}
+
+// RenameDeviceRequest names the device to rename and its new name.
+message RenameDeviceRequest {
+  // Id of one of the caller's devices (Device.id), a canonical lowercase
+  // UUID.
+  string device_id = 1;
+  // The new name, under the same rules as RegisterDeviceRequest.name.
+  string name = 2;
+}
+
+// RenameDeviceResponse returns the renamed device.
+message RenameDeviceResponse {
+  // The device, with its new name.
+  Device device = 1;
+}
