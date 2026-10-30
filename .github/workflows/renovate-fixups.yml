@@ -1,0 +1,73 @@
+name: renovate-fixups
+
+# Renovate updates go.mod/go.sum and the compose image tags but not the pins
+# derived from them: vendorHash in nix/server.nix and the versitygw version and
+# checksums in scripts/with-native-s3.sh. This workflow regenerates both on
+# Renovate's PR branches and pushes the result. A push with GITHUB_TOKEN
+# triggers no workflows, so it then dispatches ci on the branch to run the
+# required checks on the new head commit.
+# pull_request cannot filter on the head branch, so the job's condition limits
+# it to renovate/* branches of this repository; on every other PR it is skipped.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: renovate-fixups-${{ github.head_ref }}
+  cancel-in-progress: true
+
+jobs:
+  fixups:
+    if: startsWith(github.head_ref, 'renovate/') && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the fix-up commit to the PR branch
+      actions: write # dispatch ci on the PR branch
+    env:
+      BRANCH: ${{ github.head_ref }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+      - id: detect
+        name: Detect what needs regenerating
+        run: |
+          if git diff --quiet "$(git merge-base "$BASE_SHA" HEAD)" HEAD -- go.sum; then
+            echo "go_sum=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "go_sum=true" >>"$GITHUB_OUTPUT"
+          fi
+          tag="$(sed -nE 's|^ *image: mirror\.gcr\.io/versity/versitygw:(v[0-9.]+)@.*$|\1|p' deploy/compose/compose.test.yaml)"
+          if ./scripts/with-native-s3.sh --check-pin; then
+            echo "versitygw=" >>"$GITHUB_OUTPUT"
+          else
+            echo "versitygw=${tag}" >>"$GITHUB_OUTPUT"
+          fi
+      - if: steps.detect.outputs.go_sum == 'true'
+        uses: cachix/install-nix-action@v31
+      - if: steps.detect.outputs.go_sum == 'true'
+        run: make update-vendor-hash
+      - if: steps.detect.outputs.versitygw != ''
+        env:
+          VERSITYGW_VERSION: ${{ steps.detect.outputs.versitygw }}
+        run: |
+          ./scripts/with-native-s3.sh --update-pin "$VERSITYGW_VERSION"
+          ./scripts/with-native-s3.sh --check-pin
+      - name: Commit, push and dispatch ci
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if git diff --quiet -- nix/server.nix scripts/with-native-s3.sh; then
+            echo "nothing to fix up"
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add nix/server.nix scripts/with-native-s3.sh
+          git commit -m 'chore(deps): regenerate pins derived from the Renovate update'
+          git push origin "HEAD:refs/heads/${BRANCH}"
+          gh workflow run ci.yml --ref "$BRANCH"

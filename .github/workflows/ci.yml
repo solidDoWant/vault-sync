@@ -4,6 +4,9 @@ on:
   pull_request:
   push:
     branches: [master]
+  # renovate-fixups dispatches it on a Renovate branch after pushing a commit
+  # with GITHUB_TOKEN, which triggers no pull_request run.
+  workflow_dispatch:
 
 permissions:
   contents: read
