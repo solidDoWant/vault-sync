@@ -2,6 +2,30 @@
 
 All notable changes to vault-sync are listed here, newest release first.
 
+## 0.4.2
+
+vault-sync is a self-hosted replacement for Obsidian Sync. It has two parts: an Obsidian plugin, and a sync server that stores its data in PostgreSQL and S3. This release changes only the plugin. When two devices change the same file, the plugin can now combine more kinds of files: Obsidian Bases (`.base`) files, canvases, JSON files and plain-text files. The server, the protocol and the stored data did not change. To install it, use the server image `ghcr.io/soliddowant/vault-sync:0.4.2` or the Helm chart `oci://ghcr.io/soliddowant/charts/vault-sync` (version 0.4.2). Install the plugin with BRAT from the GitHub releases of this repository. If you run 0.4.1, you do not have to upgrade the server. You can upgrade a 0.4.1 server one replica at a time.
+
+### Conflicts and history
+
+- Obsidian Bases (`.base`) files merge. A merge combines the edits that two devices made to one file, so you get no conflict copy. Edits to different views, formulas or properties combine. Filter conditions that either device added or removed all apply. Before the plugin writes a merged base, it makes sure that the result is a valid Bases file. A merged base is written again as plain YAML in the same key order, so comments in it are lost. If only one device changed the base, the plugin keeps that version exactly, comments included. ([#1400](https://github.com/solidDoWant/vault-sync/pull/1400))
+- Canvas (`.canvas`) files merge card by card and connection by connection. If two devices add cards, the canvas keeps all of them. If one device moves a card and the other device changes its color, the canvas gets both changes. ([#1409](https://github.com/solidDoWant/vault-sync/pull/1409))
+- JSON (`.json`) files merge key by key. A list is one value, so two different changes to the same list are a conflict. ([#1409](https://github.com/solidDoWant/vault-sync/pull/1409))
+- Plain-text files up to 1 MiB merge line by line, as notes do. This applies to `.txt`, `.csv`, `.tsv`, `.css`, `.js`, `.ts`, `.py`, `.sh`, `.html`, `.xml`, `.tex`, `.org`, `.rst`, `.yaml`, `.yml` and `.toml` files. Edits to the same line or to lines next to each other do not merge. ([#1409](https://github.com/solidDoWant/vault-sync/pull/1409))
+- No edit is lost when a merge is not possible. In each of these cases, the plugin does what it did before: the newer version stays at the path, and the other version becomes a conflict copy next to it:
+  - The two devices made changes that conflict. For example, both devices moved the same card, or both changed the limit of the same view.
+  - One device deleted something that the other device changed or used. For example, one device deleted a card that the other device connected.
+  - A version or the merged result does not parse or is not valid. For example, a base uses newer Bases syntax, or a merged YAML file is not valid YAML.
+  - A device reordered the cards of a canvas, for example to bring a card to the front.
+
+  The plugin never writes conflict markers into a file. `docs/plugin.md` describes the rules for each type of file. ([#1400](https://github.com/solidDoWant/vault-sync/pull/1400), [#1409](https://github.com/solidDoWant/vault-sync/pull/1409))
+
+Internal work: the documentation now has one page set for each type of reader (users, admins and developers), and the agent instructions require plain English for text that people read ([#1407](https://github.com/solidDoWant/vault-sync/pull/1407), [#1408](https://github.com/solidDoWant/vault-sync/pull/1408)).
+
+### Known issues
+
+- None known. No bug is open, and no item of this release was deferred.
+
 ## 0.4.1
 
 vault-sync is a self-hosted replacement for Obsidian Sync: an Obsidian plugin and a sync server backed by PostgreSQL and S3. This is a maintenance release after 0.4.0. It reworks the Helm chart, which is a **breaking change for anyone who deploys with the chart**, so read the first section before you upgrade. It also adds device renaming, metrics that cover the whole deployment, Grafana dashboards and Prometheus alerting rules, a tidier settings tab, and dependency updates. Sync behaviour, the protocol and the stored data are unchanged. Install the server from the image `ghcr.io/soliddowant/vault-sync:0.4.1` or the Helm chart `oci://ghcr.io/soliddowant/charts/vault-sync` (version 0.4.1), and the plugin with BRAT from this repository's GitHub releases. A 0.4.0 deployment can be upgraded replica by replica. Upgrade the server before the plugin.
