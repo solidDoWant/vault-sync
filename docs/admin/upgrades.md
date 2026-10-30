@@ -131,4 +131,4 @@ resources:
         maxUnavailable: 1   # or minAvailable: 1, not both
 ```
 
-The other chart values are in [Chart values](../deployment.md#chart-values).
+The other chart values are in [Chart values](chart-values.md).

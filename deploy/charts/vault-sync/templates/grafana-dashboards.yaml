@@ -1,4 +1,4 @@
-{{/* Grafana dashboards (docs/deployment.md, Monitoring). Each file in
+{{/* Grafana dashboards (docs/admin/chart-values.md, Grafana dashboards). Each file in
    dashboards/ becomes one grafana-operator GrafanaDashboard
    (config.grafana.dashboards.enabled) and/or one ConfigMap for the Grafana
    chart's dashboard sidecar (config.grafana.dashboards.configMaps.enabled),

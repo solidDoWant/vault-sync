@@ -8,7 +8,7 @@ This page explains how the server reads its configuration, which groups of setti
 
 `vault-sync-server` reads its configuration only from environment variables. It reads no configuration file. Its only flag is `-version`, which prints the version and exits. An empty variable counts as unset.
 
-If you install with the Helm chart, the chart sets the variables from its values. [Chart values](../deployment.md#chart-values) names the variable that each value sets.
+If you install with the Helm chart, the chart sets the variables from its values. [Chart values](chart-values.md) names the variable that each value sets.
 
 ## Validation and exit status
 

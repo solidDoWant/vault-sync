@@ -119,7 +119,7 @@ The server also needs an escrow signing key, an Ed25519 key pair. Generate it on
 
 Then give each key to the right component:
 
-1. Give the identity to the export job only. Put it in the Secret that `config.export.escrow.secretName` names, under the key `escrow.key` (see [Chart values](../deployment.md#chart-values)). The chart refuses to mount it into the server. Outside the chart, set `VAULT_SYNC_ESCROW_IDENTITY_FILE` of the export to the path of the file.
+1. Give the identity to the export job only. Put it in the Secret that `config.export.escrow.secretName` names, under the key `escrow.key` (see [Chart values](chart-values.md)). The chart refuses to mount it into the server. Outside the chart, set `VAULT_SYNC_ESCROW_IDENTITY_FILE` of the export to the path of the file.
 2. Give the public key to the server as `VAULT_SYNC_ESCROW_RECIPIENT` (`config.server.escrow.recipient` in the chart).
 3. Give the signing public key to the server as `VAULT_SYNC_ESCROW_SIGNING_KEY` (`config.server.escrow.signingKey` in the chart).
 

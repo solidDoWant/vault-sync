@@ -186,8 +186,10 @@
             # Helm chart lint, render and packaging (make chart-lint, make
             # helm), and yq for the rendered-manifest assertions in
             # scripts/chart_test.sh, and promtool for the alerting rules'
-            # checks and unit tests there.
+            # checks and unit tests there. helm-docs generates
+            # docs/admin/chart-values.md (make generate-docs).
             pkgs.kubernetes-helm
+            pkgs.helm-docs
             pkgs.yq-go
             pkgs.prometheus.cli
           ];

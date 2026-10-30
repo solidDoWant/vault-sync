@@ -2,7 +2,7 @@
 
 For: admins. You have everything that [Requirements](requirements.md) lists, and you know Helm.
 
-This page installs the vault-sync server and its plaintext export job on Kubernetes with the Helm chart in `deploy/charts/vault-sync`. The examples use the [reference setup](requirements.md#the-reference-setup): PostgreSQL run by CloudNativePG, Ceph RGW for S3, Authentik for sign-in, and an Istio gateway with a Coraza WAF in front. [Configuration](configuration.md) describes the server settings that the chart sets, and the [configuration reference](configuration-reference.md) lists every environment variable. [Chart values](../deployment.md#chart-values) lists every chart value.
+This page installs the vault-sync server and its plaintext export job on Kubernetes with the Helm chart in `deploy/charts/vault-sync`. The examples use the [reference setup](requirements.md#the-reference-setup): PostgreSQL run by CloudNativePG, Ceph RGW for S3, Authentik for sign-in, and an Istio gateway with a Coraza WAF in front. [Configuration](configuration.md) describes the server settings that the chart sets, and the [configuration reference](configuration-reference.md) lists every environment variable. [Chart values](chart-values.md) lists every chart value.
 
 ## What you deploy
 
@@ -88,7 +88,7 @@ The chart names each resource after the release, here `vault-sync`. It creates:
 Some values add more resources:
 
 - `config.server.metrics.serviceMonitor.enabled: true` adds a ServiceMonitor. With `config.server.metrics.serviceWide.enabled: true` as well, that ServiceMonitor also scrapes the port `service-metrics`.
-- `config.alerts.prometheusRule.enabled: true` adds a PrometheusRule with the alerting rules ([Alerts](../deployment.md#alerts)).
+- `config.alerts.prometheusRule.enabled: true` adds a PrometheusRule with the alerting rules ([Alerts](chart-values.md#alerts)).
 
 The chart creates no Secrets. It sets no PodDisruptionBudget, no container resources and no spread constraints. [Replicas and sizing](requirements.md#replicas-and-sizing) and [High availability](upgrades.md#high-availability) say what to add.
 
@@ -98,7 +98,7 @@ The chart never puts the chart name twice in a resource name. For example, a rel
 
 Your ingress or gateway must meet these needs:
 
-- **Route only the port `http`.** Route the host to the port `http` (8080) of the Service. You can use `config.route`, a Gateway API HTTPRoute ([Route](../deployment.md#route)), or `resources.ingress`. Never expose the port `metrics` (9090) or `service-metrics` (9091) outside the cluster.
+- **Route only the port `http`.** Route the host to the port `http` (8080) of the Service. You can use `config.route`, a Gateway API HTTPRoute ([Route](chart-values.md#route)), or `resources.ingress`. Never expose the port `metrics` (9090) or `service-metrics` (9091) outside the cluster.
 - **Allow WebSocket upgrades on `/v1/realtime`.** Each device keeps one WebSocket open at `GET /v1/realtime` on the API listener. It tells the device about new changes. It carries binary protobuf frames of a few bytes each. Without it, changes from other devices still arrive, but only at the next periodic sync of the plugin, within 30 seconds.
 - **Do not close idle connections faster than every 30 seconds.** The server pings each client every 30 seconds. It disconnects a client that does not answer within 10 seconds.
 - **Do not limit request time below what the chart route sets.** The route allows 15 minutes for a request, because a `CommitBlob` response starts only after the server composes the whole blob. That can take up to 10 minutes (SPEC.md §6.2). The route sets no time limit for `/v1/realtime`, because the WebSocket stays open for a long time.

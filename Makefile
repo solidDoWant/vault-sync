@@ -98,15 +98,21 @@ check-generate: generate ## Fail if committed generated protobuf code differs fr
 	@git diff --exit-code -- gen $(PLUGIN_DIR)/src/gen || { echo "generated code is stale: run 'make generate' and commit the result" >&2; exit 1; }
 	@test -z "$$(git ls-files --others --exclude-standard -- gen $(PLUGIN_DIR)/src/gen)" || { echo "untracked generated files: run 'make generate' and commit the result" >&2; exit 1; }
 
+# helm-docs renders docs/admin/chart-values.md from the `# --` comments in the
+# chart's values.yaml and the template beside it (paths relative to the chart).
+HELM_DOCS = helm-docs --log-level warning --chart-search-root $(CHART_DIR) --template-files chart-values.md.gotmpl --output-file ../../../docs/admin/chart-values.md --sort-values-order file
+
 .PHONY: generate-docs
 generate-docs: ## Regenerate the reference pages in docs/admin/ (go test fails while one is stale).
 	go test ./internal/server/ -run '^TestMetricsReferenceIsCurrent$$' -count=1 -update
 	go test ./internal/config/ -run '^TestConfigurationReferenceIsCurrent$$' -count=1 -update
+	$(HELM_DOCS)
 
 .PHONY: check-generate-docs
-check-generate-docs: ## Fail if a generated reference page in docs/admin/ is stale (also part of make test).
+check-generate-docs: ## Fail if a generated reference page in docs/admin/ is stale (make test checks all but the chart values page).
 	go test ./internal/server/ -run '^TestMetricsReferenceIsCurrent$$' -count=1
 	go test ./internal/config/ -run '^TestConfigurationReferenceIsCurrent$$' -count=1
+	@$(HELM_DOCS) --dry-run 2>/dev/null | diff -u docs/admin/chart-values.md - || { echo "docs/admin/chart-values.md is stale: run 'make generate-docs' and commit the result" >&2; exit 1; }
 
 ##@ Plugin
 

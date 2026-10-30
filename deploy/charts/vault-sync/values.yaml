@@ -1,7 +1,10 @@
 ---
-# vault-sync Helm chart values. docs/deployment.md describes every value and
-# walks through a full deployment; docs/admin/configuration-reference.md
-# describes every VAULT_SYNC_* variable the values below set.
+# vault-sync Helm chart values. The `# --` comments below are the
+# documentation of each value: helm-docs renders them, with
+# chart-values.md.gotmpl, into docs/admin/chart-values.md (make generate-docs).
+# docs/admin/install.md walks through a full deployment, and
+# docs/admin/configuration-reference.md describes every VAULT_SYNC_* variable
+# the values below set.
 #
 # `config` is this chart's own interface: the chart turns it into the server
 # Deployment ("main"), the export CronJob ("export"), their Services, Secret
@@ -15,394 +18,529 @@
 # the pods, as a directory (never with subPath), so a rotated Secret reaches
 # the running pods without a restart.
 config:
-  # logLevel sets VAULT_SYNC_LOG_LEVEL on the server and the export job:
-  # debug, info, warn or error. null uses the server default (info).
+  # -- `VAULT_SYNC_LOG_LEVEL` for the server and the export job: `debug`,
+  # `info`, `warn` or `error`.
+  # @default -- null (`info`)
+  # @section -- Shared settings
   logLevel: null
 
-  # database configures PostgreSQL for the server. The export job uses the
-  # same settings unless config.export.database overrides them.
+  # The export job uses the same database settings unless
+  # config.export.database overrides them.
   database:
-    # url is VAULT_SYNC_DATABASE_URL (required): a postgres:// URL or libpq
-    # keyword/value string, without sslcert/sslkey. Set exactly one of value
-    # (only if it holds no password) or secretKeyRef.
     url:
+      # -- `VAULT_SYNC_DATABASE_URL` as a plain value: a `postgres://` URL or
+      # libpq keyword/value string, without `sslcert`/`sslkey`. Use it only if
+      # it holds no password. Required, unless
+      # `config.database.url.secretKeyRef` is set; setting both fails the
+      # render.
+      # @default -- empty
+      # @section -- PostgreSQL
       value: ""
       secretKeyRef:
+        # -- Secret holding `VAULT_SYNC_DATABASE_URL`. Set together with
+        # `config.database.url.secretKeyRef.key`.
+        # @default -- empty
+        # @section -- PostgreSQL
         name: ""
+        # -- Key of that Secret.
+        # @default -- empty
+        # @section -- PostgreSQL
         key: ""
     tls:
-      # clientCertificate names a Secret holding the PostgreSQL client
-      # certificate and key, for example a kubernetes.io/tls Secret from
-      # cert-manager or the one CloudNativePG creates for a user. Mounted at
-      # /etc/vault-sync/database-client-cert and passed as
-      # VAULT_SYNC_DATABASE_TLS_CERT_FILE and VAULT_SYNC_DATABASE_TLS_KEY_FILE.
       clientCertificate:
+        # -- Secret with the PostgreSQL client certificate and key, for
+        # example a `kubernetes.io/tls` Secret from cert-manager or the one
+        # CloudNativePG creates for a user. Mounted at
+        # `/etc/vault-sync/database-client-cert`. It sets
+        # `VAULT_SYNC_DATABASE_TLS_CERT_FILE` and
+        # `VAULT_SYNC_DATABASE_TLS_KEY_FILE`.
+        # @default -- empty
+        # @section -- PostgreSQL
         secretName: ""
+        # -- Key of the certificate in that Secret.
+        # @section -- PostgreSQL
         certKey: tls.crt
+        # -- Key of the private key in that Secret.
+        # @section -- PostgreSQL
         keyKey: tls.key
-      # caCert names the Secret key holding the CA bundle that signs the
-      # PostgreSQL server certificate (for CloudNativePG, the
-      # `<cluster>-ca` Secret, key ca.crt). Mounted at
-      # /etc/vault-sync/database-ca and passed as
-      # VAULT_SYNC_DATABASE_TLS_CA_FILE. Setting it turns on full verification
-      # (docs/admin/postgresql-and-s3.md, PostgreSQL TLS).
       caCert:
         secretKeyRef:
+          # -- Secret with the CA bundle that signs the PostgreSQL server
+          # certificate (for CloudNativePG, the `<cluster>-ca` Secret, key
+          # `ca.crt`). Mounted at `/etc/vault-sync/database-ca` (server and
+          # export). It sets `VAULT_SYNC_DATABASE_TLS_CA_FILE`, which turns on
+          # full verification ([PostgreSQL TLS](postgresql-and-s3.md#postgresql-tls)).
+          # @default -- empty
+          # @section -- PostgreSQL
           name: ""
+          # -- Key of the CA bundle in that Secret.
+          # @section -- PostgreSQL
           key: ca.crt
 
-  # s3 configures the object store holding file contents (required).
+  # s3 configures the object store holding file contents.
   s3:
-    # bucket is VAULT_SYNC_S3_BUCKET (required). The bucket must exist.
+    # -- `VAULT_SYNC_S3_BUCKET`. Required. The bucket must exist.
+    # @default -- empty
+    # @section -- S3
     bucket: ""
-    # endpoint is VAULT_SYNC_S3_ENDPOINT, for example the Ceph RGW URL. null
-    # uses AWS S3.
+    # -- `VAULT_SYNC_S3_ENDPOINT`, for example the Ceph RGW URL.
+    # @default -- null (AWS S3)
+    # @section -- S3
     endpoint: null
-    # region is VAULT_SYNC_S3_REGION. null uses the server default
-    # (us-east-1).
+    # -- `VAULT_SYNC_S3_REGION`.
+    # @default -- null (`us-east-1`)
+    # @section -- S3
     region: null
-    # forcePathStyle is VAULT_SYNC_S3_FORCE_PATH_STYLE, a boolean.
-    # null uses the server default (true).
+    # -- `VAULT_SYNC_S3_FORCE_PATH_STYLE`, a boolean.
+    # @default -- null (`true`)
+    # @section -- S3
     forcePathStyle: null
-    # idleTimeout is VAULT_SYNC_S3_IDLE_TIMEOUT, a Go duration. null uses the
-    # server default (2m).
+    # -- `VAULT_SYNC_S3_IDLE_TIMEOUT`, a Go duration.
+    # @default -- null (`2m`)
+    # @section -- S3
     idleTimeout: null
-    # credentials names the Secret holding the S3 access key id and secret
-    # access key (required), and the keys within it. Mounted at
-    # /etc/vault-sync/s3-credentials and passed as
-    # VAULT_SYNC_S3_ACCESS_KEY_ID_FILE and VAULT_SYNC_S3_SECRET_ACCESS_KEY_FILE.
-    # The defaults match the Secret that Rook creates for an
-    # ObjectBucketClaim.
     credentials:
+      # -- Secret with the S3 access key id and secret access key. Mounted at
+      # `/etc/vault-sync/s3-credentials`. It sets
+      # `VAULT_SYNC_S3_ACCESS_KEY_ID_FILE` and
+      # `VAULT_SYNC_S3_SECRET_ACCESS_KEY_FILE`. Required. The default keys
+      # match the Secret that Rook creates for an ObjectBucketClaim.
+      # @default -- empty
+      # @section -- S3
       secretName: ""
+      # -- Key of the access key id in that Secret.
+      # @section -- S3
       accessKeyIdKey: AWS_ACCESS_KEY_ID
+      # -- Key of the secret access key in that Secret.
+      # @section -- S3
       secretAccessKeyKey: AWS_SECRET_ACCESS_KEY
-    # caCert names the Secret key holding a CA bundle for the S3 endpoint,
-    # instead of the system roots. Mounted at /etc/vault-sync/s3-ca and passed
-    # as VAULT_SYNC_S3_TLS_CA_FILE.
     caCert:
       secretKeyRef:
+        # -- Secret with a CA bundle for the S3 endpoint, instead of the
+        # system roots. Mounted at `/etc/vault-sync/s3-ca` (server and
+        # export). It sets `VAULT_SYNC_S3_TLS_CA_FILE`.
+        # @default -- empty (system roots)
+        # @section -- S3
         name: ""
+        # -- Key of the CA bundle in that Secret.
+        # @section -- S3
         key: ca.crt
 
   # oidc configures access-token validation
   # (docs/admin/identity-provider.md).
   oidc:
-    # issuerUrl is VAULT_SYNC_OIDC_ISSUER_URL (required), for example
-    # https://auth.example.com/application/o/vault-sync/ for Authentik.
+    # -- `VAULT_SYNC_OIDC_ISSUER_URL`. Required. For example
+    # `https://auth.example.com/application/o/vault-sync/` for Authentik.
+    # @default -- empty
+    # @section -- OIDC
     issuerUrl: ""
-    # audience is VAULT_SYNC_OIDC_AUDIENCE (required): the client ID of the
-    # vault-sync provider.
+    # -- `VAULT_SYNC_OIDC_AUDIENCE`: the client ID of the vault-sync provider.
+    # Required.
+    # @default -- empty
+    # @section -- OIDC
     audience: ""
-    # clientId is VAULT_SYNC_OIDC_CLIENT_ID: the OAuth client the plugin signs
-    # in as, when it differs from the audience. null leaves it unset.
+    # -- `VAULT_SYNC_OIDC_CLIENT_ID`, the client the plugin signs in as when
+    # it differs from the audience. null leaves it unset.
+    # @default -- null
+    # @section -- OIDC
     clientId: null
 
   # server holds the API server's tunables. Every null value leaves its
-  # variable unset, so the server default applies (docs/admin/configuration-reference.md).
-  # Byte sizes and counts are integers; durations are Go duration strings
-  # such as 30s or 1h30m (values.schema.json checks both).
-  # The listen addresses are fixed by the chart: the API on 8080
-  # (VAULT_SYNC_LISTEN_ADDRESS) and metrics and health on 9090
-  # (VAULT_SYNC_METRICS_LISTEN_ADDRESS), and service-wide metrics on 9091
-  # (VAULT_SYNC_SERVICE_METRICS_LISTEN_ADDRESS).
+  # variable unset, so the server default applies
+  # (docs/admin/configuration-reference.md).
   server:
-    # VAULT_SYNC_MAX_REQUEST_BYTES. Keep it at or below the WAF's inspected
-    # body limit (1 MiB by default).
+    # -- `VAULT_SYNC_MAX_REQUEST_BYTES`. Keep it at or below the WAF's
+    # inspected body limit (1 MiB by default).
+    # @default -- null
+    # @section -- Server
     maxRequestBytes: null
-    # VAULT_SYNC_WRITE_TIMEOUT.
+    # -- `VAULT_SYNC_WRITE_TIMEOUT`.
+    # @default -- null
+    # @section -- Server
     writeTimeout: null
-    # VAULT_SYNC_MAX_CONCURRENT_RPCS_PER_USER.
+    # -- `VAULT_SYNC_MAX_CONCURRENT_RPCS_PER_USER`.
+    # @default -- null
+    # @section -- Server
     maxConcurrentRpcsPerUser: null
-    # VAULT_SYNC_SHUTDOWN_DELAY and VAULT_SYNC_SHUTDOWN_TIMEOUT. The chart
-    # sets the pod's terminationGracePeriodSeconds to their sum (5s + 30s
-    # when unset) plus 10 seconds, and at least 45, and refuses to render if
-    # an explicit resources.controllers.main.pod.terminationGracePeriodSeconds
-    # is not larger than their sum.
+    # -- `VAULT_SYNC_SHUTDOWN_DELAY`.
+    # @default -- null
+    # @section -- Server
     shutdownDelay: null
+    # -- `VAULT_SYNC_SHUTDOWN_TIMEOUT`. The chart sets the pod's
+    # `terminationGracePeriodSeconds` to the delay plus the timeout (5s + 30s
+    # when unset) plus 10 seconds, and at least 45. It refuses to render if an
+    # explicit `resources.controllers.main.pod.terminationGracePeriodSeconds`
+    # is not larger than their sum.
+    # @default -- null
+    # @section -- Server
     shutdownTimeout: null
     blob:
-      # VAULT_SYNC_BLOB_MAX_CHUNK_BYTES.
+      # -- `VAULT_SYNC_BLOB_MAX_CHUNK_BYTES`.
+      # @default -- null
+      # @section -- Server
       maxChunkBytes: null
-      # VAULT_SYNC_BLOB_MAX_SIZE_BYTES.
+      # -- `VAULT_SYNC_BLOB_MAX_SIZE_BYTES`.
+      # @default -- null
+      # @section -- Server
       maxSizeBytes: null
-      # VAULT_SYNC_BLOB_MAX_UPLOADS_PER_VAULT.
+      # -- `VAULT_SYNC_BLOB_MAX_UPLOADS_PER_VAULT`.
+      # @default -- null
+      # @section -- Server
       maxUploadsPerVault: null
-      # VAULT_SYNC_BLOB_UPLOAD_TTL.
+      # -- `VAULT_SYNC_BLOB_UPLOAD_TTL`.
+      # @default -- null
+      # @section -- Server
       uploadTtl: null
-      # VAULT_SYNC_BLOB_UPLOAD_RECLAIM_IDLE.
+      # -- `VAULT_SYNC_BLOB_UPLOAD_RECLAIM_IDLE`.
+      # @default -- null
+      # @section -- Server
       uploadReclaimIdle: null
-      # VAULT_SYNC_BLOB_GC_GRACE.
+      # -- `VAULT_SYNC_BLOB_GC_GRACE`.
+      # @default -- null
+      # @section -- Server
       gcGrace: null
     retention:
-      # VAULT_SYNC_RETENTION_KEEP_ALL.
+      # -- `VAULT_SYNC_RETENTION_KEEP_ALL`.
+      # @default -- null
+      # @section -- Server
       keepAll: null
-      # VAULT_SYNC_RETENTION_KEEP_DAILY.
+      # -- `VAULT_SYNC_RETENTION_KEEP_DAILY`.
+      # @default -- null
+      # @section -- Server
       keepDaily: null
-      # VAULT_SYNC_RETENTION_PURGE_MARKER_HORIZON.
+      # -- `VAULT_SYNC_RETENTION_PURGE_MARKER_HORIZON`.
+      # @default -- null
+      # @section -- Server
       purgeMarkerHorizon: null
-      # VAULT_SYNC_RETENTION_OVERRIDE_MIN_KEEP_ALL: only read by the
-      # `retention set` subcommand run in a server pod (docs/deployment.md).
+      # -- `VAULT_SYNC_RETENTION_OVERRIDE_MIN_KEEP_ALL`. Only the
+      # `retention set` subcommand, run in a server pod, reads it
+      # ([Per-vault overrides](history-and-retention.md#per-vault-overrides)).
+      # @default -- null
+      # @section -- Server
       overrideMinKeepAll: null
-      # VAULT_SYNC_RETENTION_OVERRIDE_MIN_KEEP_DAILY, likewise.
+      # -- `VAULT_SYNC_RETENTION_OVERRIDE_MIN_KEEP_DAILY`. Likewise read only
+      # by `retention set`.
+      # @default -- null
+      # @section -- Server
       overrideMinKeepDaily: null
     realtime:
-      # VAULT_SYNC_REALTIME_MAX_CONNECTIONS.
+      # -- `VAULT_SYNC_REALTIME_MAX_CONNECTIONS`.
+      # @default -- null
+      # @section -- Server
       maxConnections: null
-      # VAULT_SYNC_REALTIME_MAX_CONNECTIONS_PER_USER.
+      # -- `VAULT_SYNC_REALTIME_MAX_CONNECTIONS_PER_USER`.
+      # @default -- null
+      # @section -- Server
       maxConnectionsPerUser: null
-      # VAULT_SYNC_REALTIME_MAX_SUBSCRIPTIONS.
+      # -- `VAULT_SYNC_REALTIME_MAX_SUBSCRIPTIONS`.
+      # @default -- null
+      # @section -- Server
       maxSubscriptions: null
     escrow:
-      # VAULT_SYNC_ESCROW_RECIPIENT: the escrow public key, an age hybrid
-      # recipient (age1pq1…). Public; the escrow private key goes into the
-      # export job only (config.export.escrow).
+      # -- `VAULT_SYNC_ESCROW_RECIPIENT`: the escrow public key, an age hybrid
+      # recipient (`age1pq1…`), a string. It is public. the escrow private key
+      # goes into the export job only (`config.export.escrow`).
+      # @default -- null
+      # @section -- Server
       recipient: null
-      # VAULT_SYNC_ESCROW_SIGNING_KEY: the escrow signing public key (base64
-      # Ed25519), set together with recipient. Public; its private key stays
-      # with the escrow identity.
+      # -- `VAULT_SYNC_ESCROW_SIGNING_KEY`: the escrow signing public key
+      # (base64 Ed25519), a string, set together with `recipient`. It is
+      # public. its private key stays with the escrow identity.
+      # @default -- null
+      # @section -- Server
       signingKey: null
-      # VAULT_SYNC_ESCROW_DEFAULT: whether new encrypted vaults have escrow
-      # unless their owner turns it off (true when unset).
+      # -- `VAULT_SYNC_ESCROW_DEFAULT`, a boolean: whether new encrypted
+      # vaults have escrow unless their owner turns it off.
+      # @default -- null (`true`)
+      # @section -- Server
       default: null
-      # VAULT_SYNC_ESCROW_RETIRING_KEY_IDS: comma-separated ids of escrow
-      # keys being rotated away from, which escrow slots may still name
-      # until the export job has re-wrapped them all.
+      # -- `VAULT_SYNC_ESCROW_RETIRING_KEY_IDS`: comma-separated ids of escrow
+      # keys being rotated away from, which escrow slots can still name until
+      # `export rotate-escrow` has re-wrapped them all
+      # ([Rotate the escrow key](encryption.md#rotate-the-escrow-key)).
+      # @default -- null
+      # @section -- Server
       retiringKeyIds: null
     metrics:
-      # serviceMonitor creates a prometheus-operator ServiceMonitor scraping
-      # /metrics on port "metrics" (9090) of the Service. Off by default; it
-      # needs the monitoring.coreos.com CRDs.
       serviceMonitor:
+        # -- Create a prometheus-operator ServiceMonitor scraping `/metrics`
+        # on port `metrics` (9090) of the Service. Needs the
+        # `monitoring.coreos.com` CRDs.
+        # @section -- Metrics
         enabled: false
+        # -- Scrape interval.
+        # @section -- Metrics
         interval: 1m
+        # -- Scrape timeout.
+        # @section -- Metrics
         scrapeTimeout: 10s
       serviceWide:
-        # enabled adds a second endpoint to the ServiceMonitor, scraping the
-        # service-wide /metrics on port "service-metrics" (9091) with the
-        # same interval and timeout. Needs serviceMonitor.enabled. Every
-        # replica serves the same values; to scrape only one, configure your
-        # scraper instead.
+        # -- Add a second ServiceMonitor endpoint scraping the service-wide
+        # `/metrics` on port `service-metrics` (9091), with the same interval
+        # and timeout. Needs `config.server.metrics.serviceMonitor.enabled`.
+        # Every replica serves the same values. to scrape only one replica,
+        # configure that in your scraper.
+        # @section -- Metrics
         enabled: false
-        # VAULT_SYNC_SERVICE_METRICS_INTERVAL: how often each replica reads
-        # the service-wide metrics from PostgreSQL (served on 9091).
+        # -- `VAULT_SYNC_SERVICE_METRICS_INTERVAL`: how often each replica
+        # reads the service-wide metrics from PostgreSQL.
+        # @default -- null
+        # @section -- Metrics
         interval: null
 
-  # export configures the plaintext export CronJob (docs/admin/backup-and-restore.md). It runs
+  # export configures the plaintext export CronJob
+  # (docs/admin/backup-and-restore.md). It runs
   # `vault-sync-server export -out /export/<directory>` with its own Secret
   # mounts; the server Deployment never mounts the export's output or its
   # escrow key.
-  #
-  # Off by default, so a minimal install needs only the database, S3 and
-  # OIDC settings. Turning it on is recommended: the export is the plaintext
-  # disaster-recovery copy of every vault (docs/admin/backup-and-restore.md).
   export:
+    # -- Render the export CronJob. Off by default, so a minimal install needs
+    # only the database, S3 and OIDC settings. Turning it on is recommended:
+    # the export is the plaintext disaster-recovery copy of every vault.
+    # @section -- Export
     enabled: false
-    # schedule is the CronJob schedule; timeZone is an optional IANA time
-    # zone for it (the cluster's default otherwise).
+    # -- Cron schedule.
+    # @section -- Export
     schedule: "0 3 * * *"
+    # -- IANA time zone of the schedule. Empty uses the cluster's default.
+    # @default -- empty
+    # @section -- Export
     timeZone: ""
-    # activeDeadlineSeconds bounds one export run (6 hours by default):
-    # runs never overlap (concurrencyPolicy Forbid), so a hung export, for
+    # -- Upper bound, in seconds, on one export run (the Job's
+    # `activeDeadlineSeconds`, 6 hours by default). It must be positive. Runs
+    # never overlap (`concurrencyPolicy: Forbid`), so a hung export, for
     # example on a stalled NFS volume, would otherwise block every later run.
+    # @section -- Export
     activeDeadlineSeconds: 21600
     output:
-      # persistence is the volume the export writes to (required while the
-      # export is enabled), as a bjw-s persistence item, for example
-      #   persistence:
-      #     type: persistentVolumeClaim
-      #     existingClaim: vault-sync-export
-      # or an nfs or hostPath volume that your tape-archival tooling reads.
-      # The chart mounts it at /export; mount options other than the path
-      # can be set here.
+      # -- The output volume, as a bjw-s persistence item (`type`,
+      # `existingClaim`, `server`/`path` for `nfs`, ...), for example
+      # `{type: persistentVolumeClaim, existingClaim: vault-sync-export}`, or
+      # an `nfs` or `hostPath` volume that your tape-archival tooling reads.
+      # Required while the export is enabled. Mounted at `/export` in the
+      # export job only; mount options other than the path can be set here.
+      # @section -- Export
       persistence: {}
-      # directory is the export directory inside the volume. The export
-      # replaces it on every run and keeps a lock file and a staging
-      # directory beside it, at the top of the volume.
+      # -- Directory inside the volume, a single name. The job runs
+      # `export -out /export/<directory>`. The export replaces it on every
+      # run and keeps a lock file and a staging directory beside it, at the
+      # top of the volume.
+      # @section -- Export
       directory: vaults
     # database overrides config.database for the export, so it can use its
-    # own read-only role (docs/admin/backup-and-restore.md lists the grants it needs). Empty
-    # fields fall back to config.database; the CA is always shared.
+    # own read-only role. Empty fields fall back to config.database; the CA
+    # is always shared.
     database:
       url:
+        # -- The export's own `VAULT_SYNC_DATABASE_URL`, for example for a
+        # read-only role ([the grants it needs](backup-and-restore.md)).
+        # Empty uses the server's. Exclusive with
+        # `config.export.database.url.secretKeyRef`.
+        # @default -- empty
+        # @section -- Export
         value: ""
         secretKeyRef:
+          # -- Secret holding the export's database URL.
+          # @default -- empty
+          # @section -- Export
           name: ""
+          # -- Key of that Secret.
+          # @default -- empty
+          # @section -- Export
           key: ""
       tls:
         clientCertificate:
+          # -- The export's own PostgreSQL client certificate Secret, mounted
+          # at `/etc/vault-sync/export-database-client-cert`. Empty uses the
+          # server's. The CA (`config.database.tls.caCert`) is always shared.
+          # @default -- empty
+          # @section -- Export
           secretName: ""
+          # -- Key of the certificate.
+          # @section -- Export
           certKey: tls.crt
+          # -- Key of the private key.
+          # @section -- Export
           keyKey: tls.key
-    # s3 overrides config.s3.credentials for the export, so it can use
-    # read-only S3 credentials. An empty secretName falls back to
-    # config.s3.credentials; the bucket, endpoint and CA are shared.
     s3:
       credentials:
+        # -- The export's own S3 credentials Secret, for example read-only
+        # credentials, mounted at `/etc/vault-sync/export-s3-credentials`. Empty uses `config.s3.credentials`. The bucket, endpoint and CA are
+        # shared.
+        # @default -- empty
+        # @section -- Export
         secretName: ""
+        # -- Key of the access key id.
+        # @section -- Export
         accessKeyIdKey: AWS_ACCESS_KEY_ID
+        # -- Key of the secret access key.
+        # @section -- Export
         secretAccessKeyKey: AWS_SECRET_ACCESS_KEY
-    # escrow names the Secret holding the escrow identity (SPEC.md §9.4)
-    # under key (the age-keygen -pq output; both identities during an escrow
-    # key rotation). It is mounted read-only at /etc/vault-sync/escrow into
-    # the export job only, which reads it as VAULT_SYNC_ESCROW_IDENTITY_FILE
-    # to decrypt escrowed vaults; the chart refuses to render if any value
-    # would put it into the server. The escrow signing keys never go into
-    # the cluster: they stay offline and are used only by a manual escrow key
-    # rotation (export rotate-escrow, docs/admin/encryption.md), and the chart refuses
-    # to render if any controller would get them.
     escrow:
+      # -- Secret holding the escrow identity (SPEC.md §9.4), mounted
+      # read-only at `/etc/vault-sync/escrow` in the export job only, never in
+      # the server. The export job reads it to decrypt escrowed vaults. The
+      # escrow signing keys never go into the cluster: they stay offline and
+      # are used only by a manual escrow key rotation (`export rotate-escrow`,
+      # [Rotate the escrow key](encryption.md#rotate-the-escrow-key)), and the
+      # chart refuses to render if any controller would get them.
+      # @default -- empty
+      # @section -- Export
       secretName: ""
+      # -- Key of that Secret. It holds the identity file (`age-keygen -pq`
+      # output; both identities during an escrow key rotation), which the
+      # export job reads as `VAULT_SYNC_ESCROW_IDENTITY_FILE`. The chart
+      # refuses to render if any value would put it into the server.
+      # @section -- Export
       key: escrow.key
-  # escrowJobToken names the Secret holding the static bearer token of the
-  # export job's escrow rotation endpoint under key (one line, at least 32
-  # characters, e.g. openssl rand -base64 32). It is mounted read-only at
-  # /etc/vault-sync/escrow-job-token into the server, which checks it, and
-  # the export job, which presents it, and nowhere else; both read it as
-  # VAULT_SYNC_ESCROW_JOB_TOKEN_FILE. Empty turns the endpoint off.
   escrowJobToken:
+    # -- Secret holding the static bearer token of the escrow rotation
+    # endpoint (`VAULT_SYNC_ESCROW_JOB_TOKEN_FILE`), mounted read-only at
+    # `/etc/vault-sync/escrow-job-token` into the server, which checks it, and
+    # the export job, which presents it, and into nothing else. Empty leaves
+    # the endpoint off.
+    # @default -- empty
+    # @section -- Export
     secretName: ""
+    # -- Key of that Secret. It holds one line of at least 32 characters, for
+    # example `openssl rand -base64 32`.
+    # @section -- Export
     key: token
 
-  # route renders a Gateway API HTTPRoute (through bjw-s `route`) sending
-  # hostnames to port "http" of the Service. Only port "http" may be routed
-  # to from outside the cluster. The chart sets the backend and the
-  # timeouts: 15m for requests (a CommitBlob response starts only once the
-  # server has composed the blob, up to 10 minutes) and none ("0s") for the
-  # long-lived /v1/realtime WebSocket. resources.route.main overrides any
-  # of it.
+  # route renders a Gateway API HTTPRoute (through bjw-s `route.main`); see
+  # the Route section of docs/admin/chart-values.md for its rules and
+  # timeouts.
   route:
+    # -- Render the HTTPRoute.
+    # @section -- Route
     enabled: false
-    # hostnames the route matches, for example [sync.example.com].
+    # -- Hostnames it matches, for example `[sync.example.com]`.
+    # @section -- Route
     hostnames: []
-    # parentRefs names the Gateway (and listener) to attach to, for example
-    #   - name: internet-gateway
-    #     namespace: gateway
-    #     sectionName: https
+    # -- The Gateway (and listener) to attach to, as Gateway API `parentRefs`
+    # (`name`, `namespace`, `sectionName`, ...), for example
+    # `[{name: internet-gateway, namespace: gateway, sectionName: https}]`.
+    # @section -- Route
     parentRefs: []
+    # -- Annotations of the HTTPRoute.
+    # @section -- Route
     annotations: {}
+    # -- Labels of the HTTPRoute.
+    # @section -- Route
     labels: {}
 
-  # grafana installs the vault-sync Grafana dashboards (Overview, Server,
-  # Dependencies; JSON in the chart's dashboards/ directory, UIDs
-  # vault-sync-overview, vault-sync-server and vault-sync-dependencies).
-  # Both ways are off by default and may be combined.
   grafana:
     dashboards:
-      # enabled renders one grafana-operator GrafanaDashboard
-      # (grafana.integreatly.org/v1beta1) per dashboard. Needs the operator's
-      # CRDs and instanceSelector.
+      # -- Render one grafana-operator `GrafanaDashboard`
+      # (`grafana.integreatly.org/v1beta1`) per dashboard, named
+      # `<release>-dashboard-<name>`. Needs the grafana-operator CRDs.
+      # @section -- Grafana dashboards
       enabled: false
-      # instanceSelector is the label selector of the Grafana resources to
-      # import into, for example {matchLabels: {dashboards: grafana}}.
-      # Required while enabled.
+      # -- Label selector of the `Grafana` resources to import into, for
+      # example `{matchLabels: {dashboards: grafana}}`. Required while
+      # `config.grafana.dashboards.enabled`.
+      # @section -- Grafana dashboards
       instanceSelector: {}
-      # At most one of folder (a folder title), folderRef (a GrafanaFolder
-      # in this namespace) and folderUID (an existing folder's UID).
+      # -- Title of the Grafana folder to put the dashboards in. At most one
+      # of `folder`, `folderRef` and `folderUID`. Setting  more fails the
+      # render.
+      # @default -- empty
+      # @section -- Grafana dashboards
       folder: ""
+      # -- Name of a `GrafanaFolder` in the release namespace to put the
+      # dashboards in.
+      # @default -- empty
+      # @section -- Grafana dashboards
       folderRef: ""
+      # -- UID of an existing Grafana folder to put the dashboards in.
+      # @default -- empty
+      # @section -- Grafana dashboards
       folderUID: ""
-      # resyncPeriod: how often the operator re-applies the dashboards, for
-      # example 10m. null keeps the operator's default.
+      # -- How often the operator re-applies the dashboards, for example
+      # `10m`.
+      # @default -- null (the operator's default)
+      # @section -- Grafana dashboards
       resyncPeriod: null
-      # allowCrossNamespaceImport lets Grafana instances in other namespaces
-      # import the dashboards. null keeps the operator's default (false).
+      # -- Let `Grafana` instances in other namespaces import the dashboards.
+      # @default -- null (`false`)
+      # @section -- Grafana dashboards
       allowCrossNamespaceImport: null
-      # labels are added to each GrafanaDashboard.
+      # -- Extra labels of each `GrafanaDashboard`.
+      # @section -- Grafana dashboards
       labels: {}
-      # configMaps renders each dashboard as a ConfigMap labelled for the
-      # Grafana chart's dashboard sidecar, for deployments without the
-      # operator.
       configMaps:
+        # -- Render each dashboard as a ConfigMap `<release>-dashboard-<name>`
+        # holding `<name>.json`, for the Grafana chart's dashboard sidecar, for
+        # deployments without the operator. Independent of
+        # `config.grafana.dashboards.enabled`.
+        # @section -- Grafana dashboards
         enabled: false
-        # label and labelValue: the label the sidecar watches
-        # (sidecar.dashboards.label and labelValue in the Grafana chart).
+        # -- Label the sidecar watches (the Grafana chart's
+        # `sidecar.dashboards.label`).
+        # @section -- Grafana dashboards
         label: grafana_dashboard
+        # -- Value of that label (`sidecar.dashboards.labelValue`).
+        # @section -- Grafana dashboards
         labelValue: "1"
-        # annotations of each ConfigMap, for example
-        # {grafana_folder: vault-sync} with the sidecar's folderAnnotation.
+        # -- Annotations of each ConfigMap, for example
+        # `{grafana_folder: vault-sync}` with the sidecar's
+        # `folderAnnotation` to choose a folder.
+        # @section -- Grafana dashboards
         annotations: {}
-  # alerts renders the packaged alerting rules (docs/admin/alerts.md, one runbook
-  # section per alert) as a prometheus-operator PrometheusRule. Off by
-  # default; it needs the monitoring.coreos.com CRDs, and the service-wide
-  # alerts need config.server.metrics.serviceWide.enabled (or another scrape
-  # of port "service-metrics").
+
   alerts:
     prometheusRule:
+      # -- Render the PrometheusRule. Needs the `monitoring.coreos.com` CRDs.
+      # @section -- Alerts
       enabled: false
-      # labels and annotations are added to the PrometheusRule, for example
-      # the labels your Prometheus's ruleSelector matches.
+      # -- Extra labels of the PrometheusRule, for example the ones your
+      # Prometheus's `ruleSelector` matches.
+      # @section -- Alerts
       labels: {}
+      # -- Annotations of the PrometheusRule.
+      # @section -- Alerts
       annotations: {}
-      # selector adds matchers to every expression, so the rules see only
-      # this release's metrics. null uses the release namespace and the
-      # Service name (the ServiceMonitor's job label); "" leaves the
-      # matcher out. kube-state-metrics alerts match the namespace and the
-      # Deployment name instead of the job.
       selector:
+        # -- The `namespace` matcher added to every expression. `null` uses
+        # the release namespace; an empty string leaves the matcher out.
+        # @default -- `null`
+        # @section -- Alerts
         namespace: null
+        # -- The `job` matcher added to every expression that reads
+        # vault-sync's own metrics. `null` uses the Service name (the release
+        # name, the ServiceMonitor's `job` label), and an empty string leaves the
+        # matcher out. The kube-state-metrics alerts match the namespace and
+        # the Deployment name instead.
+        # @default -- `null`
+        # @section -- Alerts
         job: null
-    # runbookUrlBase: each alert's runbook_url annotation is this plus
-    # "#<alert name in lower case>". Empty leaves runbook_url out.
+    # -- Each alert's `runbook_url` annotation is this followed by `#` and the
+    # alert's name in lower case. Empty leaves `runbook_url` out.
+    # @section -- Alerts
     runbookUrlBase: https://github.com/solidDoWant/vault-sync/blob/master/docs/admin/alerts.md
-    # rules overrides single alerts by name, for example
-    #   VaultSyncSyncLatencyHigh: {threshold: 5, for: 30m}
-    #   VaultSyncConcurrencyRejections: {enabled: false}
-    #   VaultSyncNoReplicaReady: {enabled: true}  # needs kube-state-metrics
-    # with keys enabled, for (a Prometheus duration), severity (critical or
-    # warning) and threshold (for alerts that have one). Unknown names fail
-    # the render.
+    # -- Per-alert overrides keyed by alert name, each with `enabled`, `for` (a
+    # Prometheus duration), `severity` (`critical` or `warning`) and
+    # `threshold` (for alerts that have one, see  [Alerts](alerts.md)). A
+    # disabled alert is dropped from the rendered rules, and an unknown name
+    # fails the render. `VaultSyncNoReplicaReady` and
+    # `VaultSyncReplicasUnavailable` need kube-state-metrics and are off
+    # unless enabled here. `VaultSyncExportNotSucceeding` is on while
+    # `config.export.enabled`.
+    # @section -- Alerts
     rules: {}
 
-# resources follows the bjw-s common library schema
-# (https://github.com/bjw-s-labs/helm-charts/tree/main/charts/library/common)
-# and is deep-merged over what the chart computes; your values win.
-#
-# The chart computes only what the server needs to run correctly, and sets
-# no scheduling or capacity policy (no PodDisruptionBudget, container
-# resources or topology spread constraints): your values are merged over
-# what it computes, so anything it set could be changed but not removed.
-#   - controllers.main: the server Deployment, named after the release. 2
-#     replicas, RollingUpdate with maxUnavailable 0 and maxSurge 1, startup
-#     and liveness probes on /healthz and a readiness probe on /readyz
-#     (metrics port), terminationGracePeriodSeconds derived from
-#     config.server.shutdownDelay and shutdownTimeout (45 by default), and
-#     non-root (65532) with a read-only root filesystem and no capabilities.
-#   - controllers.export: the export CronJob <release>-export (when
-#     config.export.enabled), with the same security context,
-#     concurrencyPolicy Forbid, backoffLimit 2 and
-#     config.export.activeDeadlineSeconds.
-#   - service.main: one Service with port "http" (8080, primary: ingress and
-#     route backends resolve to it), port "metrics" (9090) and port
-#     "service-metrics" (9091); never route to either metrics port from
-#     outside the cluster.
-#   - serviceMonitor.main (when config.server.metrics.serviceMonitor.enabled),
-#     with a second endpoint for port "service-metrics" when
-#     config.server.metrics.serviceWide.enabled.
-#   - route.main (when config.route.enabled).
-#   - persistence entries for every Secret above and the export volume.
-#
-# For example, to run three replicas, pin the image, size the server and
-# add a PodDisruptionBudget:
-#   controllers:
-#     main:
-#       replicas: 3
-#       containers:
-#         main:
-#           image:
-#             repository: ghcr.io/soliddowant/vault-sync
-#             tag: 1.2.3
-#           resources:
-#             requests: {cpu: 100m, memory: 128Mi}
-#             limits: {memory: 512Mi}
-#       podDisruptionBudget:
-#         maxUnavailable: 1
-#
-# The server keeps no per-replica state (SPEC.md §12): do not add volumes
-# to controllers.main that a replica writes to.
+# resources follows the bjw-s common library schema and is deep-merged over
+# what the chart computes; your values win. The Overriding the computed
+# resources section of docs/admin/chart-values.md lists what the chart
+# computes.
 resources:
   controllers:
+    # -- Overrides of the server Deployment, merged over what the chart
+    # computes, for example `replicas`, `podDisruptionBudget` or
+    # `containers.main.resources`.
+    # @section -- Overriding the computed resources
     main: {}
-  # ingress is entirely yours; with one Service, its backend resolves to
-  # port "http" without naming a Service.
+  # -- An Ingress, entirely yours. With  one Service, its backend resolves to
+  # port `http` without naming a Service.
+  # @section -- Overriding the computed resources
   ingress: {}

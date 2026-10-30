@@ -58,6 +58,7 @@ jobs:
               - 'docs/admin/alerts.md'
               - 'docs/admin/metrics-reference.md'
               - 'docs/admin/configuration-reference.md'
+              - 'docs/admin/chart-values.md'
             desktop:
               - '{plugin/**,.github/**,nix/**,flake.*}'
             npm:
