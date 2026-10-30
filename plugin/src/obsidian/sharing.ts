@@ -7,6 +7,7 @@ import { VaultEncryption, VaultRole, type Vault } from "../gen/vaultsync/v1/type
 import type { ProtocolClient } from "../core/protocol/client";
 import { createEncryptedInvitation, leaveEncryptedVault, parseInviteLink, redeemEncryptedInvitation, revokeEncryptedInvitation, setEncryptedMemberRole, type EncryptedMembershipContext, type RedeemContext } from "../core/keys/encrypted-membership";
 import type { VaultKeyManager } from "../core/keys/vault-keys";
+import { reencryptHistory, type RekeyResult } from "../core/sync/rekey";
 import { readMemberLog, type LogTrust } from "../core/keys/verified-log";
 import { fingerprint, formatFingerprint } from "../core/e2ee/identity";
 import { listRemoteVaults } from "./controller";
@@ -267,6 +268,17 @@ export async function removeMember(client: ProtocolClient, vaultId: string, user
 export async function rotateVaultKey(encrypted: EncryptedSharing | undefined): Promise<void> {
   if (encrypted === undefined) throw new Error("only an end-to-end encrypted vault has a key to rotate");
   await encrypted.manager.rotate();
+}
+
+/**
+ * An owner's re-key job on an encrypted vault: re-encrypts every revision on
+ * an older key under the current one and retires the old keys
+ * (docs/design/encryption.md, "Re-encrypting history"). Run it again after an
+ * interruption: it continues where it stopped.
+ */
+export async function reencryptVaultHistory(client: ProtocolClient, vaultId: string, encrypted: EncryptedSharing | undefined): Promise<RekeyResult> {
+  if (encrypted === undefined) throw new Error("only an end-to-end encrypted vault has history to re-encrypt");
+  return reencryptHistory(client, vaultId, encrypted.manager);
 }
 
 export async function leaveVault(client: ProtocolClient, vaultId: string, encrypted?: EncryptedSharing): Promise<void> {

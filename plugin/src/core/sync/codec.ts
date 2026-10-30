@@ -184,7 +184,17 @@ export class EncryptedCodec implements RevisionCodec {
     this.currentEpoch = await this.keys.refresh();
   }
 
-  async decode(revision: Revision): Promise<IncomingRevision> {
+  decode(revision: Revision): Promise<IncomingRevision> {
+    return this.decodeRevision(revision, false);
+  }
+
+  /**
+   * Decodes a revision. A blob the server no longer has (a re-key job moved
+   * the revision and cleanup deleted its old blob) re-reads the revision and
+   * retries once with its current epoch and content reference
+   * (docs/design/encryption.md, "Content gone mid-sync").
+   */
+  private async decodeRevision(revision: Revision, reread: boolean): Promise<IncomingRevision> {
     const epoch = revision.epoch;
     if (epoch === 0) throw new RemoteContentError(`revision ${revision.id} of an encrypted vault is not encrypted`);
     const key = await this.key(epoch);
@@ -203,7 +213,13 @@ export class EncryptedCodec implements RevisionCodec {
       const blob: SealedBlob = { blobId: bytesToHex(ref.blobId), epoch, sealedSize: ref.size };
       let known = this.plainByBlob.get(blob.blobId);
       if (known === undefined) {
-        const content = await this.openBlob(blob);
+        let content: Uint8Array;
+        try {
+          content = await this.openBlob(blob);
+        } catch (error) {
+          if (reread || errorCode(error) !== Code.NotFound) throw error;
+          return this.decodeRevision(await this.reread(revision.id), true);
+        }
         known = { hash: sha256Hex(content), size: BigInt(content.length) };
         this.plainByBlob.set(blob.blobId, known);
         this.cache(blob.blobId, content);
@@ -227,7 +243,19 @@ export class EncryptedCodec implements RevisionCodec {
       if ((await this.decode(revision)).remote.contentHash === contentHash) blob = this.sealedByHash.get(contentHash);
     }
     if (blob === undefined) throw new RemoteContentError(`no blob of this vault is known to hold content ${contentHash}`);
-    const content = this.contentCache.get(blob.blobId) ?? (await this.openBlob(blob));
+    let content = this.contentCache.get(blob.blobId);
+    if (content === undefined) {
+      try {
+        content = await this.openBlob(blob);
+      } catch (error) {
+        if (revisionId === undefined || errorCode(error) !== Code.NotFound) throw error;
+        // The blob is gone (see decodeRevision): re-read the revision, and retry once with its current content.
+        const moved = (await this.decodeRevision(await this.reread(revisionId), true)).remote;
+        blob = this.sealedByHash.get(contentHash);
+        if (moved.contentHash !== contentHash || blob === undefined) throw new RemoteContentError(`revision ${revisionId} no longer holds content ${contentHash}`);
+        content = this.contentCache.get(blob.blobId) ?? (await this.openBlob(blob));
+      }
+    }
     if (BigInt(content.length) !== size || sha256Hex(content) !== contentHash) throw new RemoteContentError(`blob ${blob.blobId} does not hold content ${contentHash}`);
     return content;
   }
@@ -292,6 +320,13 @@ export class EncryptedCodec implements RevisionCodec {
     const before = this.currentEpoch;
     await this.prepare();
     return this.currentEpoch !== before;
+  }
+
+  /** The revision `revisionId` as the server stores it now. */
+  private async reread(revisionId: string): Promise<Revision> {
+    const revision = (await this.api.sync.getRevision({ vaultId: this.vaultId, revisionId })).revision;
+    if (revision === undefined) throw new RemoteContentError(`revision ${revisionId} was not returned`);
+    return revision;
   }
 
   /** The key of `epoch`, refreshing the device's keys once if it does not hold it. */
