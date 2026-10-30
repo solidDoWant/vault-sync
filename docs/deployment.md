@@ -5,7 +5,7 @@ This guide deploys the vault-sync server and its plaintext export job on Kuberne
 What you deploy:
 
 - **The server**, a Deployment of two or more identical replicas behind one Service. It is the only internet-facing part. Replicas share one PostgreSQL database and one S3 bucket and keep no state of their own, so any replica can be stopped at any time (configuration.md, High-availability deployment).
-- **The export job**, a CronJob running `vault-sync-server export`, which writes a plaintext copy of every vault to a volume your tape-archival tooling reads. It has its own credentials and is the only part that may ever hold the escrow private key.
+- **The export job**, a CronJob running `vault-sync-server export`, which writes a plaintext copy of every vault to a volume your tape-archival tooling reads. It has its own credentials and is the only part that may ever hold the escrow private key. It is off by default; turning it on (`config.export.enabled: true`, see [The export job](#the-export-job)) is recommended, because it is the plaintext disaster-recovery copy of every vault.
 - **Nothing else.** The chart creates no database, bucket, Secret or identity-provider client: it references the ones you create below.
 
 ## The image
@@ -100,11 +100,25 @@ The Coraza WAF in front of the server rejects inspected request bodies above 1 M
 
 The rest of the ingress:
 
-- Route the host to the `main` Service, port `http` (8080), for example with `resources.route` (Gateway API) or `resources.ingress`. Never expose the `metrics` Service (port 9090).
-- Allow WebSocket upgrades on `/v1/realtime`, and do not time out idle connections faster than every 30 seconds (the server pings every 30). The WAF must not log the `Sec-WebSocket-Protocol` header, which carries the access token.
+- Route the host to port `http` (8080) of the Service, for example with `config.route` (a Gateway API HTTPRoute, see [Route](#route)) or `resources.ingress`. Only port `http` may be routed to from outside the cluster: never expose port `metrics` (9090). The chart renders one Service, so an ingress's backend resolves to port `http` without naming a Service:
+
+  ```yaml
+  resources:
+    ingress:
+      main:
+        hosts:
+          - host: sync.example.com
+            paths:
+              - path: /
+                service:
+                  port: http
+  ```
+- Allow WebSocket upgrades on `/v1/realtime`, and do not time out idle connections faster than every 30 seconds (the server pings every 30). Do not limit how long a request or the WebSocket may last below what the chart's route sets: 15 minutes for requests, because a `CommitBlob` response starts only once the server has composed the whole blob (up to 10 minutes, SPEC.md §6.2), and no limit for `/v1/realtime`, a long-lived WebSocket. The WAF must not log the `Sec-WebSocket-Protocol` header, which carries the access token.
 - The server sends CORS headers for Obsidian's app origins itself; do not strip them.
 
 ## The export job
+
+The export job is off by default. Turn it on with `config.export.enabled: true` and an output volume (`config.export.output.persistence`): it is the plaintext disaster-recovery copy of every vault, readable without vault-sync, so running it is recommended ([export.md](export.md)).
 
 The CronJob runs `vault-sync-server export -out /export/<directory>` on `config.export.schedule` (a cron expression, daily at 03:00 by default; `config.export.timeZone` sets an IANA time zone, otherwise the cluster's default applies). It writes every plaintext vault as a browsable tree with a manifest, replacing the previous export atomically ([export.md](export.md) describes the layout and how to verify it). Runs never overlap (`concurrencyPolicy: Forbid`), each run is stopped after `config.export.activeDeadlineSeconds` (6 hours by default, so a hung run, for example on a stalled NFS volume, cannot block every later one), a failed run is retried twice, and the job exits non-zero when anything failed or was missing, so alert on failed Jobs.
 
@@ -112,7 +126,7 @@ The CronJob runs `vault-sync-server export -out /export/<directory>` on `config.
 - **Own credentials.** By default the export uses the server's database and S3 settings. Give it a read-only database role (`SELECT` on `vaults`, `documents`, `revisions` and `blobs`) with `config.export.database.url` (`value` or `secretKeyRef`) and `config.export.database.tls.clientCertificate.secretName` (`config.export.database.tls.clientCertificate.certKey` and `config.export.database.tls.clientCertificate.keyKey` name the keys), and read-only S3 credentials as above. Empty fields fall back to the server's; the CA certificates are shared. Its sessions are read-only in any case.
 - **Escrow.** `config.export.escrow.secretName` names the Secret holding the escrow private key (SPEC.md §9.4; generating it and recovering a vault with `age` are in [encryption.md](encryption.md#escrow)). Its key `config.export.escrow.key` (default `escrow.key`) holds the identity file (`age-keygen -pq` output). It is mounted read-only at `/etc/vault-sync/escrow` in the export job, which reads it as `VAULT_SYNC_ESCROW_IDENTITY_FILE` to decrypt escrowed vaults, and never into the server: the chart refuses to render if any value (a persistence entry, an env var, `envFrom`, default pod options) would put it into the server, and `make chart-lint` checks that the rendered server Deployment never names it. For an escrow key rotation, `config.export.escrow.signingKeysKey` names the key of the same Secret that holds the escrow signing keys (one standard base64 Ed25519 seed per line); the export job then reads it as `VAULT_SYNC_ESCROW_SIGNING_KEY_FILE` (see [export.md](export.md#rotating-the-escrow-key)).
 - **Escrow job token.** `config.escrowJobToken.secretName` names the Secret holding the static bearer token of the export job's escrow rotation endpoint (`VAULT_SYNC_ESCROW_JOB_TOKEN_FILE`, [configuration.md](configuration.md)); its key `config.escrowJobToken.key` (default `token`) holds one line of at least 32 characters, for example `openssl rand -base64 32`. It is mounted read-only at `/etc/vault-sync/escrow-job-token` into the server, which checks it, and the export job, which presents it, and into nothing else. Empty leaves the endpoint off.
-- `config.export.enabled: false` drops the CronJob and all of its mounts.
+- `config.export.enabled: false` (the default) drops the CronJob and all of its mounts.
 
 ## Installing the chart
 
@@ -139,29 +153,27 @@ config:
     issuerUrl: https://auth.example.com/application/o/vault-sync/
     audience: <client id>
   export:
+    enabled: true
     output:
       persistence:
         type: persistentVolumeClaim
         existingClaim: vault-sync-export
-resources:
   route:
-    main:
-      parentRefs:
-        - name: public-gateway
-          namespace: istio-ingress
-      hostnames:
-        - sync.example.com
-      rules:
-        - backendRefs:
-            - identifier: main
-              port: 8080
+    enabled: true
+    parentRefs:
+      - name: public-gateway
+        namespace: istio-ingress
+    hostnames:
+      - sync.example.com
 ```
 
 ```sh
 helm install vault-sync oci://ghcr.io/soliddowant/charts/vault-sync --version <version> -n vault-sync -f values.yaml
 ```
 
-The chart then renders: the server Deployment and its PodDisruptionBudget, the export CronJob, the `main` (8080) and `metrics` (9090) Services, a ServiceMonitor, and a ServiceAccount without an API token. It creates no Secrets.
+The chart then renders, each named after the release (here `vault-sync`): the server Deployment, one Service with ports `http` (8080) and `metrics` (9090), an HTTPRoute, a ServiceAccount without an API token, and the export CronJob `vault-sync-export`. With `config.server.metrics.serviceMonitor.enabled: true` it adds a ServiceMonitor. It creates no Secrets, and sets no PodDisruptionBudget, container resources or spread constraints: see [High availability](#high-availability) for what to add.
+
+Every resource is named after the release, never with the chart name in it twice: a release `obsidian-vault-sync` renders the Deployment, Service, ServiceAccount, ServiceMonitor, HTTPRoute and PodDisruptionBudget `obsidian-vault-sync` and the CronJob `obsidian-vault-sync-export`. The chart sets the bjw-s `global.nameOverride` to the release name unless you set it.
 
 ## Upgrading
 
@@ -199,13 +211,13 @@ Its members can use the vault again at once, on every replica, with all its docu
 
 ## Chart values
 
-The chart has two top-level keys. `config` is the chart's own interface, described below; every empty value leaves its variable unset, so the server's default applies. `resources` is passed to the [bjw-s common library chart](https://github.com/bjw-s-labs/helm-charts/tree/main/charts/library/common) (5.3.0) and deep-merged over what the chart computes, so anything that library supports can be overridden or added there (see [Overriding the computed resources](#overriding-the-computed-resources)).
+The chart has two top-level keys. `config` is the chart's own interface, described below; every `null` value (the default for optional settings) leaves its variable unset, so the server's default applies. `values.schema.json` checks `config` strictly: an unknown key (a typo such as `config.s3.forcepathstyle`), a value of the wrong type or a malformed duration fails the install. Byte sizes and counts are integers, switches are booleans, and durations are Go duration strings such as `30s` or `1h30m`. `resources` is passed to the [bjw-s common library chart](https://github.com/bjw-s-labs/helm-charts/tree/main/charts/library/common) (5.3.0) and deep-merged over what the chart computes, so anything that library supports can be overridden or added there (see [Overriding the computed resources](#overriding-the-computed-resources)).
 
 ### Shared settings
 
 | Value | Default | Description |
 |---|---|---|
-| `config.logLevel` | empty (`info`) | `VAULT_SYNC_LOG_LEVEL` for the server and the export: `debug`, `info`, `warn` or `error`. |
+| `config.logLevel` | null (`info`) | `VAULT_SYNC_LOG_LEVEL` for the server and the export: `debug`, `info`, `warn` or `error`. |
 
 ### PostgreSQL
 
@@ -225,10 +237,10 @@ The chart has two top-level keys. `config` is the chart's own interface, describ
 | Value | Default | Description |
 |---|---|---|
 | `config.s3.bucket` | empty | `VAULT_SYNC_S3_BUCKET`. Required. |
-| `config.s3.endpoint` | empty (AWS S3) | `VAULT_SYNC_S3_ENDPOINT`, for example the RGW URL. |
-| `config.s3.region` | empty (`us-east-1`) | `VAULT_SYNC_S3_REGION`. |
-| `config.s3.forcePathStyle` | empty (`true`) | `VAULT_SYNC_S3_FORCE_PATH_STYLE`: `"true"` or `"false"`. |
-| `config.s3.idleTimeout` | empty (`2m`) | `VAULT_SYNC_S3_IDLE_TIMEOUT`, a Go duration. |
+| `config.s3.endpoint` | null (AWS S3) | `VAULT_SYNC_S3_ENDPOINT`, for example the RGW URL. |
+| `config.s3.region` | null (`us-east-1`) | `VAULT_SYNC_S3_REGION`. |
+| `config.s3.forcePathStyle` | null (`true`) | `VAULT_SYNC_S3_FORCE_PATH_STYLE`, a boolean. |
+| `config.s3.idleTimeout` | null (`2m`) | `VAULT_SYNC_S3_IDLE_TIMEOUT`, a Go duration. |
 | `config.s3.credentials.secretName` | empty | Secret with the S3 credentials, mounted at `/etc/vault-sync/s3-credentials`; sets `VAULT_SYNC_S3_ACCESS_KEY_ID_FILE` and `VAULT_SYNC_S3_SECRET_ACCESS_KEY_FILE`. Required. |
 | `config.s3.credentials.accessKeyIdKey` | `AWS_ACCESS_KEY_ID` | Key of the access key id in that Secret. |
 | `config.s3.credentials.secretAccessKeyKey` | `AWS_SECRET_ACCESS_KEY` | Key of the secret access key in that Secret. |
@@ -241,11 +253,11 @@ The chart has two top-level keys. `config` is the chart's own interface, describ
 |---|---|---|
 | `config.oidc.issuerUrl` | empty | `VAULT_SYNC_OIDC_ISSUER_URL`. Required. |
 | `config.oidc.audience` | empty | `VAULT_SYNC_OIDC_AUDIENCE`. Required. |
-| `config.oidc.clientId` | empty | `VAULT_SYNC_OIDC_CLIENT_ID`, the client the plugin signs in as when it differs from the audience. Empty leaves it unset. |
+| `config.oidc.clientId` | null | `VAULT_SYNC_OIDC_CLIENT_ID`, the client the plugin signs in as when it differs from the audience. null leaves it unset. |
 
 ### Server
 
-The listen addresses are fixed by the chart: `VAULT_SYNC_LISTEN_ADDRESS` is `:8080` (port `http`) and `VAULT_SYNC_METRICS_LISTEN_ADDRESS` is `:9090` (port `metrics`, which the probes and the ServiceMonitor use). Every value below sets the variable named, documented in configuration.md; empty uses the server's default.
+The listen addresses are fixed by the chart: `VAULT_SYNC_LISTEN_ADDRESS` is `:8080` (port `http`) and `VAULT_SYNC_METRICS_LISTEN_ADDRESS` is `:9090` (port `metrics`, which the probes and the ServiceMonitor use). Every value below sets the variable named, documented in configuration.md; null uses the server's default. Byte sizes, counts and limits are integers, `config.server.escrow.default` is a boolean, and the rest are Go durations, except the escrow keys and ids (strings).
 
 | Value | Variable |
 |---|---|
@@ -275,7 +287,7 @@ The listen addresses are fixed by the chart: `VAULT_SYNC_LISTEN_ADDRESS` is `:80
 
 | Value | Default | Description |
 |---|---|---|
-| `config.server.metrics.serviceMonitor.enabled` | `true` | Create a prometheus-operator ServiceMonitor for `/metrics` on the `metrics` Service. Needs the `monitoring.coreos.com` CRDs; set `false` without them. |
+| `config.server.metrics.serviceMonitor.enabled` | `false` | Create a prometheus-operator ServiceMonitor scraping `/metrics` on port `metrics` of the Service. Needs the `monitoring.coreos.com` CRDs. |
 | `config.server.metrics.serviceMonitor.interval` | `1m` | Scrape interval. |
 | `config.server.metrics.serviceMonitor.scrapeTimeout` | `10s` | Scrape timeout. |
 
@@ -283,7 +295,7 @@ The listen addresses are fixed by the chart: `VAULT_SYNC_LISTEN_ADDRESS` is `:80
 
 | Value | Default | Description |
 |---|---|---|
-| `config.export.enabled` | `true` | Render the export CronJob. |
+| `config.export.enabled` | `false` | Render the export CronJob (recommended: it is the plaintext disaster-recovery copy). |
 | `config.export.schedule` | `0 3 * * *` | Cron schedule. |
 | `config.export.timeZone` | empty | IANA time zone of the schedule. |
 | `config.export.activeDeadlineSeconds` | `21600` | Upper bound, in seconds, on one export run (the Job's `activeDeadlineSeconds`); must be positive. |
@@ -301,24 +313,50 @@ The listen addresses are fixed by the chart: `VAULT_SYNC_LISTEN_ADDRESS` is `:80
 | `config.export.escrow.secretName` | empty | Secret holding the escrow private key, mounted read-only at `/etc/vault-sync/escrow` in the export job only, never in the server. Not read until Phase 4. |
 | `config.export.escrow.signingKeysKey` | empty | Key of the escrow Secret holding the escrow signing keys, mounted with it and read as `VAULT_SYNC_ESCROW_SIGNING_KEY_FILE` by `export rotate-escrow`. Empty mounts none. |
 
+### Route
+
+`config.route` renders a Gateway API HTTPRoute (bjw-s `route.main`) that sends its hostnames to port `http` of the Service. The chart sets the backend and the timeouts; `resources.route.main` overrides any of it.
+
+| Value | Default | Description |
+|---|---|---|
+| `config.route.enabled` | `false` | Render the HTTPRoute. |
+| `config.route.hostnames` | `[]` | Hostnames it matches, for example `[sync.example.com]`. |
+| `config.route.parentRefs` | `[]` | The Gateway (and listener) to attach to, as Gateway API `parentRefs` (`name`, `namespace`, `sectionName`, ...). |
+| `config.route.annotations` | `{}` | Annotations of the HTTPRoute. |
+| `config.route.labels` | `{}` | Labels of the HTTPRoute. |
+
+The route has two rules, both to port `http`:
+
+- `/v1/realtime`: `timeouts.request` and `timeouts.backendRequest` of `0s`, which disables them. It is a long-lived WebSocket, kept alive by the server's pings every 30 seconds, and a gateway's default request timeout would cut it off.
+- `/` (everything else): `timeouts.request` and `timeouts.backendRequest` of `15m`. A `CommitBlob` response starts only once the server has composed the whole blob, which may take up to 10 minutes (SPEC.md §6.2), and its response may then take up to `VAULT_SYNC_WRITE_TIMEOUT` (2 minutes by default) to write. Raise it with `resources.route.main.rules` if you raise the write timeout.
+
 ### Overriding the computed resources
 
 Under `resources`, the chart computes these bjw-s entries; your values are merged over them and win:
 
 | Entry | What the chart sets |
 |---|---|
-| `resources.controllers.main` | The server Deployment: `replicas: 2`, `RollingUpdate` with `maxUnavailable: 0` and `maxSurge: 1`, a PodDisruptionBudget with `maxUnavailable: 1` while replicas are more than 1, a topology spread over `kubernetes.io/hostname`, `terminationGracePeriodSeconds` of `config.server.shutdownDelay` plus `config.server.shutdownTimeout` plus 10 seconds (at least 45; 45 with the defaults), `automountServiceAccountToken: false`, a startup probe (`/healthz`, up to 10 minutes, so long migrations are not killed), a liveness probe (`/healthz`) and a readiness probe (`/readyz`, every 2 s) on the metrics port, and requests/limits of 100m/1 CPU and 128Mi/512Mi memory. |
-| `resources.controllers.export` | The export CronJob: `concurrencyPolicy: Forbid`, `backoffLimit: 2`, 3 successful and 3 failed Jobs kept, and requests/limits of 100m/1 CPU and 128Mi/1Gi memory. |
+| `resources.controllers.main` | The server Deployment, named after the release: `replicas: 2`, `RollingUpdate` with `maxUnavailable: 0` and `maxSurge: 1`, `terminationGracePeriodSeconds` of `config.server.shutdownDelay` plus `config.server.shutdownTimeout` plus 10 seconds (at least 45; 45 with the defaults), `automountServiceAccountToken: false`, a startup probe (`/healthz`, up to 10 minutes, so long migrations are not killed), a liveness probe (`/healthz`) and a readiness probe (`/readyz`, every 2 s) on the metrics port. |
+| `resources.controllers.export` | The export CronJob `<release>-export`: `concurrencyPolicy: Forbid`, `backoffLimit: 2` and 3 successful and 3 failed Jobs kept. |
 | both controllers | Container `main`, image `ghcr.io/soliddowant/vault-sync` at the chart's `appVersion`, user and group `65532` (`runAsNonRoot`, `fsGroup` 65532), a read-only root filesystem, no privilege escalation, all capabilities dropped and the `RuntimeDefault` seccomp profile. |
-| `resources.service.main`, `resources.service.metrics` | ClusterIP Services on ports 8080 (`http`) and 9090 (`metrics`). |
+| `resources.service.main` | One ClusterIP Service with ports `http` (8080, primary) and `metrics` (9090). |
 | `resources.serviceMonitor.main` | The ServiceMonitor, when enabled. |
+| `resources.route.main` | The HTTPRoute, when `config.route.enabled`. |
 | `resources.persistence.*` | `database-client-cert`, `database-ca`, `s3-credentials`, `s3-ca`, `export-database-client-cert`, `export-s3-credentials`, `escrow` (read-only Secrets, mode `0440`) and `export` (the output volume). |
 
-For example `resources.controllers.main.replicas: 3`, `resources.controllers.main.containers.main.resources.limits.memory: 1Gi` or `resources.controllers.main.containers.main.image.tag: 1.2.3`. Do not give the server a volume it writes to: replicas must keep no state of their own (SPEC.md §12).
+The chart sets no scheduling or capacity policy, because a caller could change but not remove anything it set: no PodDisruptionBudget, no container resources and no topology spread constraints (a pod that declares any opts out of the cluster's default spreading). Set them under `resources`, for example `resources.controllers.main.replicas: 3`, `resources.controllers.main.podDisruptionBudget.maxUnavailable: 1`, `resources.controllers.main.containers.main.resources.requests.memory: 128Mi`, `resources.controllers.export.containers.main.resources.limits.memory: 1Gi` or `resources.controllers.main.containers.main.image.tag: 1.2.3`. As a starting point for sizing, earlier chart versions requested 100m CPU and 128Mi memory for both, with limits of 1 CPU and 512Mi memory for the server and 1Gi for the export; a server's memory grows with concurrent requests, each holding up to `VAULT_SYNC_MAX_REQUEST_BYTES`. Do not give the server a volume it writes to: replicas must keep no state of their own (SPEC.md §12).
 
 ## High availability
 
-The defaults follow the recommended settings in [configuration.md](configuration.md#high-availability-deployment): at least two replicas spread across nodes, a PodDisruptionBudget, readiness on `/readyz` with a short period, liveness on `/healthz`, a grace period above `VAULT_SYNC_SHUTDOWN_DELAY` plus `VAULT_SYNC_SHUTDOWN_TIMEOUT`, and rolling updates that start a new pod before stopping an old one. The grace period follows `config.server.shutdownDelay` and `config.server.shutdownTimeout`; if you set `resources.controllers.main.pod.terminationGracePeriodSeconds` yourself, the chart refuses to render unless it is larger than the delay plus the timeout. Scale with `resources.controllers.main.replicas`; nothing else changes.
+The defaults follow the recommended settings in [configuration.md](configuration.md#high-availability-deployment) that the server needs to run correctly: two replicas, readiness on `/readyz` with a short period, liveness on `/healthz`, a grace period above `VAULT_SYNC_SHUTDOWN_DELAY` plus `VAULT_SYNC_SHUTDOWN_TIMEOUT`, and rolling updates that start a new pod before stopping an old one. The grace period follows `config.server.shutdownDelay` and `config.server.shutdownTimeout`; if you set `resources.controllers.main.pod.terminationGracePeriodSeconds` yourself, the chart refuses to render unless it is larger than the delay plus the timeout. Scale with `resources.controllers.main.replicas`; nothing else changes. Spreading replicas across nodes is left to the cluster's default topology spread (or your own `resources.controllers.main.pod.topologySpreadConstraints`), and a PodDisruptionBudget to you, for example:
+
+```yaml
+resources:
+  controllers:
+    main:
+      podDisruptionBudget:
+        maxUnavailable: 1   # or minAvailable: 1, not both
+```
 
 ## Releasing
 

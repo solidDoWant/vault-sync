@@ -16,8 +16,8 @@
 # the running pods without a restart.
 config:
   # logLevel sets VAULT_SYNC_LOG_LEVEL on the server and the export job:
-  # debug, info, warn or error. Empty uses the server default (info).
-  logLevel: ""
+  # debug, info, warn or error. null uses the server default (info).
+  logLevel: null
 
   # database configures PostgreSQL for the server. The export job uses the
   # same settings unless config.export.database overrides them.
@@ -57,16 +57,16 @@ config:
     bucket: ""
     # endpoint is VAULT_SYNC_S3_ENDPOINT, for example the Ceph RGW URL. Empty
     # uses AWS S3.
-    endpoint: ""
-    # region is VAULT_SYNC_S3_REGION. Empty uses the server default
+    endpoint: null
+    # region is VAULT_SYNC_S3_REGION. null uses the server default
     # (us-east-1).
-    region: ""
-    # forcePathStyle is VAULT_SYNC_S3_FORCE_PATH_STYLE: "true" or "false".
-    # Empty uses the server default (true).
-    forcePathStyle: ""
+    region: null
+    # forcePathStyle is VAULT_SYNC_S3_FORCE_PATH_STYLE, a boolean.
+    # null uses the server default (true).
+    forcePathStyle: null
     # idleTimeout is VAULT_SYNC_S3_IDLE_TIMEOUT, a Go duration. Empty uses the
     # server default (2m).
-    idleTimeout: ""
+    idleTimeout: null
     # credentials names the Secret holding the S3 access key id and secret
     # access key (required), and the keys within it. Mounted at
     # /etc/vault-sync/s3-credentials and passed as
@@ -95,83 +95,85 @@ config:
     # vault-sync provider.
     audience: ""
     # clientId is VAULT_SYNC_OIDC_CLIENT_ID: the OAuth client the plugin signs
-    # in as, when it differs from the audience. Empty leaves it unset.
-    clientId: ""
+    # in as, when it differs from the audience. null leaves it unset.
+    clientId: null
 
-  # server holds the API server's tunables. Every empty value leaves its
+  # server holds the API server's tunables. Every null value leaves its
   # variable unset, so the server default applies (docs/configuration.md).
+  # Byte sizes and counts are integers; durations are Go duration strings
+  # such as 30s or 1h30m (values.schema.json checks both).
   # The listen addresses are fixed by the chart: the API on 8080
   # (VAULT_SYNC_LISTEN_ADDRESS) and metrics and health on 9090
   # (VAULT_SYNC_METRICS_LISTEN_ADDRESS).
   server:
     # VAULT_SYNC_MAX_REQUEST_BYTES. Keep it at or below the WAF's inspected
     # body limit (1 MiB by default).
-    maxRequestBytes: ""
+    maxRequestBytes: null
     # VAULT_SYNC_WRITE_TIMEOUT.
-    writeTimeout: ""
+    writeTimeout: null
     # VAULT_SYNC_MAX_CONCURRENT_RPCS_PER_USER.
-    maxConcurrentRpcsPerUser: ""
+    maxConcurrentRpcsPerUser: null
     # VAULT_SYNC_SHUTDOWN_DELAY and VAULT_SYNC_SHUTDOWN_TIMEOUT. The chart
     # sets the pod's terminationGracePeriodSeconds to their sum (5s + 30s
     # when unset) plus 10 seconds, and at least 45, and refuses to render if
     # an explicit resources.controllers.main.pod.terminationGracePeriodSeconds
     # is not larger than their sum.
-    shutdownDelay: ""
-    shutdownTimeout: ""
+    shutdownDelay: null
+    shutdownTimeout: null
     blob:
       # VAULT_SYNC_BLOB_MAX_CHUNK_BYTES.
-      maxChunkBytes: ""
+      maxChunkBytes: null
       # VAULT_SYNC_BLOB_MAX_SIZE_BYTES.
-      maxSizeBytes: ""
+      maxSizeBytes: null
       # VAULT_SYNC_BLOB_MAX_UPLOADS_PER_VAULT.
-      maxUploadsPerVault: ""
+      maxUploadsPerVault: null
       # VAULT_SYNC_BLOB_UPLOAD_TTL.
-      uploadTtl: ""
+      uploadTtl: null
       # VAULT_SYNC_BLOB_UPLOAD_RECLAIM_IDLE.
-      uploadReclaimIdle: ""
+      uploadReclaimIdle: null
       # VAULT_SYNC_BLOB_GC_GRACE.
-      gcGrace: ""
+      gcGrace: null
     retention:
       # VAULT_SYNC_RETENTION_KEEP_ALL.
-      keepAll: ""
+      keepAll: null
       # VAULT_SYNC_RETENTION_KEEP_DAILY.
-      keepDaily: ""
+      keepDaily: null
       # VAULT_SYNC_RETENTION_PURGE_MARKER_HORIZON.
-      purgeMarkerHorizon: ""
+      purgeMarkerHorizon: null
       # VAULT_SYNC_RETENTION_OVERRIDE_MIN_KEEP_ALL: only read by the
       # `retention set` subcommand run in a server pod (docs/deployment.md).
-      overrideMinKeepAll: ""
+      overrideMinKeepAll: null
       # VAULT_SYNC_RETENTION_OVERRIDE_MIN_KEEP_DAILY, likewise.
-      overrideMinKeepDaily: ""
+      overrideMinKeepDaily: null
     realtime:
       # VAULT_SYNC_REALTIME_MAX_CONNECTIONS.
-      maxConnections: ""
+      maxConnections: null
       # VAULT_SYNC_REALTIME_MAX_CONNECTIONS_PER_USER.
-      maxConnectionsPerUser: ""
+      maxConnectionsPerUser: null
       # VAULT_SYNC_REALTIME_MAX_SUBSCRIPTIONS.
-      maxSubscriptions: ""
+      maxSubscriptions: null
     escrow:
       # VAULT_SYNC_ESCROW_RECIPIENT: the escrow public key, an age hybrid
       # recipient (age1pq1…). Public; the escrow private key goes into the
       # export job only (config.export.escrow).
-      recipient: ""
+      recipient: null
       # VAULT_SYNC_ESCROW_SIGNING_KEY: the escrow signing public key (base64
       # Ed25519), set together with recipient. Public; its private key stays
       # with the escrow identity.
-      signingKey: ""
+      signingKey: null
       # VAULT_SYNC_ESCROW_DEFAULT: whether new encrypted vaults have escrow
       # unless their owner turns it off (true when unset).
-      default: ""
+      default: null
       # VAULT_SYNC_ESCROW_RETIRING_KEY_IDS: comma-separated ids of escrow
       # keys being rotated away from, which escrow slots may still name
       # until the export job has re-wrapped them all.
-      retiringKeyIds: ""
+      retiringKeyIds: null
     metrics:
       # serviceMonitor creates a prometheus-operator ServiceMonitor scraping
-      # /metrics on the "metrics" Service (port 9090). Needs the
-      # monitoring.coreos.com CRDs; set enabled to false without them.
+      # /metrics on port "metrics" (9090) of the Service. Off by default; it
+      # needs the monitoring.coreos.com CRDs.
       serviceMonitor:
-        enabled: true
+        enabled: false
         interval: 1m
         scrapeTimeout: 10s
 
@@ -179,8 +181,12 @@ config:
   # `vault-sync-server export -out /export/<directory>` with its own Secret
   # mounts; the server Deployment never mounts the export's output or its
   # escrow key.
+  #
+  # Off by default, so a minimal install needs only the database, S3 and
+  # OIDC settings. Turning it on is recommended: the export is the plaintext
+  # disaster-recovery copy of every vault (docs/export.md).
   export:
-    enabled: true
+    enabled: false
     # schedule is the CronJob schedule; timeZone is an optional IANA time
     # zone for it (the cluster's default otherwise).
     schedule: "0 3 * * *"
@@ -249,28 +255,52 @@ config:
     secretName: ""
     key: token
 
+  # route renders a Gateway API HTTPRoute (through bjw-s `route`) sending
+  # hostnames to port "http" of the Service. Only port "http" may be routed
+  # to from outside the cluster. The chart sets the backend and the
+  # timeouts: 15m for requests (a CommitBlob response starts only once the
+  # server has composed the blob, up to 10 minutes) and none ("0s") for the
+  # long-lived /v1/realtime WebSocket. resources.route.main overrides any
+  # of it.
+  route:
+    enabled: false
+    # hostnames the route matches, for example [sync.example.com].
+    hostnames: []
+    # parentRefs names the Gateway (and listener) to attach to, for example
+    #   - name: internet-gateway
+    #     namespace: gateway
+    #     sectionName: https
+    parentRefs: []
+    annotations: {}
+    labels: {}
+
 # resources follows the bjw-s common library schema
 # (https://github.com/bjw-s-labs/helm-charts/tree/main/charts/library/common)
 # and is deep-merged over what the chart computes; your values win.
 #
-# The chart computes:
-#   - controllers.main: the server Deployment. 2 replicas, RollingUpdate with
-#     maxUnavailable 0 and maxSurge 1, a PodDisruptionBudget with
-#     maxUnavailable 1 while replicas > 1, spread across nodes, startup and
-#     liveness probes on /healthz and a readiness probe on /readyz (metrics
-#     port), terminationGracePeriodSeconds derived from
-#     config.server.shutdownDelay and shutdownTimeout (45 by default), non-root (65532) with a
-#     read-only root filesystem and no capabilities, and requests/limits of
-#     100m/1 CPU and 128Mi/512Mi memory.
-#   - controllers.export: the export CronJob (when config.export.enabled),
-#     with the same security context, concurrencyPolicy Forbid, backoffLimit
-#     2, config.export.activeDeadlineSeconds and requests/limits of 100m/1 CPU and 128Mi/1Gi memory.
-#   - service.main (port 8080, "http": point your ingress here) and
-#     service.metrics (port 9090; never expose it).
+# The chart computes only what the server needs to run correctly, and sets
+# no scheduling or capacity policy (no PodDisruptionBudget, container
+# resources or topology spread constraints): your values are merged over
+# what it computes, so anything it set could be changed but not removed.
+#   - controllers.main: the server Deployment, named after the release. 2
+#     replicas, RollingUpdate with maxUnavailable 0 and maxSurge 1, startup
+#     and liveness probes on /healthz and a readiness probe on /readyz
+#     (metrics port), terminationGracePeriodSeconds derived from
+#     config.server.shutdownDelay and shutdownTimeout (45 by default), and
+#     non-root (65532) with a read-only root filesystem and no capabilities.
+#   - controllers.export: the export CronJob <release>-export (when
+#     config.export.enabled), with the same security context,
+#     concurrencyPolicy Forbid, backoffLimit 2 and
+#     config.export.activeDeadlineSeconds.
+#   - service.main: one Service with port "http" (8080, primary: ingress and
+#     route backends resolve to it) and port "metrics" (9090; never route
+#     to it from outside the cluster).
 #   - serviceMonitor.main (when config.server.metrics.serviceMonitor.enabled).
+#   - route.main (when config.route.enabled).
 #   - persistence entries for every Secret above and the export volume.
 #
-# For example, to run three replicas and pin the image:
+# For example, to run three replicas, pin the image, size the server and
+# add a PodDisruptionBudget:
 #   controllers:
 #     main:
 #       replicas: 3
@@ -279,12 +309,17 @@ config:
 #           image:
 #             repository: ghcr.io/soliddowant/vault-sync
 #             tag: 1.2.3
+#           resources:
+#             requests: {cpu: 100m, memory: 128Mi}
+#             limits: {memory: 512Mi}
+#       podDisruptionBudget:
+#         maxUnavailable: 1
 #
 # The server keeps no per-replica state (SPEC.md §12): do not add volumes
 # to controllers.main that a replica writes to.
 resources:
   controllers:
     main: {}
-  # ingress and route are entirely yours; the Service to target is
-  # service.main (identifier "main"), port "http".
+  # ingress is entirely yours; with one Service, its backend resolves to
+  # port "http" without naming a Service.
   ingress: {}

@@ -6,6 +6,8 @@
 vault-sync-server export -out /backup/vault-sync
 ```
 
+Running it is recommended: the export is the plaintext disaster-recovery copy of every vault, readable with any editor and without vault-sync, PostgreSQL or S3, so it is what you restore from if the database or the bucket is lost. The Helm chart runs it as a CronJob, but only once you turn it on: set `config.export.enabled: true` and give it an output volume in `config.export.output.persistence` ([deployment.md](deployment.md#the-export-job) lists every value).
+
 ## Flags
 
 | Flag | Description |

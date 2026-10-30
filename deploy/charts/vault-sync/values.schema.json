@@ -1,0 +1,593 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "vault-sync chart values",
+  "description": "config is strict: every key and type is checked, and null means the server default. resources is passed to the bjw-s common library, which validates its own parts.",
+  "type": "object",
+  "properties": {
+    "config": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "logLevel": {
+          "enum": [
+            "debug",
+            "info",
+            "warn",
+            "error",
+            null
+          ]
+        },
+        "database": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "url": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "value": {
+                  "type": "string"
+                },
+                "secretKeyRef": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "key": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            },
+            "tls": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "clientCertificate": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "secretName": {
+                      "type": "string"
+                    },
+                    "certKey": {
+                      "type": "string"
+                    },
+                    "keyKey": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "caCert": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "secretKeyRef": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "name": {
+                          "type": "string"
+                        },
+                        "key": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "s3": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "bucket": {
+              "type": "string"
+            },
+            "endpoint": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "region": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "forcePathStyle": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "idleTimeout": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/duration"
+                }
+              ]
+            },
+            "credentials": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "secretName": {
+                  "type": "string"
+                },
+                "accessKeyIdKey": {
+                  "type": "string"
+                },
+                "secretAccessKeyKey": {
+                  "type": "string"
+                }
+              }
+            },
+            "caCert": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "secretKeyRef": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "key": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "oidc": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "issuerUrl": {
+              "type": "string"
+            },
+            "audience": {
+              "type": "string"
+            },
+            "clientId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "server": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "maxRequestBytes": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "writeTimeout": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/duration"
+                }
+              ]
+            },
+            "maxConcurrentRpcsPerUser": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "shutdownDelay": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/duration"
+                }
+              ]
+            },
+            "shutdownTimeout": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/duration"
+                }
+              ]
+            },
+            "blob": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "maxChunkBytes": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "maxSizeBytes": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "maxUploadsPerVault": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "uploadTtl": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/$defs/duration"
+                    }
+                  ]
+                },
+                "uploadReclaimIdle": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/$defs/duration"
+                    }
+                  ]
+                },
+                "gcGrace": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/$defs/duration"
+                    }
+                  ]
+                }
+              }
+            },
+            "retention": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "keepAll": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/$defs/duration"
+                    }
+                  ]
+                },
+                "keepDaily": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/$defs/duration"
+                    }
+                  ]
+                },
+                "purgeMarkerHorizon": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/$defs/duration"
+                    }
+                  ]
+                },
+                "overrideMinKeepAll": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/$defs/duration"
+                    }
+                  ]
+                },
+                "overrideMinKeepDaily": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/$defs/duration"
+                    }
+                  ]
+                }
+              }
+            },
+            "realtime": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "maxConnections": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "maxConnectionsPerUser": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "maxSubscriptions": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                }
+              }
+            },
+            "escrow": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "recipient": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "signingKey": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "default": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "retiringKeyIds": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            },
+            "metrics": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "serviceMonitor": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "interval": {
+                      "$ref": "#/$defs/duration"
+                    },
+                    "scrapeTimeout": {
+                      "$ref": "#/$defs/duration"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "export": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "schedule": {
+              "type": "string"
+            },
+            "timeZone": {
+              "type": "string"
+            },
+            "activeDeadlineSeconds": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "output": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "persistence": {
+                  "type": "object",
+                  "description": "A bjw-s persistence item; validated by the library."
+                },
+                "directory": {
+                  "type": "string"
+                }
+              }
+            },
+            "database": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "url": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "value": {
+                      "type": "string"
+                    },
+                    "secretKeyRef": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "name": {
+                          "type": "string"
+                        },
+                        "key": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                },
+                "tls": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "clientCertificate": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "secretName": {
+                          "type": "string"
+                        },
+                        "certKey": {
+                          "type": "string"
+                        },
+                        "keyKey": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "s3": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "credentials": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "secretName": {
+                      "type": "string"
+                    },
+                    "accessKeyIdKey": {
+                      "type": "string"
+                    },
+                    "secretAccessKeyKey": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            },
+            "escrow": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "secretName": {
+                  "type": "string"
+                },
+                "key": {
+                  "type": "string"
+                },
+                "signingKeysKey": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "escrowJobToken": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "secretName": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string"
+            }
+          }
+        },
+        "route": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "hostnames": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "parentRefs": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "description": "A Gateway API parentRef (or a bjw-s listenerSet identifier)."
+              }
+            },
+            "annotations": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "labels": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "resources": {
+      "type": "object"
+    },
+    "global": {
+      "type": "object"
+    }
+  },
+  "$defs": {
+    "duration": {
+      "type": "string",
+      "description": "A Go duration, for example 30s or 1h30m.",
+      "pattern": "^(0|([0-9]*[.]?[0-9]+(ns|us|µs|μs|ms|s|m|h))+)$"
+    }
+  }
+}
