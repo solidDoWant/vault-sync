@@ -30,8 +30,9 @@ The scheduler (`scripts/agents/scheduler.py`) launches you as a top-level headle
 
 1. **Version.** Find the last tag (`git tag --sort=-v:refname | head`). Phase *N* complete ⇒ `0.N.0`; fixes since the last final release with no phase completed ⇒ next patch. Bump the minor (at least) if the protocol or storage changed incompatibly since the last tag: `buf breaking` against the last tag, and any new migration that is not backward-compatible with the previous release (SPEC.md §12). If the brief asks for a candidate, pick the next free `-rc.K` for that version.
 2. **Scope.** The phase milestone is closed, or every open issue in it is explicitly deferred with a logged decision. List open `bug` issues in the milestone and any `severity:critical`/`severity:high` bugs anywhere; **any open critical/high bug blocks the release**.
-3. **Version-bump PR.** On a branch `release/<version>`: set the version in `plugin/manifest.json` and `plugin/package.json` (and `package-lock.json`), and add a `CHANGELOG.md` section for the version, **written for the people who use vault-sync, not from PR titles** (owner instruction on #1198):
+3. **Version-bump PR.** On a branch `release/<version>`: set the version in `plugin/manifest.json` and `plugin/package.json` (and `package-lock.json`), and add a `CHANGELOG.md` section for the version, **written for the people who use vault-sync, not from PR titles** (owner instruction on #1198), in plain English: load the `simple-english` skill first (CLAUDE.md, Documentation):
    - **Opening paragraph:** what vault-sync is, what this release covers, and how to install it (the image or chart, the plugin through BRAT).
+   - **Upgrade notes for admins first,** when there are any: each breaking change as an instruction, then its reason ("Rename your HelmRelease values: …").
    - **Groups by user-facing area:** Sync, Conflicts and history, Sharing, Devices and sign-in, Server and deployment, Security, Fixes.
    - **One entry per user-visible change, in plain words,** ending with links to every PR tied to it.
    - **Internal work in one closing line:** CI, tests, agent instructions and refactors.

@@ -55,7 +55,7 @@ You may make judgment calls without waiting for the human: ambiguous acceptance 
 
 ## Status reports
 
-Post a comment on #51 when something material happened since your last one (a critical-path PR merged, a phase moved, something needs the human, a give-up, a usage-limit stall of more than an hour) and at least every ~3 hours while work is running — not on every run. Content: what merged, what is in flight, what is blocked and on what, what is next, and the scheduler's cost since the last report (sum `cost_usd` of `exit` events in `~/.pm-logs/scheduler.log`). Keep it short.
+Post a comment on #51 when something material happened since your last one (a critical-path PR merged, a phase moved, something needs the human, a give-up, a usage-limit stall of more than an hour) and at least every ~3 hours while work is running — not on every run. Content: what merged, what is in flight, what is blocked and on what, what is next, and the scheduler's cost since the last report (sum `cost_usd` of `exit` events in `~/.pm-logs/scheduler.log`). Keep it short. The owner reads it, so write it in plain English: load the `simple-english` skill (CLAUDE.md, Documentation). The same goes for `needs-human` questions.
 
 ## Things only the human can do
 
