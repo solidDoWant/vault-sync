@@ -1,0 +1,181 @@
+# vault-sync alerting rules, packaged into the chart and rendered as a
+# PrometheusRule by templates/prometheus-rule.yaml when
+# config.alerts.prometheusRule.enabled is true. docs/alerts.md is the
+# runbook: one section per alert, with the reasoning behind each threshold.
+#
+# This is a Prometheus rule file with three additions the chart resolves:
+#   - __SELECTOR__ in an expression becomes the release's matchers
+#     (namespace and job, config.alerts.prometheusRule.selector), followed by
+#     a comma, or nothing; __KSM_SELECTOR__ becomes the namespace and
+#     deployment matchers for kube-state-metrics series.
+#   - __THRESHOLD__ becomes the alert's threshold (the `threshold` key, or
+#     config.alerts.rules.<AlertName>.threshold).
+#   - `requires` marks alerts off by default: `kube-state-metrics` (needs
+#     kube-state-metrics) or `export` (on while config.export.enabled).
+#
+# Service-wide alerts aggregate with `by ()`, so they fire once whether one
+# replica or every replica is scraped. Per-replica alerts fire per replica.
+groups:
+  - name: vault-sync-availability
+    rules:
+      - alert: VaultSyncNoReplicaReady
+        requires: kube-state-metrics
+        expr: max by () (kube_deployment_status_replicas_available{__KSM_SELECTOR__}) < 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: No vault-sync replica is ready.
+          description: The vault-sync Deployment has had no available replica for 5 minutes; clients cannot sync.
+      - alert: VaultSyncReplicasUnavailable
+        requires: kube-state-metrics
+        expr: max by () (kube_deployment_spec_replicas{__KSM_SELECTOR__}) - max by () (kube_deployment_status_replicas_available{__KSM_SELECTOR__}) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Fewer vault-sync replicas are ready than desired.
+          description: '{{ $value }} desired replicas of the vault-sync Deployment have been unavailable for 15 minutes.'
+      - alert: VaultSyncRPCErrorRatioHigh
+        expr: >-
+          sum by () (rate(vault_sync_rpc_requests_total{code=~"internal|unavailable|unknown", __SELECTOR__}[5m]))
+          / sum by () (rate(vault_sync_rpc_requests_total{__SELECTOR__}[5m]))
+          > __THRESHOLD__
+        threshold: 0.05
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: Many vault-sync RPCs fail with server errors.
+          description: '{{ $value | humanizePercentage }} of RPCs ended with internal, unavailable or unknown over the last 5 minutes.'
+      - alert: VaultSyncSyncLatencyHigh
+        expr: >-
+          histogram_quantile(0.95, sum by (le) (rate(vault_sync_rpc_request_duration_seconds_bucket{procedure=~"/vaultsync.v1.SyncService/(ListChanges|GetRevision|CommitRevision)", __SELECTOR__}[5m])))
+          > __THRESHOLD__
+        threshold: 2
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: vault-sync sync RPCs are slow.
+          description: 'The 95th percentile of ListChanges, GetRevision and CommitRevision has been {{ $value | humanizeDuration }} for 15 minutes.'
+      - alert: VaultSyncRealtimeListenerDown
+        expr: vault_sync_realtime_listener_up{__SELECTOR__} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: A vault-sync replica is not listening for commits.
+          description: '{{ $labels.instance }} has not listened for commits (PostgreSQL LISTEN) for 5 minutes; its realtime clients get no change notifications.'
+      - alert: VaultSyncConcurrencyRejections
+        expr: sum by () (rate(vault_sync_rpc_concurrency_rejections_total{__SELECTOR__}[10m])) > __THRESHOLD__
+        threshold: 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: vault-sync keeps rejecting RPCs over the per-user concurrency limit.
+          description: 'RPCs have been rejected with resource_exhausted for 30 minutes ({{ $value | humanize }} per second).'
+      - alert: VaultSyncRealtimeRefusals
+        expr: sum by () (rate(vault_sync_realtime_refused_upgrades_total{reason=~"user_limit|instance_limit", __SELECTOR__}[10m])) > __THRESHOLD__
+        threshold: 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: vault-sync keeps refusing realtime connections over its limits.
+          description: 'Realtime upgrades have been refused for user_limit or instance_limit for 30 minutes ({{ $value | humanize }} per second).'
+  - name: vault-sync-dependencies
+    rules:
+      - alert: VaultSyncDatabasePoolExhausted
+        expr: (vault_sync_db_pool_waiting_acquires{__SELECTOR__} > 0) and (vault_sync_db_pool_idle_connections{__SELECTOR__} == 0)
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: A vault-sync replica's PostgreSQL pool is exhausted.
+          description: '{{ $labels.instance }} has had requests waiting for a database connection, with none idle, for 10 minutes.'
+      - alert: VaultSyncS3ErrorRatioHigh
+        expr: >-
+          sum by () (rate(vault_sync_s3_requests_total{outcome="error", __SELECTOR__}[5m]))
+          / sum by () (rate(vault_sync_s3_requests_total{__SELECTOR__}[5m]))
+          > __THRESHOLD__
+        threshold: 0.05
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: Many vault-sync S3 operations fail.
+          description: '{{ $value | humanizePercentage }} of S3 operations ended with an error over the last 5 minutes.'
+      - alert: VaultSyncOIDCKeyRefreshFailing
+        expr: (increase(vault_sync_oidc_jwks_refresh_failures_total{__SELECTOR__}[30m]) > 0) and (vault_sync_oidc_jwks_age_seconds{__SELECTOR__} > __THRESHOLD__)
+        threshold: 7200
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: A vault-sync replica cannot refresh the OIDC issuer's keys.
+          description: '{{ $labels.instance }} keeps failing to fetch the OIDC key set, and its keys are older than the threshold; tokens signed with a new key will be rejected.'
+  - name: vault-sync-data-safety
+    rules:
+      - alert: VaultSyncRetentionNotSucceeding
+        expr: time() - max by () (vault_sync_service_retention_last_success_timestamp_seconds{__SELECTOR__}) > __THRESHOLD__
+        threshold: 10800
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: No vault-sync retention run has succeeded recently.
+          description: 'The last retention run without errors finished {{ $value | humanizeDuration }} ago; every replica runs it hourly.'
+      - alert: VaultSyncExportNotSucceeding
+        requires: export
+        expr: time() - max by () (vault_sync_service_export_last_success_timestamp_seconds{__SELECTOR__}) > __THRESHOLD__
+        threshold: 129600
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: No vault-sync export has succeeded recently.
+          description: 'The last export with status ok finished {{ $value | humanizeDuration }} ago; the plaintext disaster-recovery copy is out of date.'
+      - alert: VaultSyncUploadSessionsNotExpiring
+        expr: max by () (vault_sync_service_upload_session_oldest_age_seconds{__SELECTOR__}) > __THRESHOLD__
+        threshold: 172800
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: Old vault-sync upload sessions are not being cleaned up.
+          description: 'The oldest open upload session is {{ $value | humanizeDuration }} old, longer than the upload TTL allows.'
+      - alert: VaultSyncBlobGCStalled
+        expr: max by () (vault_sync_service_gc_pending_blobs{__SELECTOR__}) > 0 and on () sum by () (increase(vault_sync_retention_blobs_collected_total{__SELECTOR__}[6h])) == 0
+        for: 24h
+        labels:
+          severity: warning
+        annotations:
+          summary: vault-sync blob garbage collection is not making progress.
+          description: '{{ $value }} blobs await garbage collection and no replica has collected one for 30 hours.'
+      - alert: VaultSyncRekeyBacklogNotShrinking
+        expr: max by () (vault_sync_service_stale_epoch_revisions{__SELECTOR__}) > 0 and max by () (vault_sync_service_stale_epoch_revisions{__SELECTOR__}) >= max by () (vault_sync_service_stale_epoch_revisions{__SELECTOR__} offset 24h)
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: The E2EE re-key backlog has not shrunk for a day.
+          description: '{{ $value }} revisions of encrypted vaults are still on an old epoch, no fewer than a day ago.'
+      - alert: VaultSyncEscrowRewrapStuck
+        expr: max by () (vault_sync_service_escrow_rewrap_slots{__SELECTOR__}) > 0 and max by () (vault_sync_service_escrow_rewrap_slots{__SELECTOR__}) >= max by () (vault_sync_service_escrow_rewrap_slots{__SELECTOR__} offset 48h)
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: The escrow key rotation's re-wrap backlog has not shrunk for two days.
+          description: '{{ $value }} escrow key slots still name a retiring escrow key id, no fewer than two days ago.'
+      - alert: VaultSyncServiceMetricsStale
+        expr: time() - max by () (vault_sync_service_metrics_last_refresh_success_timestamp_seconds{__SELECTOR__}) > __THRESHOLD__
+        threshold: 600
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: vault-sync service-wide metrics are stale.
+          description: 'No replica has refreshed the service-wide metrics for {{ $value | humanizeDuration }}; the data-safety alerts read them.'
