@@ -38,9 +38,9 @@ jobs:
       # Windows/macOS e2e on PRs only when plugin-side files change; always on master.
       desktop: ${{ github.event_name != 'pull_request' || steps.filter.outputs.desktop == 'true' }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: filter
-        uses: dorny/paths-filter@v4
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         with:
           predicate-quantifier: every
           filters: |
@@ -69,7 +69,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/nix-dev-shell
       - name: Lint
         run: nix develop -c make lint
@@ -82,7 +82,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/nix-dev-shell
       - name: Unit tests
         run: nix develop -c make test
@@ -95,7 +95,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The rolling-upgrade integration test builds the previous
           # release (where this change branched from master) from history.
@@ -116,7 +116,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The rolling-upgrade test builds the previous release from history.
           fetch-depth: 0
@@ -139,7 +139,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/nix-dev-shell
       - name: Chart lint and rendered-manifest checks
         run: nix develop -c make chart-lint
@@ -157,7 +157,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/nix-dev-shell
       - name: npm vulnerabilities in shipped plugin dependencies
         run: nix develop -c make npm-audit
@@ -183,10 +183,10 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Downloaded Obsidian installers, app bundles and chromedriver, keyed
       # on the file that pins the Obsidian version.
-      - uses: actions/cache@v4
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: plugin/.wdio-obsidian-cache
           key: obsidian-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('plugin/wdio.conf.mts') }}
@@ -205,21 +205,22 @@ jobs:
       # toolchain comes from setup-* actions, PostgreSQL runs natively, and
       # scripts/with-native-s3.sh runs the pinned versitygw release natively
       # as the S3-compatible store.
-      # v6 installs the version of go.mod's `toolchain` directive (the
-      # minimum patched Go, also read by flake.nix), not its `go` line.
+      # setup-go installs the version of go.mod's `toolchain` directive, or
+      # of its `go` line when there is none (the minimum patched Go, also
+      # read by flake.nix).
       - if: runner.os != 'Linux'
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
       - if: runner.os != 'Linux'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: plugin/package-lock.json
       - if: runner.os == 'macOS'
         id: postgres-macos
-        uses: ikalnytskyi/action-setup-postgres@v8
+        uses: ikalnytskyi/action-setup-postgres@325155bfd7807b2a21ac9c2c7bb9b9a6eacc44df # v9
       # Windows: the PostgreSQL the runner image preinstalls (disabled
       # service, superuser `postgres` with the image's documented password
       # `root`). action-setup-postgres would `choco install` it, which fails
@@ -259,7 +260,7 @@ jobs:
       # WebdriverIO and verbose chromedriver logs, with Obsidian's own
       # stderr, for telling a crashed Obsidian from a failed test (#457).
       - if: failure() && runner.os != 'Linux'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-logs-${{ matrix.name }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/e2e-logs
@@ -276,7 +277,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The merge base with the PR's base branch.
           fetch-depth: 0

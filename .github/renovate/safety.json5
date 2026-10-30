@@ -31,6 +31,26 @@
       matchDepTypes: ["golang", "toolchain"],
       enabled: false,
     },
+    // Majors held until their ecosystem supports them. Remove a rule once
+    // its condition holds.
+    {
+      description: "TypeScript 7: held until typescript-eslint supports it (its typescript peer range stops below 7)",
+      matchPackageNames: ["typescript"],
+      matchUpdateTypes: ["major"],
+      enabled: false,
+    },
+    {
+      description: "WebdriverIO 10: held until wdio-obsidian-service and wdio-obsidian-reporter support it (both depend on WebdriverIO 9)",
+      matchPackageNames: ["webdriverio", "@wdio/**"],
+      matchUpdateTypes: ["major"],
+      enabled: false,
+    },
+    {
+      description: "connect-go v2: a separate migration (new module path, generated-code and handler-signature changes), not a version bump",
+      matchPackageNames: ["connectrpc.com/connect"],
+      matchUpdateTypes: ["major"],
+      enabled: false,
+    },
     {
       description: "Generator/runtime bumps change generated code",
       matchPackageNames: ["@bufbuild/**", "@connectrpc/**", "google.golang.org/protobuf", "connectrpc.com/connect"],
