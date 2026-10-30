@@ -1,94 +1,22 @@
 # Deploying vault-sync
 
-This guide deploys the vault-sync server and its plaintext export job on Kubernetes with the Helm chart in `deploy/charts/vault-sync`, on the infrastructure vault-sync is built for (SPEC.md §3): PostgreSQL run by CloudNativePG, Ceph RGW for S3, Authentik for sign-in, and an Istio gateway with a Coraza WAF in front. Every server variable the chart sets is described in [configuration.md](configuration.md), the export in [export.md](export.md), and the plugin side in [plugin.md](plugin.md).
-
-What you deploy:
-
-- **The server**, a Deployment of two or more identical replicas behind one Service. It is the only internet-facing part. Replicas share one PostgreSQL database and one S3 bucket and keep no state of their own, so any replica can be stopped at any time (configuration.md, High-availability deployment).
-- **The export job**, a CronJob running `vault-sync-server export`, which writes a plaintext copy of every vault to a volume your tape-archival tooling reads. It has its own credentials and is the only part that may ever hold the escrow private key. It is off by default; turning it on (`config.export.enabled: true`, see [The export job](#the-export-job)) is recommended, because it is the plaintext disaster-recovery copy of every vault.
-- **Nothing else.** The chart creates no database, bucket, Secret or identity-provider client: it references the ones you create below.
+This introduction moved to [Requirements](admin/requirements.md#the-reference-setup) and [Install](admin/install.md#what-you-deploy).
 
 ## The image
 
-`ghcr.io/soliddowant/vault-sync:<version>` holds one static binary, `/bin/vault-sync-server`, and CA roots: no shell and no package manager. It runs as user and group `65532` and needs no writable path except, for the export, its output volume. The same image runs the server (no arguments), the export (`export -out DIR`) and the Markdown import (`import VAULT_ID DIR`, see [import.md](import.md)).
-
-It is built reproducibly with Nix (`nix/server.nix`, `nix/server-image.nix`, `dockerTools.streamLayeredImage`), with the flake's pinned Go toolchain, and every build checks the binary with `govulncheck -mode=binary` (see [Releasing](#releasing)).
+This section moved to [Install](admin/install.md#the-image).
 
 ## PostgreSQL (CloudNativePG)
 
-vault-sync needs PostgreSQL 14 or newer and creates its schema itself on startup (migrations run behind an advisory lock, so replicas starting together are safe). Give it its own database and role. With CloudNativePG, for example:
-
-```yaml
-apiVersion: postgresql.cnpg.io/v1
-kind: Cluster
-metadata:
-  name: vault-sync-postgres
-spec:
-  instances: 3
-  bootstrap:
-    initdb:
-      database: vault_sync
-      owner: vault_sync
-  postgresql:
-    pg_hba:
-      # Certificate authentication for the application role(s); add the
-      # export's role here if it has its own.
-      - hostssl vault_sync vault_sync all cert
-```
-
-**Client certificates.** With that `pg_hba` rule, CloudNativePG authenticates the role by a client certificate signed by the cluster's client CA. Create one for the server's role (and, if the export uses its own role, one for it):
-
-```sh
-kubectl cnpg certificate vault-sync-postgres-client --cnpg-cluster vault-sync-postgres --cnpg-user vault_sync
-```
-
-This creates a `kubernetes.io/tls` Secret with `tls.crt` and `tls.key`. Set `config.database.tls.clientCertificate.secretName` to its name (`config.database.tls.clientCertificate.certKey` and `config.database.tls.clientCertificate.keyKey` name the keys if your Secret uses others, for example one issued by cert-manager). Point `config.database.tls.caCert.secretKeyRef` at the cluster's server CA, the `<cluster>-ca` Secret, key `ca.crt`. The server re-reads all three files for every new connection, so certificates that CloudNativePG or cert-manager rotate are picked up without a restart. The chart projects only the named keys of each Secret (so the `ca.key` in `<cluster>-ca` never reaches a pod), and never with `subPath`, so rotated files actually reach the pod.
-
-**The connection string.** Use the read-write service, whose name is in the server certificate, and full verification:
-
-```
-host=vault-sync-postgres-rw dbname=vault_sync user=vault_sync sslmode=verify-full
-```
-
-It holds no password with certificate authentication, so `config.database.url.value` is fine; put it in a Secret and use `config.database.url.secretKeyRef` (`name` and `key`) if it carries one. Exactly one of the two may be set. Do not put `sslcert` or `sslkey` in it (configuration.md, PostgreSQL TLS).
-
-The server rides out a CloudNativePG switchover: broken connections are replaced, and clients retry the requests that failed. Run migrations-heavy upgrades knowing that some migrations briefly block commits (configuration.md, Startup and shutdown).
+This section moved to [PostgreSQL and S3](admin/postgresql-and-s3.md#postgresql).
 
 ## S3 (Ceph RGW)
 
-vault-sync stores file contents in one bucket, which must exist. With Rook, an ObjectBucketClaim creates the bucket and a Secret with `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, which are the chart's default key names:
-
-```yaml
-apiVersion: objectbucket.io/v1alpha1
-kind: ObjectBucketClaim
-metadata:
-  name: vault-sync
-spec:
-  generateBucketName: vault-sync
-  storageClassName: ceph-bucket
-```
-
-Set `config.s3.bucket` to the bucket name (the claim's ConfigMap has it as `BUCKET_NAME`), `config.s3.endpoint` to the RGW URL (for example `https://rgw.example.com`, or the in-cluster `http://rook-ceph-rgw-objectstore.rook-ceph.svc`), and `config.s3.credentials.secretName` to the Secret. `config.s3.credentials.accessKeyIdKey` and `config.s3.credentials.secretAccessKeyKey` name its keys if they differ. The credentials are mounted as files and re-read every 10 seconds, so a rotated Secret is used without a restart.
-
-RGW accepts any region, so `config.s3.region` can stay empty, and it needs path-style addressing, which is the default (`config.s3.forcePathStyle` empty or `"true"`). If RGW's certificate is signed by a private CA, set `config.s3.caCert.secretKeyRef` to a Secret key holding it. `config.s3.idleTimeout` bounds how long a silent connection to RGW may hold a request.
-
-The server needs `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject`, `s3:ListBucket`, `s3:ListBucketMultipartUploads` and `s3:AbortMultipartUpload` on the bucket (the bucket owner has all of them). The export needs only `s3:GetObject` and `s3:ListBucket`; to give it read-only credentials, create an RGW user with a read-only bucket policy and set `config.export.s3.credentials.secretName` (with `config.export.s3.credentials.accessKeyIdKey` and `config.export.s3.credentials.secretAccessKeyKey`).
+This section moved to [PostgreSQL and S3](admin/postgresql-and-s3.md#s3).
 
 ## Authentik (the device-flow application)
 
-The plugin signs in with the OAuth 2.0 device authorization grant, so Authentik needs a public OAuth2/OpenID provider with the device code flow enabled. [plugin.md](plugin.md#identity-provider-setup-authentik) lists what the plugin requires; in Authentik:
-
-1. **Flow.** Under *System → Brands*, edit your brand and set *Default flows → Device code flow* (for example to the default authorization flow). Without it the provider's OpenID configuration has no `device_authorization_endpoint` and the plugin reports that the device authorization grant is not supported.
-2. **Provider.** Under *Applications → Providers*, create an *OAuth2/OpenID Provider*: client type **Public** (the plugin cannot keep a secret), and among the scopes the `offline_access` mapping, so that a refresh token is issued. Redirect URIs are not used by the device flow. Choose access-token and refresh-token lifetimes: the plugin refreshes access tokens ahead of expiry, and the refresh-token lifetime decides how long an offline device stays signed in.
-3. **Application.** Under *Applications → Applications*, create an application for the provider, with slug `vault-sync`. Bind the users or groups that may sync.
-
-Then set:
-
-- `config.oidc.issuerUrl` to the provider's issuer, `https://auth.example.com/application/o/vault-sync/` (the trailing slash matters: tokens' `iss` must equal it exactly);
-- `config.oidc.audience` to the provider's client ID, which Authentik puts in the access token's `aud`;
-- `config.oidc.clientId` only if the plugin should sign in as another client than the audience; empty leaves `VAULT_SYNC_OIDC_CLIENT_ID` unset, and the audience is used.
-
-Enter the same issuer URL and client ID in the plugin's settings. The server fetches the issuer's keys over `https` on the first authenticated request, so it starts even while Authentik is down.
+This section moved to [Identity provider](admin/identity-provider.md#example-authentik).
 
 ## The WAF body limit (Istio and Coraza)
 
@@ -98,23 +26,7 @@ The Coraza WAF in front of the server rejects inspected request bodies above 1 M
 - Responses are bounded by the same `VAULT_SYNC_MAX_REQUEST_BYTES`. If the WAF also inspects response bodies, its response limit must be at least as large.
 - Request bodies are read before the bearer token is checked, so keep the limit low: it is also what an unauthenticated caller can make the server read per request.
 
-The rest of the ingress:
-
-- Route the host to port `http` (8080) of the Service, for example with `config.route` (a Gateway API HTTPRoute, see [Route](#route)) or `resources.ingress`. Only port `http` may be routed to from outside the cluster: never expose port `metrics` (9090) or `service-metrics` (9091). The chart renders one Service, so an ingress's backend resolves to port `http` without naming a Service:
-
-  ```yaml
-  resources:
-    ingress:
-      main:
-        hosts:
-          - host: sync.example.com
-            paths:
-              - path: /
-                service:
-                  port: http
-  ```
-- Allow WebSocket upgrades on `/v1/realtime`, and do not time out idle connections faster than every 30 seconds (the server pings every 30). Do not limit how long a request or the WebSocket may last below what the chart's route sets: 15 minutes for requests, because a `CommitBlob` response starts only once the server has composed the whole blob (up to 10 minutes, SPEC.md §6.2), and no limit for `/v1/realtime`, a long-lived WebSocket. The WAF must not log the `Sec-WebSocket-Protocol` header, which carries the access token.
-- The server sends CORS headers for Obsidian's app origins itself; do not strip them.
+The rest of the ingress moved to [Install](admin/install.md#the-ingress).
 
 ## The export job
 
@@ -130,64 +42,11 @@ The CronJob runs `vault-sync-server export -out /export/<directory>` on `config.
 
 ## Installing the chart
 
-The chart is published to `oci://ghcr.io/soliddowant/charts/vault-sync`, versioned like the image. A minimal values file for the setup above:
-
-```yaml
-config:
-  database:
-    url:
-      value: host=vault-sync-postgres-rw dbname=vault_sync user=vault_sync sslmode=verify-full
-    tls:
-      clientCertificate:
-        secretName: vault-sync-postgres-client
-      caCert:
-        secretKeyRef:
-          name: vault-sync-postgres-ca
-          key: ca.crt
-  s3:
-    bucket: vault-sync-0b7c…
-    endpoint: http://rook-ceph-rgw-objectstore.rook-ceph.svc
-    credentials:
-      secretName: vault-sync
-  oidc:
-    issuerUrl: https://auth.example.com/application/o/vault-sync/
-    audience: <client id>
-  export:
-    enabled: true
-    output:
-      persistence:
-        type: persistentVolumeClaim
-        existingClaim: vault-sync-export
-  route:
-    enabled: true
-    parentRefs:
-      - name: public-gateway
-        namespace: istio-ingress
-    hostnames:
-      - sync.example.com
-```
-
-```sh
-helm install vault-sync oci://ghcr.io/soliddowant/charts/vault-sync --version <version> -n vault-sync -f values.yaml
-```
-
-The chart then renders, each named after the release (here `vault-sync`): the server Deployment, one Service with ports `http` (8080), `metrics` (9090) and `service-metrics` (9091), an HTTPRoute, a ServiceAccount without an API token, and the export CronJob `vault-sync-export`. With `config.server.metrics.serviceMonitor.enabled: true` it adds a ServiceMonitor, and with `config.server.metrics.serviceWide.enabled: true` as well that ServiceMonitor also scrapes port `service-metrics`. With `config.alerts.prometheusRule.enabled: true` it adds a PrometheusRule with the alerting rules ([Alerts](#alerts)). It creates no Secrets, and sets no PodDisruptionBudget, container resources or spread constraints: see [High availability](#high-availability) for what to add.
-
-Every resource is named after the release, never with the chart name in it twice: a release `obsidian-vault-sync` renders the Deployment, Service, ServiceAccount, ServiceMonitor, HTTPRoute and PodDisruptionBudget `obsidian-vault-sync` and the CronJob `obsidian-vault-sync-export`. The chart sets the bjw-s `global.nameOverride` to the release name unless you set it.
+This section moved to [Install](admin/install.md#install-the-chart).
 
 ## Upgrading
 
-Upgrade with `helm upgrade` and the new chart version. The server rolls out replica by replica: the new release's migrations run on startup and are backward-compatible with the previous release, so both serve side by side during the rollout (configuration.md, Startup and shutdown; SPEC.md §12).
-
-**Some migrations pause sync while they run.** A migration that takes an exclusive lock on a table blocks every replica, of both releases, on that table until it commits; clients retry and nothing is lost, but sync stalls meanwhile. The longest is migration 0006 (adding the cursor anchor): it rewrites every row of `revisions` while holding an exclusive lock on it, so on a large `revisions` table every commit and pull waits for the whole backfill, which grows with the number of revisions (as a rough guide, about as long as an `UPDATE` of every row of that table takes on your database). Plan such an upgrade for a quiet time. configuration.md (Startup and shutdown) lists what each migration blocks.
-
-**Set per-vault retention overrides only once every replica runs a release that has them.** During a rollout, replicas of the previous release still purge every vault under the deployment-wide policy, so an override longer than that policy would not protect the vault's history until they are gone. For the same reason, rolling back to a release before migration 0010 (the one that added per-vault overrides) after setting overrides purges every overridden vault under the deployment-wide policy again, so the history an override longer than that policy kept is purged. To keep it, give the release you roll back to a `VAULT_SYNC_RETENTION_KEEP_ALL` and `VAULT_SYNC_RETENTION_KEEP_DAILY` at least as long as the longest override. During a rollout, the previous release's retention runs may also record their scans as complete under the new release's overrides; the only effect is that a newly shortened override may purge less than it allows until the next full scan, never that anything the policy keeps is purged.
-
-**Remove devices only once every replica runs a release that can remove them.** Migration 0011 adds device removal (`RemoveDevice`, see configuration.md). Replicas of the previous release do not know about it: during a rollout they still accept commits from a removed device and still count removed devices toward the 100-device limit. Rolling back to a release before migration 0011 brings every removed device back, both in the limit and for commits. The migration itself only adds a column, so it does not pause sync. Replicas from before #590 refuse a removed device's commit without the reason the plugin recognises (the plugin shows a plain error and retries, and recognises the removal once its retry reaches an upgraded replica), and refuse a retry, under the re-registered device, of a commit that landed before the removal as `invalid_argument`; so remove devices once every replica runs a release with #590.
-
-**Rename devices only once every replica runs a release that can rename them.** `RenameDevice` needs no migration, but replicas of the previous release answer it `unimplemented`, and still refuse, as `already_exists`, a `RegisterDevice` retry whose name differs from the device's current name; the new release returns the device with its current name. A plugin that gets `already_exists` drops its saved registration id and registers anew, so nothing is lost, but the retry may use one more place under the device limit.
-
-**Upgrade the server before the plugin, or together with it.** Users update the Obsidian plugin on their own, so a plugin can run against an older server. The plugin's sync engine relies on the server's purge markers (SPEC.md §6.1, §11): a plugin newer than the server, against a server from before purge markers, takes every retention purge of a revision a device last synced as a server restore and merges every note it holds with the server's. Nothing is lost, but a note another device deleted can come back (an edit wins over a delete), and a note whose merge base was purged gets a conflict copy instead of a merge. This lasts until the server is upgraded. Upgrade the server first, then tell users to update the plugin.
+This section moved to [Upgrades and high availability](admin/upgrades.md#upgrade-the-server).
 
 ## Per-vault retention
 
@@ -409,15 +268,7 @@ The chart sets no scheduling or capacity policy, because a caller could change b
 
 ## High availability
 
-The defaults follow the recommended settings in [configuration.md](configuration.md#high-availability-deployment) that the server needs to run correctly: two replicas, readiness on `/readyz` with a short period, liveness on `/healthz`, a grace period above `VAULT_SYNC_SHUTDOWN_DELAY` plus `VAULT_SYNC_SHUTDOWN_TIMEOUT`, and rolling updates that start a new pod before stopping an old one. The grace period follows `config.server.shutdownDelay` and `config.server.shutdownTimeout`; if you set `resources.controllers.main.pod.terminationGracePeriodSeconds` yourself, the chart refuses to render unless it is larger than the delay plus the timeout. Scale with `resources.controllers.main.replicas`; nothing else changes. Spreading replicas across nodes is left to the cluster's default topology spread (or your own `resources.controllers.main.pod.topologySpreadConstraints`), and a PodDisruptionBudget to you, for example:
-
-```yaml
-resources:
-  controllers:
-    main:
-      podDisruptionBudget:
-        maxUnavailable: 1   # or minAvailable: 1, not both
-```
+This section moved to [Upgrades and high availability](admin/upgrades.md#high-availability).
 
 ## Monitoring
 

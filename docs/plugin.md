@@ -142,7 +142,7 @@ The realtime channel only makes changes arrive sooner; sync never depends on it 
 
 - It authenticates with the same access token as the API, sent as the `vaultsync.bearer.` WebSocket subprotocol, never in the URL, and never logged. When the token expires the server closes the connection; the plugin gets a fresh token from its stored sign-in, with no prompt, and reconnects.
 - When the connection drops or the server refuses it (the server restarting or draining, too many connections, the network going away), the plugin reconnects after a random delay that doubles with every consecutive failure, from about a second up to a minute. The delay starts over only once a connection has stayed up for 30 seconds. Meanwhile the 30-second sync keeps running.
-- The server must allow Obsidian's origins (`app://obsidian.md`, `capacitor://localhost`, `http://localhost`; the server allows them by default), and a reverse proxy in front of it must pass WebSocket upgrades on `/v1/realtime` ([configuration](configuration.md)). Without the channel, changes from other devices still arrive within 30 seconds.
+- The server must allow Obsidian's origins (`app://obsidian.md`, `capacitor://localhost`, `http://localhost`; the server allows them by default), and a reverse proxy in front of it must pass WebSocket upgrades ([Install](admin/install.md#the-ingress)). Without the channel, changes from other devices still arrive within 30 seconds.
 
 ### Status
 
@@ -209,10 +209,4 @@ If another file has taken the path, the restore fails at first and the modal the
 
 ## Identity provider setup (Authentik)
 
-Create an OAuth2/OpenID provider and an application for vault-sync:
-
-- **Client type:** public. The plugin cannot keep a client secret.
-- **Device code flow:** enabled (in Authentik, the brand's *Device code flow* setting). If the provider's OpenID configuration has no `device_authorization_endpoint`, the plugin reports that the device authorization grant is not supported.
-- **Scopes:** include `offline_access`, so that a refresh token is issued. The plugin refuses a sign-in that returns no refresh token.
-- **Audience:** Authentik puts the client ID in the access token's `aud`, so set the server's `VAULT_SYNC_OIDC_AUDIENCE` to the client ID. The server then advertises that client ID to the plugin, and nothing needs to be entered in the plugin besides the server URL. With a provider whose access tokens carry another audience, also set the server's `VAULT_SYNC_OIDC_CLIENT_ID` to the plugin's client ID.
-- **Token lifetimes:** any access-token lifetime works, because the plugin refreshes ahead of expiry. The refresh-token lifetime decides how long a device that stays offline remains signed in.
+This section moved to [Identity provider](admin/identity-provider.md#example-authentik).

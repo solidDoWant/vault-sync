@@ -58,7 +58,7 @@ const (
 
 	// PEM bundle of CAs trusted to sign the PostgreSQL server certificate.
 	// Re-read for every new connection. See the note in
-	// [PostgreSQL TLS](../configuration.md#postgresql-tls) about verification.
+	// [PostgreSQL TLS](postgresql-and-s3.md#postgresql-tls) about verification.
 	//
 	// Default: unset
 	DatabaseTLSCAFileEnv = "VAULT_SYNC_DATABASE_TLS_CA_FILE"
@@ -141,8 +141,8 @@ const (
 
 	// How long after `SIGTERM` or `SIGINT` `/readyz` fails while the API keeps
 	// serving, so load balancers stop sending traffic before any connection is
-	// refused (see [Startup and
-	// shutdown](../configuration.md#startup-and-shutdown)). A Go duration from
+	// refused (see [Graceful
+	// shutdown](upgrades.md#graceful-shutdown)). A Go duration from
 	// `0s` to `5m`.
 	//
 	// Default: `5s`

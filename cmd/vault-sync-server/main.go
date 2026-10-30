@@ -1,5 +1,5 @@
 // Command vault-sync-server runs the vault-sync API server. It is configured
-// by environment variables (docs/configuration.md) and shuts down gracefully
+// by environment variables (docs/admin/configuration.md) and shuts down gracefully
 // on SIGTERM or SIGINT.
 //
 // `vault-sync-server export -out DIR` instead writes a plaintext copy of

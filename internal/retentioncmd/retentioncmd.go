@@ -100,7 +100,7 @@ func Main(ctx context.Context, args []string, lookup func(string) (string, bool)
 
 	cfg, err := config.LoadRetentionCommand(lookup)
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "invalid configuration; see docs/configuration.md: %s\n",
+		_, _ = fmt.Fprintf(stderr, "invalid configuration; see docs/admin/configuration.md: %s\n",
 			strings.ReplaceAll(err.Error(), "\n", "; "))
 
 		return 1
