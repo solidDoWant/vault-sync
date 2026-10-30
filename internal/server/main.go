@@ -45,7 +45,7 @@ func Main(ctx context.Context, args []string, lookup func(string) (string, bool)
 	cfg, err := config.Load(lookup)
 	if err != nil {
 		logger := slog.New(slog.NewJSONHandler(stderr, nil))
-		logger.ErrorContext(ctx, "invalid configuration; see docs/configuration.md", "problems", problemList(err))
+		logger.ErrorContext(ctx, "invalid configuration; see docs/admin/configuration.md", "problems", problemList(err))
 
 		return 1
 	}
