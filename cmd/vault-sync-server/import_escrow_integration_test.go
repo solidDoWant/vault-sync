@@ -197,7 +197,7 @@ func TestImportIntoAnEscrowedVault(t *testing.T) {
 
 	importLogs := ""
 
-	t.Run("P4-13 a device decrypts every file imported with the escrow identity", func(t *testing.T) {
+	t.Run("[P4-13] a device decrypts every file imported into an encrypted vault with the escrow identity", func(t *testing.T) {
 		// Two epochs: content and paths are sealed under the current one,
 		// path keys under epoch 1's path_key_secret.
 		vault := createEscrowedVault(t, server, member, escrow, "Escrowed", 2)

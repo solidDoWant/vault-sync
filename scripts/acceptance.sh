@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
 # Runs every acceptance test, a test named for its scenario in
-# docs/acceptance/phase-2.md (`[AC-nn]`) or docs/acceptance/phase-3.md
-# (`[P3-nn]`), and prints each checklist's scoreboard: one line per scenario
-# (pass, fail, not run, no test) and the number passing (`make acceptance`).
+# docs/acceptance/phase-2.md (`[AC-nn]`), docs/acceptance/phase-3.md
+# (`[P3-nn]`) or docs/acceptance/phase-4.md (`[P4-nn]`), and prints each
+# checklist's scoreboard: one line per scenario (pass, fail, not run, no
+# test) and the number passing (`make acceptance`).
 #
 # - Go integration tests named `TestAC<nn>...` (Go function names cannot hold
 #   brackets) and the top-level Go tests holding an `[AC-nn] ...` subtest, run
-#   whole (`[P3-nn] ...` subtests too), with the plugin integration suite,
-#   whose `[AC-nn] ...` tests the
+#   whole (`[P3-nn] ...` and `[P4-nn] ...` subtests too), with the plugin
+#   integration suite, whose `[AC-nn] ...` tests the
 #   scoreboard reads from its report (scripts/test-integration.sh);
-# - the desktop e2e spec files that hold an `[AC-nn] ...` or `[P3-nn] ...`
-#   test, run whole
+# - the plugin unit test files (`plugin/src/**/*.test.ts`) that hold a
+#   `[P4-nn] ...` test, run whole with vitest's JSON report;
+# - the desktop e2e spec files that hold an `[AC-nn] ...`, `[P3-nn] ...` or
+#   `[P4-nn] ...` test, run whole
 #   (scripts/test-e2e.sh; plugin/wdio.conf.mts records the results);
 # - the Android device checks (`*.android.e2e.ts`), which need an Android
 #   emulator and so are not run here: with VAULT_SYNC_ACCEPTANCE_ANDROID_RESULTS
@@ -44,7 +47,14 @@ echo "acceptance: integration tests $go_tests (log: $out/integration.log)" >&2
 ./scripts/test-integration.sh -json -run "$go_tests" ./... >"$results/go-integration.json" 2>"$out/integration.log" ||
 	echo "acceptance: the integration tests failed; see $out/integration.log and $results/go-integration.json" >&2
 
-if grep -lE "\bit\(\s*[\"'\`]\[(AC|P3)-[0-9]+\]" plugin/test/e2e/specs/*.e2e.ts | grep -qv '\.android\.e2e\.ts$'; then
+mapfile -t unit_files < <(grep -rlE --include='*.test.ts' "\bit\(\s*[\"'\`]\[P4-[0-9]+\]" plugin/src | sed 's|^plugin/||' | sort)
+if ((${#unit_files[@]} > 0)); then
+	echo "acceptance: plugin unit tests ${unit_files[*]} (log: $out/vitest-unit.log)" >&2
+	(cd plugin && npx vitest run --reporter=json --outputFile="$VAULT_SYNC_ACCEPTANCE_RESULTS/vitest-unit.json" "${unit_files[@]}") >"$out/vitest-unit.log" 2>&1 ||
+		echo "acceptance: the plugin unit tests failed; see $out/vitest-unit.log" >&2
+fi
+
+if grep -lE "\bit\(\s*[\"'\`]\[(AC|P3|P4)-[0-9]+\]" plugin/test/e2e/specs/*.e2e.ts | grep -qv '\.android\.e2e\.ts$'; then
 	echo "acceptance: e2e specs (log: $out/e2e.log)" >&2
 	./scripts/test-e2e.sh >"$out/e2e.log" 2>&1 ||
 		echo "acceptance: the e2e suite failed; see $out/e2e.log" >&2
@@ -58,4 +68,7 @@ fi
 	echo
 	echo "Phase 3 (docs/acceptance/phase-3.md)"
 	./scripts/acceptance-scoreboard.py --checklist docs/acceptance/phase-3.md --results "$results" --sources .
+	echo
+	echo "Phase 4 (docs/acceptance/phase-4.md)"
+	./scripts/acceptance-scoreboard.py --checklist docs/acceptance/phase-4.md --results "$results" --sources .
 } | tee "$out/scoreboard.txt"

@@ -20,8 +20,8 @@ import {
   unwrapWithPassphrase,
   wrapWith,
 } from "./e2ee";
-import { ageIdentity, ageRecipient, openFrom, publicKey } from "./hybrid";
-import { KeyCommitmentError, keyCommitment, keySlotAd, openKeySlot, type KeySlot, type RecipientKind, verifyKeyCommitment } from "./keyslot";
+import { ageIdentity, ageRecipient, generateKeyPair, openFrom, publicKey } from "./hybrid";
+import { KeyCommitmentError, keyCommitment, keySlotAd, openKeySlot, sealKeySlot, type KeySlot, type RecipientKind, verifyKeyCommitment } from "./keyslot";
 
 interface SlotFields {
   vault_id: string;
@@ -47,6 +47,21 @@ function documentedSlotAd(vector: SlotFields): string {
   if (kind === undefined) throw new Error(`unknown recipient kind ${vector.recipient_kind}`);
   const length = (recipientId.length / 2).toString(16).padStart(2, "0");
   return utf8Hex("vault-sync/v1/key-slot") + uuidHex(vector.vault_id) + u64Hex(vector.epoch) + kind + length + recipientId;
+}
+
+// age's recipient stanza type of the hybrid X25519 + ML-KEM-768 recipient.
+const hybridStanzaType = "mlkem768x25519";
+
+// The type of each recipient stanza in a binary age file's header, read
+// from the documented age format: the version line, then one `-> TYPE args`
+// line per stanza, up to the `---` MAC line.
+function stanzaTypes(sealed: Uint8Array): string[] {
+  const text = new TextDecoder("latin1").decode(sealed);
+  const end = text.indexOf("\n--- ");
+  if (end < 0) throw new Error("no age header MAC line");
+  const lines = text.slice(0, end).split("\n");
+  expect(lines[0]).toBe("age-encryption.org/v1");
+  return lines.filter((line) => line.startsWith("-> ")).map((line) => line.slice(3).split(" ")[0] ?? "");
 }
 
 // The same file is asserted by internal/e2ee in Go (which generates it), so
@@ -219,4 +234,31 @@ describe("shared crypto vectors", { timeout: 60_000 }, () => {
       await expect((async () => attempt())()).rejects.toThrow(DecryptError);
     });
   }
+  it("[P4-17] wraps every key slot, for a member, an invitation and the escrow, to the hybrid X25519 + ML-KEM-768 recipient alone, and opens the slots Go wrapped", async () => {
+    const vaultId = "0190d6e4-8c1e-7a3b-9d2f-5e6a7b8c9d0e";
+    const slots: KeySlot[] = [
+      { vaultId, epoch: 1, recipientKind: "user", recipientId: "0190d6e4-8c1e-7a3b-9d2f-5e6a7b8c9d0f" },
+      { vaultId, epoch: 2, recipientKind: "invitation", recipientId: "0190d6e4-8c1e-7a3b-9d2f-5e6a7b8c9d10" },
+      { vaultId, epoch: 3, recipientKind: "escrow", recipientId: "escrow-2026" },
+    ];
+    for (const slot of slots) {
+      const recipient = generateKeyPair();
+      const epochKey = crypto.getRandomValues(new Uint8Array(32));
+      const wrapped = await sealKeySlot(recipient.publicKey, epochKey, slot);
+      expect(stanzaTypes(wrapped), slot.recipientKind).toEqual([hybridStanzaType]);
+      expect(await openKeySlot(recipient.privateKey, wrapped, slot)).toEqual(epochKey);
+    }
+    expect(shared.key_slot).not.toHaveLength(0);
+    for (const vector of shared.key_slot) {
+      const sealed = hexToBytes(vector.sealed);
+      expect(stanzaTypes(sealed), vector.name).toEqual([hybridStanzaType]);
+      expect(bytesToHex(await openKeySlot(hexToBytes(vector.recipient_private_key), sealed, slotOf(vector))), vector.name).toBe(vector.epoch_key);
+    }
+    expect(shared.hybrid).not.toHaveLength(0);
+    for (const vector of shared.hybrid) {
+      const sealed = hexToBytes(vector.sealed);
+      expect(stanzaTypes(sealed), vector.name).toEqual([hybridStanzaType]);
+      expect(bytesToHex(await openFrom(hexToBytes(vector.recipient_private_key), sealed)), vector.name).toBe(vector.plaintext);
+    }
+  });
 });

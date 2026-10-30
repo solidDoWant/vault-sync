@@ -425,7 +425,7 @@ func TestImportIntoAnEncryptedVault(t *testing.T) {
 	secrets := t.TempDir()
 	importLogs := ""
 
-	t.Run("P4-13 a device decrypts every file imported with the member's passphrase", func(t *testing.T) {
+	t.Run("[P4-13] a device decrypts every file imported into an encrypted vault with the member's passphrase", func(t *testing.T) {
 		// Two epochs: content and paths are sealed under the current one,
 		// path keys under epoch 1's path_key_secret.
 		vault := createEncryptedVault(t, server, member, "Encrypted", 2)

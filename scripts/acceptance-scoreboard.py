@@ -2,9 +2,9 @@
 """Prints the acceptance scoreboard (`make acceptance`): one line per scenario
 of the checklist with the result of its tests, then the number passing.
 
-A test belongs to a scenario by its name: `[AC-nn] ...` (Phase 2) or
-`[P3-nn] ...` (Phase 3) for the e2e and plugin integration tests (mocha and
-vitest titles) and Go subtests (`t.Run`), and `TestACnn...` for top-level Go
+A test belongs to a scenario by its name: `[AC-nn] ...` (Phase 2),
+`[P3-nn] ...` (Phase 3) or `[P4-nn] ...` (Phase 4) for the e2e, plugin
+integration and plugin unit tests (mocha and vitest titles) and Go subtests (`t.Run`), and `TestACnn...` for top-level Go
 tests (Go function names cannot hold brackets). The checklist lists its
 scenarios as `- **AC-nn** ...` items or as `| P3-nn | ... |` table rows.
 The results directory holds what the runs wrote:
@@ -104,13 +104,13 @@ def results(directory):
 def tagged_in_sources(root):
     """Scenario ids that have a test in the sources, run or not."""
     ids = set()
-    tests = root / "plugin" / "test"
-    if tests.is_dir():
-        for path in tests.rglob("*.ts"):
-            if "node_modules" in path.parts:
-                continue
-            for match in IT_TAG.finditer(path.read_text(encoding="utf-8")):
-                ids.add(match.group(1))
+    plugin = root / "plugin"
+    typescript = list((plugin / "test").rglob("*.ts")) + list((plugin / "src").rglob("*.test.ts"))
+    for path in typescript:
+        if "node_modules" in path.parts:
+            continue
+        for match in IT_TAG.finditer(path.read_text(encoding="utf-8")):
+            ids.add(match.group(1))
     for path in root.rglob("*_test.go"):
         if "node_modules" in path.parts:
             continue

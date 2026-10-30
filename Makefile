@@ -68,7 +68,7 @@ test-e2e: plugin-build ## Run the plugin e2e suite in a pinned real Obsidian (wd
 	./scripts/test-e2e.sh
 
 .PHONY: acceptance
-acceptance: plugin-build ## Run every acceptance test ([AC-nn] and [P3-nn] e2e and integration tests and Go subtests, Go TestACnn) and print the scoreboards for docs/acceptance/phase-2.md and phase-3.md (docker compose; written to build/acceptance/).
+acceptance: plugin-build ## Run every acceptance test ([AC-nn], [P3-nn] and [P4-nn] e2e, integration and plugin unit tests and Go subtests, Go TestACnn) and print the scoreboards for docs/acceptance/phase-2.md, phase-3.md and phase-4.md (docker compose; written to build/acceptance/).
 	./scripts/acceptance.sh
 
 .PHONY: vulncheck

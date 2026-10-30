@@ -122,72 +122,74 @@ func (deployment *deployment) createEscrowedVault(t *testing.T, name string) *es
 }
 
 func TestExportDecryptsEscrowedVaultsFromTheStore(t *testing.T) {
-	deployment := newDeployment(t)
+	t.Run("[P4-11] the export job decrypts an escrowed vault to plaintext, and skips and reports a vault without escrow", func(t *testing.T) {
+		deployment := newDeployment(t)
 
-	escrowPrivate, escrowPublic, err := e2ee.GenerateKeyPair()
-	require.NoError(t, err)
+		escrowPrivate, escrowPublic, err := e2ee.GenerateKeyPair()
+		require.NoError(t, err)
 
-	identity, err := e2ee.AgeIdentity(escrowPrivate)
-	require.NoError(t, err)
+		identity, err := e2ee.AgeIdentity(escrowPrivate)
+		require.NoError(t, err)
 
-	identityFile := filepath.Join(t.TempDir(), "escrow.key")
-	require.NoError(t, os.WriteFile(identityFile, []byte("# escrow identity\n"+identity+"\n"), 0o600))
+		identityFile := filepath.Join(t.TempDir(), "escrow.key")
+		require.NoError(t, os.WriteFile(identityFile, []byte("# escrow identity\n"+identity+"\n"), 0o600))
 
-	private := deployment.createEscrowedVault(t, "Private")
-	deployment.rotate(t, private, escrowPublic, nil)
-	deployment.commitEncrypted(t, private, "first.md", []byte("epoch 1"))
-	deployment.rotate(t, private, escrowPublic, nil)
-	deployment.commitEncrypted(t, private, "folder/second.md", []byte("epoch 2"))
-	deployment.rotate(t, private, escrowPublic, nil)
-	deployment.commitEncrypted(t, private, "folder/third.md", []byte("epoch 3"))
+		private := deployment.createEscrowedVault(t, "Private")
+		deployment.rotate(t, private, escrowPublic, nil)
+		deployment.commitEncrypted(t, private, "first.md", []byte("epoch 1"))
+		deployment.rotate(t, private, escrowPublic, nil)
+		deployment.commitEncrypted(t, private, "folder/second.md", []byte("epoch 2"))
+		deployment.rotate(t, private, escrowPublic, nil)
+		deployment.commitEncrypted(t, private, "folder/third.md", []byte("epoch 3"))
 
-	broken := deployment.createEscrowedVault(t, "Broken")
-	deployment.rotate(t, broken, escrowPublic, nil)
-	deployment.commitEncrypted(t, broken, "first.md", []byte("epoch 1"))
+		broken := deployment.createEscrowedVault(t, "Broken")
+		deployment.rotate(t, broken, escrowPublic, nil)
+		deployment.commitEncrypted(t, broken, "first.md", []byte("epoch 1"))
 
-	wrongKey, err := e2ee.GenerateKey()
-	require.NoError(t, err)
+		wrongKey, err := e2ee.GenerateKey()
+		require.NoError(t, err)
 
-	deployment.rotate(t, broken, escrowPublic, wrongKey)
+		deployment.rotate(t, broken, escrowPublic, wrongKey)
 
-	unescrowed, err := deployment.store.CreateVault(t.Context(), deployment.user, store.NewVault{Name: "Members only", Encryption: store.EncryptionE2EE}, 100)
-	require.NoError(t, err)
+		unescrowed, err := deployment.store.CreateVault(t.Context(), deployment.user, store.NewVault{Name: "Members only", Encryption: store.EncryptionE2EE}, 100)
+		require.NoError(t, err)
 
-	env := deployment.env()
-	env[config.EscrowIdentityFileEnv] = identityFile
+		env := deployment.env()
+		env[config.EscrowIdentityFileEnv] = identityFile
 
-	output := filepath.Join(t.TempDir(), "export")
-	code, summary := runMain(t, t.Context(), env, output)
+		output := filepath.Join(t.TempDir(), "export")
+		code, summary := runMain(t, t.Context(), env, output)
 
-	assert.Equal(t, 1, code, "a failed vault makes the run partial")
-	assert.Equal(t, export.StatusPartial, summary.Status, summary.Error)
+		assert.Equal(t, 1, code, "a failed vault makes the run partial")
+		assert.Equal(t, export.StatusPartial, summary.Status, summary.Error)
 
-	assert.Equal(t, map[string]string{
-		private.id.String() + "/first.md":         "epoch 1",
-		private.id.String() + "/folder/second.md": "epoch 2",
-		private.id.String() + "/folder/third.md":  "epoch 3",
-	}, files(t, output))
+		assert.Equal(t, map[string]string{
+			private.id.String() + "/first.md":         "epoch 1",
+			private.id.String() + "/folder/second.md": "epoch 2",
+			private.id.String() + "/folder/third.md":  "epoch 3",
+		}, files(t, output))
 
-	manifests := verifyManifests(t, output)
-	require.Len(t, manifests, 1)
+		manifests := verifyManifests(t, output)
+		require.Len(t, manifests, 1)
 
-	paths := []string{}
+		paths := []string{}
 
-	for _, document := range manifests[private.id].Documents {
-		paths = append(paths, document.Path)
-	}
+		for _, document := range manifests[private.id].Documents {
+			paths = append(paths, document.Path)
+		}
 
-	assert.ElementsMatch(t, []string{"first.md", "folder/second.md", "folder/third.md"}, paths)
+		assert.ElementsMatch(t, []string{"first.md", "folder/second.md", "folder/third.md"}, paths)
 
-	assert.Equal(t, 1, summary.Vaults)
-	assert.Equal(t, 1, summary.SkippedVaults)
-	assert.Equal(t, 1, summary.FailedVaults)
+		assert.Equal(t, 1, summary.Vaults)
+		assert.Equal(t, 1, summary.SkippedVaults)
+		assert.Equal(t, 1, summary.FailedVaults)
 
-	details := map[uuid.UUID]export.VaultSummary{}
-	for _, vault := range summary.VaultDetails {
-		details[vault.ID] = vault
-	}
+		details := map[uuid.UUID]export.VaultSummary{}
+		for _, vault := range summary.VaultDetails {
+			details[vault.ID] = vault
+		}
 
-	assert.Equal(t, "the escrow slot of epoch 2 fails its key commitment", details[broken.id].Failed)
-	assert.Equal(t, export.SkippedNoEscrow, details[unescrowed.ID].Skipped)
+		assert.Equal(t, "the escrow slot of epoch 2 fails its key commitment", details[broken.id].Failed)
+		assert.Equal(t, export.SkippedNoEscrow, details[unescrowed.ID].Skipped)
+	})
 }
