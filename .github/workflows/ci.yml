@@ -54,7 +54,7 @@ jobs:
               - '!.github/renovate.json5'
               - '!.github/renovate/**'
             chart:
-              - 'docs/{configuration,deployment,alerts}.md'
+              - 'docs/alerts.md'
               - 'docs/admin/alerts.md'
               - 'docs/admin/metrics-reference.md'
               - 'docs/admin/configuration-reference.md'
@@ -130,12 +130,12 @@ jobs:
       - name: Integration tests on PostgreSQL 14
         run: nix develop -c make test-integration-postgres14
 
-  # Release artifacts (docs/deployment.md): the Helm chart's lint and
+  # Release artifacts (docs/dev/releasing.md): the Helm chart's lint and
   # rendered-manifest checks, and the Nix-built server image, whose binary
   # build-images checks with govulncheck. Building the image also fails when
   # go.mod/go.sum changed without updating vendorHash in nix/server.nix.
-  # Nothing is pushed. A docs-only change to docs/configuration.md,
-  # docs/deployment.md or a generated reference page runs the chart checks
+  # Nothing is pushed. A docs-only change to the docs/alerts.md stub, an
+  # admin page the chart checks read or a generated reference page runs the chart checks
   # (which check that every documented variable can be set through the
   # chart) and the generated-page check, but not the image.
   release-artifacts:

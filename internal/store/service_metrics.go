@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// The queries in this file feed the service-wide metrics (docs/configuration.md,
+// The queries in this file feed the service-wide metrics (docs/admin/metrics-reference.md,
 // Service-wide metrics). Each returns counts over the whole deployment and
 // nothing that identifies a user, vault or device. Each must stay cheap at
 // 100k vaults and 10M revisions: the small tables (devices, vaults,

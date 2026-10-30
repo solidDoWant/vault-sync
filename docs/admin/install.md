@@ -20,7 +20,7 @@ The same image runs three things:
 - The export, with `export -out DIR`.
 - The Markdown import, with `import VAULT_ID DIR` ([import.md](backup-and-restore.md#import-markdown)).
 
-The image is built reproducibly with Nix (`nix/server.nix`, `nix/server-image.nix`, `dockerTools.streamLayeredImage`), with the pinned Go toolchain of the flake. Every build checks the binary with `govulncheck -mode=binary` ([Releasing](../deployment.md#releasing)).
+The image is built reproducibly with Nix (`nix/server.nix`, `nix/server-image.nix`, `dockerTools.streamLayeredImage`), with the pinned Go toolchain of the flake. Every build checks the binary with `govulncheck -mode=binary` ([Releasing](../dev/releasing.md)).
 
 ## Before you install
 

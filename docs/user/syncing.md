@@ -96,4 +96,4 @@ A path longer than 200 characters gets a warning, because Windows devices can fa
 
 You cannot go back to an older version of the plugin. After some upgrades, the first sync compares the whole vault with the server again. If a file is different, yours is kept as a conflict copy.
 
-Your admin sets the server's own size limit. For the server's side, see [the server configuration](../configuration.md).
+Your admin sets the server's own size limit. For the server's side, see [the server configuration](../admin/configuration.md).

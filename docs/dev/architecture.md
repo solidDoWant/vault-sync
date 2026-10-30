@@ -40,7 +40,7 @@ Several replicas can run at the same time. They share no state in memory. Postgr
 
 ### The export job
 
-`vault-sync export` is a subcommand of the same binary. It runs as a separate Kubernetes job with its own credentials. It only reads PostgreSQL and S3, and writes each vault as a tree of plain files. It is the only process that may hold the escrow private key, so only it can decrypt an end-to-end encrypted vault with escrow. Admins run it for backups (`docs/export.md`).
+`vault-sync export` is a subcommand of the same binary. It runs as a separate Kubernetes job with its own credentials. It only reads PostgreSQL and S3, and writes each vault as a tree of plain files. It is the only process that may hold the escrow private key, so only it can decrypt an end-to-end encrypted vault with escrow. Admins run it for backups (`docs/admin/backup-and-restore.md`).
 
 ## One edit, end to end
 
