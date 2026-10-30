@@ -252,6 +252,28 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(keys(plan), ["reviewer:pr-10"])
         self.assertEqual(plan.arms, [])
 
+    def test_renovate_prs_are_routed_only_when_enabled(self):
+        bot = dict(author="infra-mk3-renovate-operator", branch="renovate/go-modules")
+        # Off (the default): Renovate PRs are ignored entirely.
+        plan = plan_for(snap([], [pr(20, None, check="failure", **bot)]))
+        self.assertEqual((keys(plan), plan.arms), ([], []))
+        cfg = s.deep_merge(CFG, {"renovate_prs": True})
+        # Green: armed by the scheduler.
+        self.assertEqual(plan_for(snap([], [pr(20, None, **bot)]), cfg=cfg).arms, [(20, "h" * 40)])
+        # CI failure: a worker on the PR, with no issue.
+        plan = plan_for(snap([], [pr(20, None, check="failure", **bot)]), cfg=cfg)
+        self.assertEqual([(j.key, j.role, j.issue) for j in plan.jobs], [("worker:pr-20", "issue-worker", None)])
+        # Conflict: the merge-fixer.
+        plan = plan_for(snap([], [pr(20, None, mergeable="CONFLICTING", **bot)]), cfg=cfg)
+        self.assertEqual(keys(plan), ["fixer:pr-20"])
+        # Held, drafted, or armed and still running CI: left alone.
+        self.assertEqual(keys(plan_for(snap([], [pr(20, None, check="failure", **bot)]), holds={"pr:20": "x"}, cfg=cfg)), [])
+        self.assertEqual(keys(plan_for(snap([], [pr(20, None, check="failure", draft=True, **bot)]), cfg=cfg)), [])
+        self.assertEqual(plan_for(snap([], [pr(20, None, auto=True, check="pending", **bot)]), cfg=cfg).arms, [])
+        # A renovate/ branch from anyone else is never touched.
+        other = pr(21, None, check="failure", author="someone", branch="renovate/x")
+        self.assertEqual(keys(plan_for(snap([], [other]), cfg=cfg)), [])
+
     def test_a_running_special_job_is_not_launched_again(self):
         job = s.Job("special:audit", "security-auditor", 4, (0,), "r", "t", None, None, (), ())
         plan = s.Plan([job], [], [], [], [])

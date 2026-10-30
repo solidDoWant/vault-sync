@@ -67,7 +67,8 @@
       matchPackageNames: ["github.com/aws/aws-sdk-go-v2", "github.com/aws/aws-sdk-go-v2/**"],
       fetchChangeLogs: "off",
     },
-    // Last so it overrides any preset rule: every merge needs a reviewer.
+    // Last so it overrides any preset rule. Renovate never merges by itself: the
+    // agent scheduler arms green Renovate PRs (renovate_prs), so holds apply.
     {
       description: "Automerge disabled for everything",
       matchPackageNames: ["*"],
