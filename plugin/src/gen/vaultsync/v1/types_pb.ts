@@ -131,9 +131,8 @@ export const DeviceSchema: GenMessage<Device> = /*@__PURE__*/
  */
 export type ContentRef = Message<"vaultsync.v1.ContentRef"> & {
   /**
-   * Content address. For plaintext vaults SHA-256(content) (32 bytes). For
-   * E2EE vaults HMAC-SHA256(blob_id_secret, plaintext) (32 bytes); the blob
-   * itself then holds ciphertext.
+   * Content address: SHA-256 of the stored bytes (32 bytes), the content in
+   * plaintext vaults and the sealed content (ciphertext) in E2EE vaults.
    *
    * @generated from field: bytes blob_id = 1;
    */

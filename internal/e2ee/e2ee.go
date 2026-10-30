@@ -1,7 +1,7 @@
 // Package e2ee implements the end-to-end encryption primitives of SPEC.md §9.3
 // as cipher suite 2: HKDF-SHA256 sub-keys, XChaCha20-Poly1305 with associated
 // data, hybrid post-quantum (ML-KEM-768 + X25519) key wrapping in age's
-// format for key slots (hybrid.go), HMAC-SHA256 path_key and blob_id, and
+// format for key slots (hybrid.go), HMAC-SHA256 path_key, SHA-256 blob_id, and
 // Argon2id passphrase wrapping.
 //
 // Every symmetric ciphertext starts with its suite version byte, and every open
@@ -64,7 +64,6 @@ const (
 	LabelContent       Label = "content"
 	LabelPath          Label = "path"
 	LabelPathKeySecret Label = "path_key_secret"
-	LabelBlobIDSecret  Label = "blob_id_secret"
 )
 
 const (
@@ -79,7 +78,7 @@ func DeriveSubkey(epochKey []byte, label Label) ([]byte, error) {
 	}
 
 	switch label {
-	case LabelContent, LabelPath, LabelPathKeySecret, LabelBlobIDSecret:
+	case LabelContent, LabelPath, LabelPathKeySecret:
 	default:
 		return nil, fmt.Errorf("e2ee: unknown sub-key label %q", label)
 	}
@@ -168,10 +167,12 @@ func PathKey(pathKeySecret []byte, path string) ([]byte, error) {
 	return mac(pathKeySecret, []byte(pathkey.Key(path)))
 }
 
-// BlobID returns the E2EE blob_id of a plaintext (SPEC.md §5):
-// HMAC-SHA256(blob_id_secret, plaintext).
-func BlobID(blobIDSecret, plaintext []byte) ([]byte, error) {
-	return mac(blobIDSecret, plaintext)
+// BlobID returns the E2EE blob_id of sealed content (SPEC.md §5): the
+// SHA-256 of the sealed bytes, which the server verifies at CommitBlob.
+func BlobID(sealed []byte) []byte {
+	sum := sha256.Sum256(sealed)
+
+	return sum[:]
 }
 
 // The labels of the associated data of paths and contents.

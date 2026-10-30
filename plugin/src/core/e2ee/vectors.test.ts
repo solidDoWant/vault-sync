@@ -8,7 +8,6 @@ import { describe, expect, it } from "vitest";
 
 import shared from "../../../../testdata/crypto/vectors.json";
 import {
-  blobId,
   DecryptError,
   derivePassphraseKeys,
   deriveSubkey,
@@ -93,7 +92,7 @@ describe("shared crypto vectors", { timeout: 60_000 }, () => {
   });
 
   it("has vectors of every kind", () => {
-    for (const kind of [shared.subkeys, shared.aead, shared.hybrid, shared.path_key, shared.blob_id, shared.passphrase, shared.rejected, shared.key_slot, shared.key_commitment, shared.rejected_key_slots, shared.rejected_key_commitments]) {
+    for (const kind of [shared.subkeys, shared.aead, shared.hybrid, shared.path_key, shared.passphrase, shared.rejected, shared.key_slot, shared.key_commitment, shared.rejected_key_slots, shared.rejected_key_commitments]) {
       expect(kind.length).toBeGreaterThan(0);
     }
   });
@@ -129,12 +128,6 @@ describe("shared crypto vectors", { timeout: 60_000 }, () => {
   for (const vector of shared.path_key) {
     it(`computes the path_key: ${vector.name}`, () => {
       expect(bytesToHex(pathKey(hexToBytes(vector.secret), vector.path))).toBe(vector.path_key);
-    });
-  }
-
-  for (const vector of shared.blob_id) {
-    it(`computes the blob_id: ${vector.name}`, () => {
-      expect(bytesToHex(blobId(hexToBytes(vector.secret), hexToBytes(vector.plaintext)))).toBe(vector.blob_id);
     });
   }
 

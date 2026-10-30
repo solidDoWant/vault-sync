@@ -7,15 +7,15 @@
  * The engine itself is the same for both: it works on plaintext paths, and
  * identifies content by its SHA-256 (`contentHash`) and plaintext size. In an
  * encrypted vault the codec seals content and paths under the vault's current
- * epoch on push, with HMAC `blob_id` and `path_key`, and opens them with each
- * revision's epoch on pull, checking `blob_id` after decryption.
+ * epoch on push, with HMAC `path_key` and a `blob_id` that is the SHA-256 of
+ * the sealed bytes, and opens them with each revision's epoch on pull.
  */
 import { Code } from "@connectrpc/connect";
 import { equalBytes } from "@noble/ciphers/utils.js";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 
 import type { Revision } from "../../gen/vaultsync/v1/types_pb";
-import { DecryptError, blobId as hmacBlobId, deriveSubkey, open, pathKey as hmacPathKey, seal } from "../e2ee/e2ee";
+import { DecryptError, blobId as sealedBlobId, deriveSubkey, open, pathKey as hmacPathKey, seal } from "../e2ee/e2ee";
 import { contentAad, pathAad } from "../e2ee/revision";
 import { sha256Hex } from "../hash";
 import { isEpochNotCurrent } from "../keys/vault-keys";
@@ -52,6 +52,8 @@ export interface ContentSubject {
   deleted: boolean;
   /** The document's base revision, whose content a delete names. */
   baseRevId: string | undefined;
+  /** The SHA-256 of the base revision's content: equal to `contentHash` for a delete or a path-only rename. */
+  baseHash?: string | undefined;
   /** Reads the local content; null when the file is gone. */
   read: () => Promise<Uint8Array | null>;
 }
@@ -160,8 +162,9 @@ const contentCacheBytes = 32 << 20;
  *   normalized path under epoch 1's `path_key_secret`, for the vault's
  *   whole life;
  * - content is sealed with the `content` sub-key of the revision's epoch and
- *   `content_aad` (vault, epoch); its `blob_id` is the HMAC of the plaintext
- *   under that epoch's `blob_id_secret`, checked after every decryption;
+ *   `content_aad` (vault, epoch); its `blob_id` is the SHA-256 of the sealed
+ *   bytes, which the server verifies, so each sealing is its own blob and an
+ *   upload resumes only with the bytes it started with;
  * - a commit under epoch E references only content sealed under E, so a
  *   rename, a delete or a retry after a rotation seals the content again
  *   under E when the server lacks it.
@@ -177,7 +180,12 @@ export class EncryptedCodec implements RevisionCodec {
   /** Plaintext of recently opened blobs, oldest first. */
   private readonly contentCache = new Map<string, Uint8Array>();
   private cachedBytes = 0;
-  /** Sealed bytes of blobs whose upload has not completed: a resumed upload continues with the same bytes. */
+  /**
+   * Sealed bytes of contents whose upload has not completed in this run, by
+   * epoch and content hash: an upload resumes only with the same bytes. After
+   * a restart they are gone, so the content is sealed again under a new
+   * `blob_id` and the abandoned session expires on the server.
+   */
   private readonly uploading = new Map<string, Uint8Array>();
 
   constructor(
@@ -306,10 +314,14 @@ export class EncryptedCodec implements RevisionCodec {
     const epoch = this.currentEpoch;
     const key = await this.key(epoch);
     // Content already sealed under the current epoch, and complete on the server, is referenced as it is.
+    const pending = `${String(epoch)}:${subject.contentHash}`;
     const known = this.sealedByHash.get(subject.contentHash);
-    if (known?.epoch === epoch && !this.uploading.has(known.blobId) && (await isComplete(this.api, this.vaultId, hexToBytes(known.blobId), known.sealedSize))) {
+    if (known?.epoch === epoch && !this.uploading.has(pending) && (await isComplete(this.api, this.vaultId, hexToBytes(known.blobId), known.sealedSize))) {
       return { blobId: hexToBytes(known.blobId), size: known.sealedSize };
     }
+    // A delete or a path-only rename references the base revision's content as it is when that is under the current epoch.
+    const base = await this.baseContentRef(subject, epoch);
+    if (base !== undefined) return base;
     // A delete names the content being deleted: the base's, sealed again under the current epoch if needed.
     const content = subject.deleted
       ? subject.baseRevId === undefined
@@ -317,12 +329,12 @@ export class EncryptedCodec implements RevisionCodec {
         : await this.download(subject.contentHash, BigInt(subject.size), subject.baseRevId)
       : await subject.read();
     if (content === null || content.length !== subject.size || sha256Hex(content) !== subject.contentHash) return "missing";
-    const blobId = hmacBlobId(deriveSubkey(key, "blob_id_secret"), content);
+    const sealed = this.uploading.get(pending) ?? seal(deriveSubkey(key, "content"), content, contentAad(this.vaultId, epoch));
+    this.uploading.set(pending, sealed);
+    const blobId = sealedBlobId(sealed);
     const id = bytesToHex(blobId);
-    const sealed = this.uploading.get(id) ?? seal(deriveSubkey(key, "content"), content, contentAad(this.vaultId, epoch));
-    this.uploading.set(id, sealed);
     if (!(await isComplete(this.api, this.vaultId, blobId, BigInt(sealed.length)))) await uploadBlob(this.api, this.vaultId, blobId, sealed);
-    this.uploading.delete(id);
+    this.uploading.delete(pending);
     const blob: SealedBlob = { blobId: id, epoch, sealedSize: BigInt(sealed.length) };
     this.sealedByHash.set(subject.contentHash, blob);
     this.plainByBlob.set(id, { hash: subject.contentHash, size: BigInt(content.length) });
@@ -366,6 +378,35 @@ export class EncryptedCodec implements RevisionCodec {
     return key;
   }
 
+  /**
+   * The content reference of the base revision when it holds this content
+   * under `epoch` (a delete or a path-only rename), so that it is not sealed
+   * and uploaded again as a new blob.
+   */
+  private async baseContentRef(subject: ContentSubject, epoch: number): Promise<ContentRefFields | undefined> {
+    if (subject.baseRevId === undefined || subject.baseHash !== subject.contentHash) return undefined;
+    let revision: Revision | undefined;
+    try {
+      revision = (await this.api.sync.getRevision({ vaultId: this.vaultId, revisionId: subject.baseRevId })).revision;
+    } catch (error) {
+      if (errorCode(error) === Code.NotFound) return undefined;
+      throw error;
+    }
+    if (revision?.contentRef === undefined || revision.epoch !== epoch) return undefined;
+    // Opening the content checks that it is this content; a base that cannot be read is not reused.
+    let decoded: IncomingRevision;
+    try {
+      decoded = await this.decode(revision);
+    } catch (error) {
+      if (error instanceof RemoteContentError || errorCode(error) === Code.NotFound) return undefined;
+      throw error;
+    }
+    if (decoded.remote.contentHash !== subject.contentHash) return undefined;
+    const blob = this.sealedByHash.get(subject.contentHash);
+    if (blob?.epoch !== epoch) return undefined;
+    return { blobId: hexToBytes(blob.blobId), size: blob.sealedSize };
+  }
+
   /** Downloads and opens a blob sealed under `blob.epoch`, and checks that it is the blob its id names. */
   private async openBlob(blob: SealedBlob): Promise<Uint8Array> {
     const key = await this.key(blob.epoch);
@@ -377,9 +418,7 @@ export class EncryptedCodec implements RevisionCodec {
       if (!(error instanceof DecryptError)) throw error;
       throw new RemoteContentError(`blob ${blob.blobId} does not decrypt`, { cause: error });
     }
-    if (!equalBytes(hmacBlobId(deriveSubkey(key, "blob_id_secret"), content), hexToBytes(blob.blobId))) {
-      throw new RemoteContentError(`blob ${blob.blobId} does not match its blob id`);
-    }
+    if (!equalBytes(sealedBlobId(sealed), hexToBytes(blob.blobId))) throw new RemoteContentError(`blob ${blob.blobId} does not match its blob id`);
     return content;
   }
 

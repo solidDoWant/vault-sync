@@ -275,17 +275,14 @@ func (target *APITarget) commit(ctx context.Context, documentID, revisionID uuid
 
 // blob returns the id and the bytes of the blob that stores content: the
 // content under its SHA-256 in a plaintext vault; in an encrypted vault the
-// content sealed under the current epoch, under its HMAC blob id.
+// content sealed under the current epoch, under the SHA-256 of the sealed
+// bytes.
 func (target *APITarget) blob(content []byte) (blobID, stored []byte, err error) {
 	keys := target.keys
 	if keys == nil {
 		sum := sha256.Sum256(content)
 
 		return sum[:], content, nil
-	}
-
-	if blobID, err = e2ee.BlobID(keys.blobID, content); err != nil {
-		return nil, nil, err
 	}
 
 	ad, err := e2ee.ContentAD(target.vaultID.String(), keys.epoch)
@@ -297,7 +294,7 @@ func (target *APITarget) blob(content []byte) (blobID, stored []byte, err error)
 		return nil, nil, err
 	}
 
-	return blobID, stored, nil
+	return e2ee.BlobID(stored), stored, nil
 }
 
 // upload stores content as the blob blobID, resuming an earlier partial

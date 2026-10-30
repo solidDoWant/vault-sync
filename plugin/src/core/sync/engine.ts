@@ -1231,6 +1231,7 @@ export class SyncEngine {
               size: pushed.contentSize,
               deleted: pushed.kind === "delete",
               baseRevId: base?.baseRevId,
+              baseHash: base?.baseHash,
               read: () => this.readFile(pushed.path),
             });
           } catch (error) {

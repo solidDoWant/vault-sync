@@ -9,7 +9,8 @@
  * the first page with the newer target. For each revision it opens the path
  * and content with the revision's epoch (epoch 0, a converted vault's
  * plaintext history, is plaintext), seals them under the target, uploads the
- * content under the target's `blob_id` if the server lacks it, and calls
+ * sealed content as a new blob (its `blob_id` is the SHA-256 of the sealed
+ * bytes), and calls
  * ReplaceRevisionCiphertext. A rewrite that loses (another run moved the
  * revision, or the target is no longer current) is skipped, and the job
  * repeats passes until one finds no stale revision. It then retires every
@@ -17,7 +18,9 @@
  * derives every `path_key`.
  *
  * The job keeps no local state: the server lists only revisions still
- * stale, so a run after an interrupted one resumes where it stopped. It never
+ * stale, so a run after an interrupted one resumes where it stopped. An
+ * upload resumes only with the bytes it started with, so a new run seals a
+ * content again under a new `blob_id` and the abandoned session expires. It never
  * changes which revision is current, so sync is unaffected while it runs.
  */
 import { Code } from "@connectrpc/connect";
@@ -25,8 +28,9 @@ import { equalBytes } from "@noble/ciphers/utils.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 
 import type { Revision } from "../../gen/vaultsync/v1/types_pb";
-import { DecryptError, blobId as hmacBlobId, deriveSubkey, open, seal } from "../e2ee/e2ee";
+import { DecryptError, blobId as sealedBlobId, deriveSubkey, open, seal } from "../e2ee/e2ee";
 import { contentAad, pathAad } from "../e2ee/revision";
+import { sha256Hex } from "../hash";
 import type { ProtocolClient } from "../protocol/client";
 import { VaultKeyUnavailableError, type VaultKeyring } from "./codec";
 import { errorCode } from "./errors";
@@ -54,7 +58,7 @@ export interface RekeyOptions {
 /** Passes after which a job whose rewrites keep losing gives up: rotations or other runs never let it finish. */
 const maxPasses = 100;
 
-/** A content sealed under the target in this run, by `blob_id` (hex): sent again as the same bytes when an upload resumes. */
+/** A content sealed under the target in this run, by target and content hash: sent again as the same bytes when an upload resumes. */
 interface SealedContent {
   blobId: Uint8Array;
   sealed: Uint8Array;
@@ -178,20 +182,20 @@ class RekeyJob {
       if (!(error instanceof DecryptError)) throw error;
       throw new RemoteContentError(`blob ${blobId} does not decrypt`, { cause: error });
     }
-    if (!equalBytes(hmacBlobId(deriveSubkey(key, "blob_id_secret"), content), ref.blobId)) throw new RemoteContentError(`blob ${blobId} does not match its blob id`);
+    if (!equalBytes(sealedBlobId(sealed), ref.blobId)) throw new RemoteContentError(`blob ${blobId} does not match its blob id`);
     return content;
   }
 
   /** Seals `content` under `target` and makes it a complete blob on the server. */
   private async sealContent(content: Uint8Array, target: number, targetKey: Uint8Array): Promise<SealedContent> {
-    const blobId = hmacBlobId(deriveSubkey(targetKey, "blob_id_secret"), content);
-    const id = `${String(target)}:${bytesToHex(blobId)}`;
+    const id = `${String(target)}:${sha256Hex(content)}`;
     let sealed = this.sealed.get(id);
     if (sealed === undefined) {
-      sealed = { blobId, sealed: seal(deriveSubkey(targetKey, "content"), content, contentAad(this.vaultId, target)) };
+      const bytes = seal(deriveSubkey(targetKey, "content"), content, contentAad(this.vaultId, target));
+      sealed = { blobId: sealedBlobId(bytes), sealed: bytes };
       this.sealed.set(id, sealed);
     }
-    if (!(await isComplete(this.api, this.vaultId, blobId, BigInt(sealed.sealed.length)))) await uploadBlob(this.api, this.vaultId, blobId, sealed.sealed);
+    if (!(await isComplete(this.api, this.vaultId, sealed.blobId, BigInt(sealed.sealed.length)))) await uploadBlob(this.api, this.vaultId, sealed.blobId, sealed.sealed);
     return sealed;
   }
 

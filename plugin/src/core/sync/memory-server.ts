@@ -303,7 +303,7 @@ export class InMemoryServer {
             offset += chunk.length;
           }
           this.uploads.delete(id);
-          if (!this.encrypted && sha256Hex(content) !== id) throw new ConnectError("content does not match blob_id", Code.InvalidArgument);
+          if (sha256Hex(content) !== id) throw new ConnectError("content does not match blob_id", Code.InvalidArgument);
           this.blobs.set(id, content);
           return this.respond("CommitBlob", request, { size: BigInt(content.length) });
         },
