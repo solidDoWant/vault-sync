@@ -117,7 +117,7 @@ describe("re-encrypting history (the re-key job)", () => {
     expect(server.retiredEpochs.size).toBe(0);
   });
 
-  it("restarts with the newer target when a rotation lands during the job, and ends on the newest epoch", async () => {
+  it("[P4-09] restarts with the newer target when a rotation lands during the job, and ends on the newest epoch", async () => {
     const { server, keys } = await vaultWithHistory();
     const before = plainHistory(server, keys);
     let rewrites = 0;
@@ -132,7 +132,7 @@ describe("re-encrypting history (the re-key job)", () => {
     expect([...server.retiredEpochs].sort()).toEqual([2, 3]);
   });
 
-  it("ends with every revision on the newest epoch when two runs race", async () => {
+  it("[P4-09] ends with every revision on the newest epoch when two runs race", async () => {
     const { server, keys } = await vaultWithHistory();
     const before = plainHistory(server, keys);
     const staleAtStart = staleCount(server);
@@ -143,7 +143,7 @@ describe("re-encrypting history (the re-key job)", () => {
     expect([...server.retiredEpochs]).toEqual([2]);
   });
 
-  it("leaves sync unaffected while devices edit during the job", async () => {
+  it("[P4-09] leaves sync unaffected while devices edit during the job", async () => {
     const { server, keys, a, b } = await vaultWithHistory();
     const history = plainHistory(server, keys);
     await Promise.all([

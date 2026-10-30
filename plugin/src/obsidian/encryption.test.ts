@@ -191,6 +191,24 @@ describe("end-to-end encryption on a device", ARGON2_TIMEOUT, () => {
     expect(await unlockedUserKey(fresh.options)).toEqual(key);
   });
 
+  it("[P4-14] after the passphrase is lost, unlocked devices keep their key across a restart, and a new device stays locked", async () => {
+    const server = new MemoryUserKeyServer();
+    const first = device(server);
+    await enableOnDevice(first.options, passphrase);
+    const key = await unlockedUserKey(first.options);
+
+    // The user forgot the passphrase: a new device's guesses are refused.
+    const fresh = device(server);
+    await expect(unlockOnDevice(fresh.options, "what was it again")).rejects.toBeInstanceOf(WrongPassphraseError);
+    expect(fresh.data.userKey).toBeUndefined();
+    expect(await encryptionState(fresh.options)).toBe("locked");
+
+    // The unlocked device restarts from its saved data.json and still holds the key, without the passphrase.
+    const restarted = { ...first.options, data: parsePluginData(JSON.parse(first.saved.at(-1) ?? "{}")) };
+    expect(await encryptionState(restarted)).toBe("unlocked");
+    expect(await unlockedUserKey(restarted)).toEqual(key);
+  });
+
   it("refuses a passphrase change with a wrong current passphrase and keeps the old one", async () => {
     const server = new MemoryUserKeyServer();
     const first = device(server);
