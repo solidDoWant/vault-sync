@@ -88,8 +88,9 @@ func TestPluginE2E(t *testing.T) {
 
 	binary := testinfra.BuildServer(t, repoRoot)
 
+	// The settings both servers share: the escrow reset spec's server
+	// (e2e_escrow_test.go) has its own database, bucket and escrow key.
 	serverEnv := []string{
-		config.DatabaseURLEnv + "=" + database.DSN,
 		config.OIDCIssuerURLEnv + "=" + issuer.URL,
 		config.OIDCAudienceEnv + "=" + authtest.DefaultAudience,
 		config.LogLevelEnv + "=warn",
@@ -100,44 +101,13 @@ func TestPluginE2E(t *testing.T) {
 		config.ShutdownDelayEnv + "=0s",
 	}
 
-	bucket := testinfra.S3Bucket(t)
-	serverEnv = append(serverEnv,
-		config.S3EndpointEnv+"="+bucket.Endpoint,
-		config.S3RegionEnv+"="+bucket.Region,
-		config.S3BucketEnv+"="+bucket.Bucket,
-		config.S3AccessKeyIDFileEnv+"="+bucket.AccessKeyIDFile,
-		config.S3SecretAccessKeyFileEnv+"="+bucket.SecretAccessKeyFile,
-		config.S3ForcePathStyleEnv+"=true",
-	)
+	mainEnv := append([]string{config.DatabaseURLEnv + "=" + database.DSN}, serverEnv...)
+	mainEnv = append(mainEnv, bucketEnvironment(testinfra.S3Bucket(t))...)
+	apiAddress, _ := startE2EServer(t, "server", binary, mainEnv)
 
-	// Starts a new process, with new addresses, if another process took
-	// one of the ports first.
-	apiAddress := testinfra.StartServer(t, "server", 60*time.Second, func(addresses testinfra.ServerAddresses) testinfra.ServerProcess {
-		logs := &bytes.Buffer{}
-		server := testinfra.NewChild(t, binary)
-		// The OS environment (Windows needs SYSTEMROOT and friends) without
-		// any VAULT_SYNC_* settings of the caller, then the test's own.
-		server.Command.Env = append(withoutServerSettings(os.Environ()), serverEnv...)
-		server.Command.Env = append(server.Command.Env,
-			config.ListenAddressEnv+"="+addresses.API,
-			config.MetricsListenAddressEnv+"="+addresses.Metrics,
-			config.ServiceMetricsListenAddressEnv+"=127.0.0.1:0",
-		)
-		server.Command.Stdout = logs
-		server.Command.Stderr = logs
-
-		// Registered before the server's cleanup, so it runs after the
-		// server has been stopped and its output collected.
-		t.Cleanup(func() {
-			if t.Failed() {
-				t.Logf("server logs:\n%s", logs.String())
-			}
-		})
-
-		server.Start(t)
-
-		return testinfra.ServerProcess{Exited: server.Exited(), Err: server.Wait, Output: logs.String, PID: server.PID()}
-	}).API
+	escrow := startE2EEscrowDeployment(t, binary, serverEnv)
+	controls := make(chan escrowControlRequest)
+	controlURL := serveEscrowControl(t, controls)
 
 	wdioConfig := "wdio.conf.mts"
 	if os.Getenv(e2eAndroidEnv) == "1" {
@@ -152,6 +122,8 @@ func TestPluginE2E(t *testing.T) {
 		e2eTokenEnv+"="+token,
 		e2eIssuerURLEnv+"="+issuer.URL,
 		e2eClientIDEnv+"="+authtest.DefaultAudience,
+		e2eEscrowServerURLEnv+"="+escrow.proxyURL,
+		e2eEscrowControlURLEnv+"="+controlURL,
 		"CI=1", // no interactive output
 	)
 	// Streamed, so that a slow first run (it downloads Obsidian) shows
@@ -160,7 +132,63 @@ func TestPluginE2E(t *testing.T) {
 	suite.Command.Stderr = os.Stderr
 	suite.Start(t)
 
-	require.NoError(t, suite.Wait(), "plugin e2e suite failed (see its output above)")
+	// The escrow reset spec's operator steps run here, on the test
+	// goroutine, while the suite runs.
+	for {
+		select {
+		case request := <-controls:
+			request.reply <- escrow.handle(t, request)
+		case <-suite.Exited():
+			require.NoError(t, suite.Err(), "plugin e2e suite failed (see its output above)")
+
+			return
+		}
+	}
+}
+
+// startE2EServer starts the server binary with env (on top of the OS
+// environment without any VAULT_SYNC_* settings of the caller) and returns
+// its API address and a function that stops it.
+func startE2EServer(t *testing.T, name, binary string, env []string) (string, func()) {
+	t.Helper()
+
+	var server *testinfra.Child
+
+	// Starts a new process, with new addresses, if another process took
+	// one of the ports first.
+	apiAddress := testinfra.StartServer(t, name, 60*time.Second, func(addresses testinfra.ServerAddresses) testinfra.ServerProcess {
+		logs := &bytes.Buffer{}
+		server = testinfra.NewChild(t, binary)
+		// The OS environment (Windows needs SYSTEMROOT and friends) without
+		// any VAULT_SYNC_* settings of the caller, then the test's own.
+		server.Command.Env = append(withoutServerSettings(os.Environ()), env...)
+		server.Command.Env = append(server.Command.Env,
+			config.ListenAddressEnv+"="+addresses.API,
+			config.MetricsListenAddressEnv+"="+addresses.Metrics,
+			config.ServiceMetricsListenAddressEnv+"=127.0.0.1:0",
+		)
+		server.Command.Stdout = logs
+		server.Command.Stderr = logs
+
+		// Registered before the server's cleanup, so it runs after the
+		// server has been stopped and its output collected.
+		t.Cleanup(func() {
+			if t.Failed() {
+				t.Logf("%s logs:\n%s", name, logs.String())
+			}
+		})
+
+		server.Start(t)
+
+		return testinfra.ServerProcess{Exited: server.Exited(), Err: server.Wait, Output: logs.String, PID: server.PID()}
+	}).API
+
+	stop := func() {
+		_ = server.Command.Process.Kill()
+		<-server.Exited()
+	}
+
+	return apiAddress, stop
 }
 
 // withoutServerSettings drops every VAULT_SYNC_* variable from environ.
