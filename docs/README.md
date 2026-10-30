@@ -132,25 +132,11 @@ There is **one glossary per reader**: `docs/user/glossary.md`, `docs/admin/gloss
 - Decision history is deleted: the "(decision, #NNN)" notes, the issue numbers and the rejected alternatives. Git and the issues keep it. Only decisions that still bind move to `docs/dev/decisions.md`, each with its reason and the SPEC section it belongs to. The migration map lists them.
 - A separate issue rewrites SPEC in plain English. It must not change any rule.
 
-## Word budgets
+## Size
 
-Each reader gets a word budget for the pages that people write by hand. Generated reference pages do not count. CI checks the budgets, so the docs cannot grow again one section at a time.
+The docs should be as short as their readers need, and no shorter. Size is not a goal and not a CI check (owner decision, 2026-10-30). A page is the right size when every fact on it serves its reader, appears once for that reader, and isn't already stated by the code, a test or a generated reference.
 
-| Reader | Pages that count | Budget | Today | Projected after the rewrite |
-|---|---|---|---|---|
-| User | `docs/user/` | 8,000 | 0 (about 10,000 in `plugin.md` and `encryption.md`) | 7,700 |
-| Admin | `docs/admin/`, except the generated pages | 12,000 | 0 (about 20,000 in five pages, after the generated tables) | 11,900 |
-| Developer | `docs/dev/` and `SPEC.md` | 15,000 | 21,400 (`SPEC.md` only) | 13,600 (`SPEC.md` 7,000, `docs/dev/` 6,600) |
-| Developer design | `docs/design/` | 19,000 | 20,800 | 19,000 |
-| Developer testing | `docs/testing/` | 6,000 | 13,900 | 5,800 |
-| Agent | `CLAUDE.md`, `docs/agents/`, `.claude/agents/` | 10,000 | 11,900 | 10,000 |
-
-The user, admin and agent budgets are the owner's numbers. The developer budget of 15,000 is the owner's number for `docs/dev/` and `SPEC.md`. Two budgets are new:
-
-- The engine design in `docs/design/` gets its own budget of 19,000 words. The design is fixed, and each part of it is the reason for a rule in the code. The rewrite deletes only issue numbers, old alternatives and text that repeats the test vectors. It cannot get the design under 15,000 words without changing rules.
-- The test guides in `docs/testing/` get their own budget of 6,000 words. Most of their words describe test files and CI jobs, and those move next to the code or are deleted.
-
-The projected numbers are the sums of the targets per page and per section in [`docs/agents/docs-migration.md`](agents/docs-migration.md). The admin projection is close to its budget. Most of it is the backup and export page and the 17 alert runbooks, which cannot be generated. The acceptance checklists in `docs/acceptance/` are not in any budget, because only the owner writes them. The agent files need about 1,900 fewer words. No rewrite issue owns that cut yet. The temporary `docs/agents/docs-migration.md` and the vendored `.claude/skills/` do not count.
+The one-off rewrite set rough targets per page in [`docs/agents/docs-migration.md`](agents/docs-migration.md) to size the work. They are guidance for that rewrite only. A rewrite that needs more words to be clear uses them. One that can say it in fewer does.
 
 ## Moved pages and redirects
 

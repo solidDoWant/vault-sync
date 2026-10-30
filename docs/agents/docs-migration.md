@@ -10,7 +10,7 @@ Agent-only working file for the docs rewrite issues. It classifies every section
 - A row marked **stays** keeps its content where it is; the rewrite only adds the reader line and links (and plain English where the file is human-facing), and applies the row's class.
 - After moving a page, apply the redirect rules in `docs/README.md` ("Moved pages and redirects").
 - The rewrite issues are: user docs, admin docs, developer docs, SPEC.md readability, and front door + links + docs style check. Each row's owner is the issue for its first destination's tree (`user/` → user docs, `admin/` → admin docs, `dev/` → developer docs, `SPEC.md` → SPEC readability, `README.md` and stubs → front door).
-- Word counts (**W**) are today's words in the section, counted with `wc -w` semantics per heading (fenced code included). **Target** is the projected hand-written words after the rewrite. The per-tree totals in `docs/README.md` ("Word budgets") are the sums of these targets.
+- Word counts (**W**) are today's words in the section, counted with `wc -w` semantics per heading (fenced code included). **Target** is the projected hand-written words after the rewrite. Targets are rough guidance for planning, not limits (`docs/README.md`, "Size").
 
 ## Classes
 
@@ -19,7 +19,7 @@ Every row has exactly one primary class. A row whose content splits says so in i
 | Class | Meaning | What the rewrite does |
 |---|---|---|
 | **keep** | A reader of that audience needs it and can't learn it from the code: why a design is the way it is, binding owner decisions, non-goals, cross-component contracts, what to do when something breaks. | Rewrite at the reader's depth, in plain English where human-facing. |
-| **generate** | Reference material that restates code. | Write a generator that produces the table from the source, check the output in, and make CI fail on a diff (`make check-generate` or a sibling target). Scripts that parse the table today read the generator's output or the source instead. Generated pages don't count toward the word budgets. |
+| **generate** | Reference material that restates code. | Write a generator that produces the table from the source, check the output in, and make CI fail on a diff (`make check-generate` or a sibling target). Scripts that parse the table today read the generator's output or the source instead. |
 | **move** | Move next to the code: facts only an agent changing that code needs. | Put it in the proto comment, Go package doc, TypeScript module comment or test name named in the row. Where the named test or vector already pins the fact, the prose is deleted, not moved: the test is the contract. |
 | **delete** | History (issue numbers, "(decision, #NNN)" trails, rejected alternatives, superseded designs), duplication, or a description of code that no longer exists. | Remove it. A reason is given on each delete row. Decisions that still bind go to `dev/decisions.md` (see "Decisions that still bind"). |
 
@@ -266,11 +266,11 @@ All sections stay and keep their rules: the engine design is fixed. The develope
 
 | Section | W | Class | Destination | Notes |
 |---|---|---|---|---|
-| [ ] `phase-2.md`, `phase-3.md`, `phase-4.md` (all sections) | 2,243 | keep | stay | Owner-facing; scripts parse the scenario ids. Only the owner changes scenarios. Plain-English edits must not change any `[AC-nn]`/`[P3-nn]`/`[P4-nn]` id or meaning. Not counted in any budget: only the owner writes them. |
+| [ ] `phase-2.md`, `phase-3.md`, `phase-4.md` (all sections) | 2,243 | keep | stay | Owner-facing; scripts parse the scenario ids. Only the owner changes scenarios. Plain-English edits must not change any `[AC-nn]`/`[P3-nn]`/`[P4-nn]` id or meaning. |
 
 ## Projected words per new page
 
-These are the targets the per-tree totals in `docs/README.md` ("Word budgets") add up. A rewrite issue may move words between pages of its tree, but not past the tree's budget.
+Rough sizes to plan the rewrite (`docs/README.md`, "Size"). They are guidance, not limits: clarity for the page's reader wins over the number.
 
 | User page | Target | Admin page | Target | Developer page | Target |
 |---|---|---|---|---|---|
