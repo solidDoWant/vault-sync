@@ -92,3 +92,12 @@ div.vault-sync-fingerprint {
   font-family: var(--font-monospace);
   user-select: text;
 }
+
+/* The settings tab's collapsed Advanced group: its toggle reads as a section heading. */
+.vault-sync-advanced-summary {
+  cursor: pointer;
+  font-weight: var(--font-semibold);
+  font-size: var(--font-ui-medium);
+  padding: var(--size-4-3) 0;
+  border-top: 1px solid var(--background-modifier-border);
+}

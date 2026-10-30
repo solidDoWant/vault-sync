@@ -34,6 +34,16 @@ describe("parsePluginData", () => {
   });
 });
 
+describe("whether the settings tab's Advanced group is open", () => {
+  it("is closed unless it was saved open, and is kept once open", () => {
+    expect(parsePluginData({}).advancedSettingsOpen).toBeUndefined();
+    expect(parsePluginData({ advancedSettingsOpen: false }).advancedSettingsOpen).toBeUndefined();
+    expect(parsePluginData({ advancedSettingsOpen: "yes" }).advancedSettingsOpen).toBeUndefined();
+    expect(parsePluginData({ advancedSettingsOpen: true }).advancedSettingsOpen).toBe(true);
+    expect(parsePluginData(JSON.parse(JSON.stringify({ ...complete, advancedSettingsOpen: true }))).advancedSettingsOpen).toBe(true);
+  });
+});
+
 describe("remembered passphrase parameters and pinned escrow bundles", () => {
   it("keeps well-formed entries and drops malformed ones", () => {
     const params = { serverUrl: "https://sync.example", issuer: "https://auth.example/", subject: "user-1", memory: 65536, iterations: 3, parallelism: 1 };

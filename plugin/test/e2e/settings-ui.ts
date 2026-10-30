@@ -16,6 +16,12 @@ export function openSettings() {
   }, pluginId);
 }
 
+export function closeSettings() {
+  return browser.executeObsidian(({ app }) => {
+    (app as unknown as SettingsApp).setting.close();
+  });
+}
+
 /** Clicks the button labelled `text` in the `index`th row matching `selector`. */
 export function clickButton(selector: string, index: number, text: string) {
   return browser.executeObsidian(

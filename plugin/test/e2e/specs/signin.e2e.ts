@@ -3,6 +3,7 @@ import { browser, expect } from "@wdio/globals";
 import type VaultSyncPlugin from "../../../src/main";
 import { e2eEnvironment, pluginId } from "../environment";
 import { reloadPlugin } from "../obsidian";
+import { closeSettings, openSettings } from "../settings-ui";
 import { configure, dialog, isDialogOpen, issuerPost, signInResult, startSignIn } from "../signin";
 
 // Signing in with the OAuth device flow inside real Obsidian (SPEC.md §9.1),
@@ -106,6 +107,43 @@ async function listVaults(): Promise<CallResult> {
   return result as CallResult;
 }
 
+/**
+ * vault-sync's settings tab as built now: the section headings outside the
+ * Advanced group in order, whether that group is open, the headings inside
+ * it, and the open state saved in the plugin's data.
+ */
+function settingsLayout(build = true) {
+  return browser.executeObsidian(({ app }, id, rebuild) => {
+    const plugin = (app as unknown as { plugins: { plugins: Record<string, VaultSyncPlugin> } }).plugins.plugins[id];
+    const tab = (plugin as unknown as { settingTab?: { containerEl: HTMLElement; display(): void } } | undefined)?.settingTab;
+    if (plugin === undefined || tab === undefined) throw new Error("vault-sync has no settings tab");
+    if (rebuild) tab.display();
+    const advanced = tab.containerEl.querySelector<HTMLDetailsElement>("details.vault-sync-advanced");
+    const headings = (within: Element | null, outside?: Element | null) =>
+      [...(within?.querySelectorAll(".setting-item-heading") ?? [])].filter((heading) => outside === undefined || outside === null || !outside.contains(heading)).map((heading) => heading.querySelector(".setting-item-name")?.textContent ?? "");
+    return {
+      sections: headings(tab.containerEl, advanced),
+      advanced: advanced?.querySelector("summary")?.textContent ?? null,
+      advancedOpen: advanced?.open ?? null,
+      advancedSections: headings(advanced),
+      advancedFields: [...(advanced?.querySelectorAll(".setting-item:not(.setting-item-heading) .setting-item-name") ?? [])].map((name) => name.textContent),
+      saved: (plugin as unknown as { data: { advancedSettingsOpen?: boolean } }).data.advancedSettingsOpen ?? null,
+      lastChild: tab.containerEl.lastElementChild === advanced,
+    };
+  }, pluginId, build);
+}
+
+/** Clicks the Advanced group's toggle in the settings tab, as the user opens or closes it. */
+function toggleAdvanced() {
+  return browser.executeObsidian(({ app }, id) => {
+    const plugin = (app as unknown as { plugins: { plugins: Record<string, VaultSyncPlugin> } }).plugins.plugins[id];
+    const tab = (plugin as unknown as { settingTab?: { containerEl: HTMLElement } } | undefined)?.settingTab;
+    const summary = tab?.containerEl.querySelector<HTMLElement>("details.vault-sync-advanced > summary");
+    if (summary === null || summary === undefined) throw new Error("the settings tab has no Advanced group");
+    summary.click();
+  }, pluginId);
+}
+
 describe("signing in with the device flow", function () {
   before(async function () {
     // Only the server URL: the plugin takes the issuer and client id the
@@ -116,6 +154,18 @@ describe("signing in with the device flow", function () {
   it("starts signed out, and the server refuses the plugin's calls", async function () {
     expect(await pluginStatus()).toEqual({ authState: "signed-out", storedRefreshToken: false, storedIdentityProvider: null });
     expect(await listVaults()).toMatchObject({ ok: false, code: unauthenticated });
+  });
+
+  it("lays out the settings in setup order, the sync status first and the identity provider in a closed Advanced group", async function () {
+    expect(await settingsLayout()).toEqual({
+      sections: ["Sync", "Server", "Account"],
+      advanced: "Advanced",
+      advancedOpen: false,
+      advancedSections: ["Identity provider"],
+      advancedFields: ["OIDC issuer URL", "OIDC client ID"],
+      saved: null,
+      lastChild: true,
+    });
   });
 
   it("shows the verification URL and user code, and stores the refresh token once the user approves", async function () {
@@ -145,6 +195,27 @@ describe("signing in with the device flow", function () {
 
     expect(await pluginStatus()).toEqual({ authState: "signed-in", storedRefreshToken: true, storedIdentityProvider: issuer() });
     expect(await listVaults()).toEqual({ ok: true, vaults: 0 });
+  });
+
+  it("orders the signed-in sections by setup step, and remembers whether Advanced is open across reloads", async function () {
+    const closed = await settingsLayout();
+    expect(closed.sections).toEqual(["Sync", "Server", "Account", "End-to-end encryption", "Remote vault", "Devices"]);
+    expect(closed.advancedOpen).toBe(false);
+    expect(closed.lastChild).toBe(true);
+
+    // Opened in the settings window, as the user does.
+    await openSettings();
+    await toggleAdvanced();
+    await browser.waitUntil(async () => (await settingsLayout(false)).saved === true, { timeoutMsg: "opening Advanced was never saved" });
+    expect(await reloadPlugin(pluginId)).toBe(true);
+    expect(await settingsLayout()).toMatchObject({ advancedOpen: true, saved: true });
+
+    await openSettings();
+    await toggleAdvanced();
+    await browser.waitUntil(async () => (await settingsLayout(false)).saved === null, { timeoutMsg: "closing Advanced was never saved" });
+    expect(await reloadPlugin(pluginId)).toBe(true);
+    expect(await settingsLayout()).toMatchObject({ advancedOpen: false, saved: null });
+    await closeSettings();
   });
 
   it("moves a refresh token that data.json still holds to local storage on load, staying signed in", async function () {

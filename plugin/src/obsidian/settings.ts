@@ -80,8 +80,9 @@ const accountDescriptions: Record<AuthState, string> = {
 };
 
 /**
- * Vault Sync's settings (docs/plugin.md): the server, the identity provider,
- * the account, the remote vault, and the sync status. The server and identity
+ * Vault Sync's settings (docs/plugin.md): the sync status, the server, the
+ * account, encryption, the remote vault, sharing and devices, then the
+ * Advanced group (identity provider, vault key actions). The server and identity
  * provider cannot be changed while signed in, because the stored refresh
  * token belongs to them (sign out first), nor while a sign-in runs.
  */
@@ -98,6 +99,12 @@ export class VaultSyncSettingTab extends PluginSettingTab {
   private shownDevices: { loads: DeviceListLoads; removeButtons: Map<string, ButtonComponent> } | undefined;
   /** Bumped by every render, hide and Sharing load, so only the latest load paints the Sharing section, and none once the tab is hidden. */
   private sharingLoads = 0;
+  /** The Advanced group on screen. */
+  private advancedEl: HTMLDetailsElement | undefined;
+  /** The Re-encrypt history row on screen, in the Advanced group. */
+  private reencryptEl: HTMLElement | undefined;
+  /** A notice asked to show Re-encrypt history: scroll to it once it is painted. */
+  private revealReencrypt = false;
 
   constructor(
     app: App,
@@ -119,15 +126,44 @@ export class VaultSyncSettingTab extends PluginSettingTab {
     super.hide();
   }
 
-  /** Rebuilds the tab, e.g. after the account state changed. */
+  /**
+   * Rebuilds the tab, e.g. after the account state changed. The sections
+   * follow the setup flow, with the sync status (and what recovers from its
+   * errors) first; settings few users need sit in the collapsed Advanced
+   * group at the bottom.
+   */
   render(): void {
     const { containerEl, host } = this;
     containerEl.empty();
     this.closeDevices();
     this.sharingLoads++;
+    this.reencryptEl = undefined;
     const locked = host.settingsLocked;
 
-    new Setting(containerEl)
+    new Setting(containerEl).setName("Sync").setHeading();
+    this.statusSetting = new Setting(containerEl).setName("Sync status");
+    this.statusSetting.settingEl.addClass("vault-sync-settings-status");
+    this.showStatus();
+    if (host.syncStatus.state === "device-removed") {
+      new Setting(containerEl)
+        .setName("Register this device again")
+        .setDesc("This device was removed from your account on another device. Registering it again adds it back to your devices and pushes the changes made on it meanwhile.")
+        .addButton((button) =>
+          button
+            .setButtonText("Register again")
+            .setCta()
+            .onClick(async () => {
+              try {
+                await host.registerAgain();
+              } catch (error) {
+                new Notice(`Vault Sync: could not register this device: ${errorMessage(error)}`);
+              }
+            }),
+        );
+    }
+
+    new Setting(containerEl).setName("Server").setHeading();
+    const serverUrl = new Setting(containerEl)
       .setName("Server URL")
       .setDesc("The vault-sync server, e.g. https://sync.example.com.")
       .addText((text) =>
@@ -140,37 +176,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
             await host.saveSettings();
           }),
       );
-
-    // Optional: empty uses what the server advertises. While signed in, the
-    // placeholders show the provider in use.
-    const provider = host.data.identityProvider;
-    new Setting(containerEl).setName("Identity provider").setHeading();
-    new Setting(containerEl)
-      .setName("OIDC issuer URL")
-      .setDesc("Optional. Leave empty to use the issuer the server advertises; needed only for servers that advertise none.")
-      .addText((text) =>
-        text
-          .setPlaceholder(provider?.issuer ?? "From the server")
-          .setValue(host.data.oidcIssuer)
-          .setDisabled(locked)
-          .onChange(async (value) => {
-            host.data.oidcIssuer = value;
-            await host.saveSettings();
-          }),
-      );
-    new Setting(containerEl)
-      .setName("OIDC client ID")
-      .setDesc("Optional. Leave empty to use the client the server advertises, or enter the public OAuth client (with the device code grant enabled) to sign in as instead.")
-      .addText((text) =>
-        text
-          .setPlaceholder(provider?.clientId ?? "From the server")
-          .setValue(host.data.oidcClientId)
-          .setDisabled(locked)
-          .onChange(async (value) => {
-            host.data.oidcClientId = value;
-            await host.saveSettings();
-          }),
-      );
+    serverUrl.settingEl.addClass("vault-sync-server-url");
 
     new Setting(containerEl).setName("Account").setHeading();
     const account = new Setting(containerEl).setName("Status").setDesc(accountDescriptions[host.authState]);
@@ -206,35 +212,100 @@ export class VaultSyncSettingTab extends PluginSettingTab {
         });
       });
 
-
+    // The connected vault's owner actions in the Advanced group, filled in once the Sharing section loads.
+    const vaultActions = createDiv({ cls: "vault-sync-vault-actions" });
     if (host.authState === "signed-in") {
-      this.renderVault(containerEl);
-      if (host.connectedVault !== undefined) this.renderSharing(containerEl);
       this.renderEncryption(containerEl);
+      this.renderVault(containerEl);
+      if (host.connectedVault !== undefined) this.renderSharing(containerEl, vaultActions);
       this.renderDevices(containerEl);
     }
 
-    new Setting(containerEl).setName("Sync").setHeading();
-    this.statusSetting = new Setting(containerEl).setName("Sync status");
-    this.statusSetting.settingEl.addClass("vault-sync-settings-status");
-    this.showStatus();
-    if (host.syncStatus.state === "device-removed") {
-      new Setting(containerEl)
-        .setName("Register this device again")
-        .setDesc("This device was removed from your account on another device. Registering it again adds it back to your devices and pushes the changes made on it meanwhile.")
-        .addButton((button) =>
-          button
-            .setButtonText("Register again")
-            .setCta()
-            .onClick(async () => {
-              try {
-                await host.registerAgain();
-              } catch (error) {
-                new Notice(`Vault Sync: could not register this device: ${errorMessage(error)}`);
-              }
-            }),
-        );
+    this.renderAdvanced(containerEl, vaultActions, locked);
+  }
+
+  /**
+   * The Advanced group, collapsed unless the user left it open on this
+   * device: the identity provider overrides, and the connected vault's
+   * owner actions in `vaultActions`. Nothing needed to recover from an
+   * error is in it.
+   */
+  private renderAdvanced(containerEl: HTMLElement, vaultActions: HTMLElement, locked: boolean): void {
+    const { host } = this;
+    const advanced = containerEl.createEl("details", { cls: "vault-sync-advanced" });
+    advanced.open = host.data.advancedSettingsOpen === true;
+    advanced.createEl("summary", { cls: "vault-sync-advanced-summary", text: "Advanced" });
+    advanced.addEventListener("toggle", () => {
+      if (advanced.open === (host.data.advancedSettingsOpen === true)) return;
+      if (advanced.open) host.data.advancedSettingsOpen = true;
+      else delete host.data.advancedSettingsOpen;
+      void host.saveSettings();
+    });
+    this.advancedEl = advanced;
+
+    // Optional: empty uses what the server advertises. While signed in, the
+    // placeholders show the provider in use.
+    const provider = host.data.identityProvider;
+    new Setting(advanced).setName("Identity provider").setHeading();
+    new Setting(advanced)
+      .setName("OIDC issuer URL")
+      .setDesc("Optional. Leave empty to use the issuer the server advertises; needed only for servers that advertise none.")
+      .addText((text) =>
+        text
+          .setPlaceholder(provider?.issuer ?? "From the server")
+          .setValue(host.data.oidcIssuer)
+          .setDisabled(locked)
+          .onChange(async (value) => {
+            host.data.oidcIssuer = value;
+            await host.saveSettings();
+          }),
+      )
+      .settingEl.addClass("vault-sync-oidc-issuer");
+    new Setting(advanced)
+      .setName("OIDC client ID")
+      .setDesc("Optional. Leave empty to use the client the server advertises, or enter the public OAuth client (with the device code grant enabled) to sign in as instead.")
+      .addText((text) =>
+        text
+          .setPlaceholder(provider?.clientId ?? "From the server")
+          .setValue(host.data.oidcClientId)
+          .setDisabled(locked)
+          .onChange(async (value) => {
+            host.data.oidcClientId = value;
+            await host.saveSettings();
+          }),
+      )
+      .settingEl.addClass("vault-sync-oidc-client-id");
+
+    advanced.appendChild(vaultActions);
+  }
+
+  /**
+   * Opens the Advanced group and scrolls to Re-encrypt history, opening the
+   * settings tab first when it is closed: for a notice that tells the user
+   * to run it.
+   */
+  private showReencryptHistory(): void {
+    const { host } = this;
+    if (host.data.advancedSettingsOpen !== true) {
+      host.data.advancedSettingsOpen = true;
+      void host.saveSettings();
     }
+    this.revealReencrypt = true;
+    if (this.advancedEl?.isConnected === true) {
+      this.advancedEl.open = true;
+      this.scrollToReencrypt();
+      return;
+    }
+    const setting = (this.app as unknown as { setting?: { open(): void; openTabById(id: string): void } }).setting;
+    setting?.open();
+    setting?.openTabById(host.manifest.id);
+  }
+
+  /** Scrolls to Re-encrypt history if a notice asked for it and it is shown. */
+  private scrollToReencrypt(): void {
+    if (!this.revealReencrypt || this.reencryptEl?.isConnected !== true) return;
+    this.revealReencrypt = false;
+    this.reencryptEl.scrollIntoView({ block: "center" });
   }
 
   /** Shows the Device name setting as it is now, e.g. after a refused rename put it back. */
@@ -372,7 +443,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
    * and then the section is read again from the server, so a refused change
    * shows the state the server kept.
    */
-  private renderSharing(containerEl: HTMLElement): void {
+  private renderSharing(containerEl: HTMLElement, vaultActions: HTMLElement): void {
     const { host } = this;
     new Setting(containerEl).setName("Sharing").setHeading();
     const intro = new Setting(containerEl).setDesc("Loading the vault's members…");
@@ -383,7 +454,8 @@ export class VaultSyncSettingTab extends PluginSettingTab {
         (sharing) => {
           if (generation !== this.sharingLoads) return;
           section.empty();
-          this.paintSharing(intro, section, sharing, load);
+          vaultActions.empty();
+          this.paintSharing(intro, section, vaultActions, sharing, load);
         },
         (error: unknown) => {
           if (generation !== this.sharingLoads) return;
@@ -394,7 +466,8 @@ export class VaultSyncSettingTab extends PluginSettingTab {
     load();
   }
 
-  private paintSharing(intro: Setting, section: HTMLElement, sharing: Sharing, reload: () => void): void {
+  /** Paints a loaded Sharing section; an owner's key actions on an encrypted vault go to `vaultActions`, in the Advanced group. */
+  private paintSharing(intro: Setting, section: HTMLElement, vaultActions: HTMLElement, sharing: Sharing, reload: () => void): void {
     const { host } = this;
     /** Runs a membership change, then reads the section again; a refusal is a notice. */
     const change = (what: string, run: () => Promise<void>) => {
@@ -456,8 +529,10 @@ export class VaultSyncSettingTab extends PluginSettingTab {
           });
       }
 
-      if (sharing.encrypted) {
-        new Setting(section)
+      const connected = host.connectedVault;
+      if (sharing.encrypted && connected !== undefined) {
+        new Setting(vaultActions).setName(`Vault ${quotedVaultLabel(connected)}`).setHeading();
+        new Setting(vaultActions)
           .setName("Rotate key")
           .setDesc("Starts a new vault key for every current member and pending invitation. New changes are encrypted with it, and the other devices pick it up on their next sync. Removing a member rotates the key automatically.")
           .addButton((button) => {
@@ -482,7 +557,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
               }).open();
             });
           });
-        new Setting(section)
+        const reencrypt = new Setting(vaultActions)
           .setName("Re-encrypt history")
           .setDesc("Re-encrypts every earlier version of every note that still uses an older vault key under the current one, then retires the older keys. Run it after removing a member or turning escrow off. Syncing continues meanwhile, and an interrupted run continues where it stopped.")
           .addButton((button) => {
@@ -500,6 +575,8 @@ export class VaultSyncSettingTab extends PluginSettingTab {
               );
             });
           });
+        this.reencryptEl = reencrypt.settingEl;
+        this.scrollToReencrypt();
       }
 
       if (!sharing.encrypted) {
@@ -509,7 +586,13 @@ export class VaultSyncSettingTab extends PluginSettingTab {
           .addButton((button) => {
             button.setButtonText("Convert…").onClick(() => {
               new ConvertVaultModal(this.app, host, () => {
-                new Notice("Vault Sync: the vault is now end-to-end encrypted. Run Re-encrypt history to encrypt its earlier versions.");
+                const message = createFragment((fragment) => {
+                  fragment.appendText("Vault Sync: the vault is now end-to-end encrypted. Run Re-encrypt history (under Advanced) to encrypt its earlier versions. ");
+                  fragment.createEl("button", { text: "Show Re-encrypt history" }).addEventListener("click", () => {
+                    this.showReencryptHistory();
+                  });
+                });
+                new Notice(message, 0);
                 reload();
               }).open();
             });
