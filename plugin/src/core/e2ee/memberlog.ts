@@ -41,7 +41,7 @@ export const MAX_ENTRY_PAYLOAD_SIZE = BUNDLE_SIZE + 1 + "vault-sync/v1/escrow".l
 /** The most members of a vault (SPEC.md §9.2). */
 export const MAX_VAULT_MEMBERS = 100;
 /** The largest members entry payload: every member of a converted vault except its creator. */
-export const MAX_MEMBERS_PAYLOAD_SIZE = 2 + (MAX_VAULT_MEMBERS - 1) * (BUNDLE_SIZE + 1);
+export const MAX_MEMBERS_PAYLOAD_SIZE = 8 + 2 + (MAX_VAULT_MEMBERS - 1) * (BUNDLE_SIZE + 1);
 /** The most recipients of one epoch record (count is a u16). */
 export const MAX_EPOCH_RECIPIENTS = 0xffff;
 
@@ -142,13 +142,20 @@ export function setRolePayload(userId: string, role: number): Uint8Array {
   return concat(uuidBytes("user id", userId), Uint8Array.of(role));
 }
 
-/** count (u16) || (bundle || role)*: every member of a converted vault except its creator. */
-export function membersPayload(members: readonly Member[]): Uint8Array {
+/**
+ * converted_at_seq (u64) || count (u16) || (bundle || role)*: the vault's last
+ * change sequence number before its conversion, and every member of the
+ * converted vault except its creator.
+ */
+export function membersPayload(convertedAtSeq: bigint, members: readonly Member[]): Uint8Array {
   if (members.length > MAX_VAULT_MEMBERS - 1) throw new Error("e2ee: too many members");
-  const count = new Uint8Array(2);
-  new DataView(count.buffer).setUint16(0, members.length);
+  if (convertedAtSeq < 0n || convertedAtSeq >= 1n << 64n) throw new Error("e2ee: converted_at_seq out of range");
+  const header = new Uint8Array(MEMBERS_HEADER_SIZE);
+  const view = new DataView(header.buffer);
+  view.setBigUint64(0, convertedAtSeq);
+  view.setUint16(8, members.length);
   return concat(
-    count,
+    header,
     ...members.map((member) => {
       if (!validRole(member.role)) throw new Error("e2ee: unknown role");
       return concat(encodeBundle(member.bundle), Uint8Array.of(member.role));
@@ -156,18 +163,22 @@ export function membersPayload(members: readonly Member[]): Uint8Array {
   );
 }
 
-function parseMembersPayload(payload: Uint8Array): Member[] {
-  if (payload.length < 2) throw new Error("malformed members");
-  const count = new DataView(payload.buffer, payload.byteOffset, 2).getUint16(0);
-  if (payload.length !== 2 + count * (BUNDLE_SIZE + 1)) throw new Error("malformed members");
+const MEMBERS_HEADER_SIZE = 8 + 2;
+
+function parseMembersPayload(payload: Uint8Array): { convertedAtSeq: bigint; members: Member[] } {
+  if (payload.length < MEMBERS_HEADER_SIZE) throw new Error("malformed members");
+  const view = new DataView(payload.buffer, payload.byteOffset, MEMBERS_HEADER_SIZE);
+  const convertedAtSeq = view.getBigUint64(0);
+  const count = view.getUint16(8);
+  if (payload.length !== MEMBERS_HEADER_SIZE + count * (BUNDLE_SIZE + 1)) throw new Error("malformed members");
   const members: Member[] = [];
-  for (let offset = 2; offset < payload.length; offset += BUNDLE_SIZE + 1) {
+  for (let offset = MEMBERS_HEADER_SIZE; offset < payload.length; offset += BUNDLE_SIZE + 1) {
     const bundle = parseBundle(payload.subarray(offset, offset + BUNDLE_SIZE));
     const role = payload[offset + BUNDLE_SIZE] ?? 0;
     if (!validRole(role)) throw new Error("unknown role");
     members.push({ bundle, role });
   }
-  return members;
+  return { convertedAtSeq, members };
 }
 
 function parseEscrowPayload(payload: Uint8Array): { escrow: EscrowBundle | undefined } | undefined {
@@ -206,6 +217,12 @@ export interface LogState {
   escrow: EscrowBundle | undefined;
   /** The escrow bundle most recently named in the log, kept while escrow is off. */
   lastEscrow: EscrowBundle | undefined;
+  /**
+   * The members entry's signed bound of a converted vault's plaintext history:
+   * its last change sequence number before the conversion. Undefined for a
+   * vault created encrypted, which has no members entry.
+   */
+  convertedAtSeq: bigint | undefined;
   /** The seq of the last remove-member entry at or before this state, 0 if there is none. */
   lastRemoval: number;
 }
@@ -234,7 +251,7 @@ export function replayLog(vaultId: string, entries: readonly Entry[], options: R
   if (entries.length === 0) throw new LogError("empty log");
   const states: LogState[] = [];
   const used = new Set<string>();
-  let state: LogState = { seq: 0, hash: new Uint8Array(HASH_SIZE), members: new Map(), invitations: new Map(), escrow: undefined, lastEscrow: undefined, lastRemoval: 0 };
+  let state: LogState = { seq: 0, hash: new Uint8Array(HASH_SIZE), members: new Map(), invitations: new Map(), escrow: undefined, lastEscrow: undefined, convertedAtSeq: undefined, lastRemoval: 0 };
   for (const entry of entries) {
     let next: LogState;
     try {
@@ -264,7 +281,7 @@ function applyEntry(vaultId: string, state: LogState, used: Set<string>, entry: 
 
   const members = new Map(state.members);
   const invitations = new Map(state.invitations);
-  let { escrow, lastEscrow, lastRemoval } = state;
+  let { escrow, lastEscrow, convertedAtSeq, lastRemoval } = state;
   const payload = entry.payload;
   const signature = entry.signatures[0] ?? new Uint8Array();
   const requireOwner = (): void => {
@@ -351,7 +368,8 @@ function applyEntry(vaultId: string, state: LogState, used: Set<string>, entry: 
     }
     case EntryType.members: {
       if (entry.seq !== MEMBERS_ENTRY_SEQ) throw new Error("members entry not directly after genesis");
-      const listed = parseMembersPayload(payload);
+      const parsed = parseMembersPayload(payload);
+      const listed = parsed.members;
       // At seq 2 the genesis creator is the only member.
       const creator = state.seq === 1 && state.members.size === 1 ? [...state.members.values()][0] : undefined;
       if (creator === undefined || !verifySignature(creator.bundle.signPub, body, signature)) throw new Error("wrong signer");
@@ -359,6 +377,7 @@ function applyEntry(vaultId: string, state: LogState, used: Set<string>, entry: 
         if (members.has(member.bundle.userId)) throw new Error("members entry lists the creator or a user twice");
         members.set(member.bundle.userId, member);
       }
+      convertedAtSeq = parsed.convertedAtSeq;
       break;
     }
     default:
@@ -366,7 +385,7 @@ function applyEntry(vaultId: string, state: LogState, used: Set<string>, entry: 
   }
 
   if (![...members.values()].some((member) => member.role === Role.owner)) throw new Error("no owner left");
-  return { seq: entry.seq, hash: sha256(body), members, invitations, escrow, lastEscrow, lastRemoval };
+  return { seq: entry.seq, hash: sha256(body), members, invitations, escrow, lastEscrow, convertedAtSeq, lastRemoval };
 }
 
 /** One recipient of an epoch: kind (0x01 user, 0x02 escrow, 0x03 invitation), encoded recipient id, SHA-256 of its public key. */

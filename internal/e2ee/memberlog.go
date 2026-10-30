@@ -27,7 +27,7 @@ const (
 
 	// MaxMembersPayloadSize bounds the payload of a members entry, which
 	// lists every member of a converted vault except its creator.
-	MaxMembersPayloadSize = 2 + (MaxVaultMembers-1)*(BundleSize+1)
+	MaxMembersPayloadSize = 8 + 2 + (MaxVaultMembers-1)*(BundleSize+1)
 
 	invitePayloadSize = 16 + 1 + SignPublicKeySize + PublicKeySize
 )
@@ -200,14 +200,17 @@ func SetRolePayload(userID string, role Role) ([]byte, error) {
 	return append(user, byte(role)), nil
 }
 
-// MembersPayload returns count (u16) || (bundle || role)*, the payload of a
-// members entry listing every member of a converted vault except its creator.
-func MembersPayload(members []Member) ([]byte, error) {
+// MembersPayload returns converted_at_seq (u64) || count (u16) || (bundle ||
+// role)*, the payload of a members entry: the vault's last change sequence
+// number before its conversion and every member of the converted vault
+// except its creator.
+func MembersPayload(convertedAtSeq uint64, members []Member) ([]byte, error) {
 	if len(members) > MaxVaultMembers-1 {
 		return nil, errors.New("e2ee: too many members")
 	}
 
-	payload := binary.BigEndian.AppendUint16(nil, uint16(len(members))) //nolint:gosec // bounded above.
+	payload := binary.BigEndian.AppendUint64(nil, convertedAtSeq)
+	payload = binary.BigEndian.AppendUint16(payload, uint16(len(members))) //nolint:gosec // bounded above.
 
 	for _, member := range members {
 		if !member.Role.valid() {
@@ -225,33 +228,39 @@ func MembersPayload(members []Member) ([]byte, error) {
 	return payload, nil
 }
 
-func parseMembersPayload(payload []byte) ([]Member, error) {
-	if len(payload) < 2 {
-		return nil, errors.New("malformed members")
+// parseMembersPayload parses the payload of a members entry into its
+// converted_at_seq and listed members.
+func parseMembersPayload(payload []byte) (uint64, []Member, error) {
+	const header = 8 + 2
+
+	if len(payload) < header {
+		return 0, nil, errors.New("malformed members")
 	}
 
-	count := int(binary.BigEndian.Uint16(payload))
-	if len(payload) != 2+count*(BundleSize+1) {
-		return nil, errors.New("malformed members")
+	convertedAtSeq := binary.BigEndian.Uint64(payload)
+
+	count := int(binary.BigEndian.Uint16(payload[8:]))
+	if len(payload) != header+count*(BundleSize+1) {
+		return 0, nil, errors.New("malformed members")
 	}
 
 	members := make([]Member, 0, count)
 
-	for offset := 2; offset < len(payload); offset += BundleSize + 1 {
+	for offset := header; offset < len(payload); offset += BundleSize + 1 {
 		bundle, err := ParseBundle(payload[offset : offset+BundleSize])
 		if err != nil {
-			return nil, err
+			return 0, nil, err
 		}
 
 		role := Role(payload[offset+BundleSize])
 		if !role.valid() {
-			return nil, errors.New("unknown role")
+			return 0, nil, errors.New("unknown role")
 		}
 
 		members = append(members, Member{Bundle: bundle, Role: role})
 	}
 
-	return members, nil
+	return convertedAtSeq, members, nil
 }
 
 // EscrowPayload returns 0x00 for no escrow, or 0x01 || escrow bundle.
@@ -306,6 +315,13 @@ type LogState struct {
 	Members     map[string]Member
 	Invitations map[string]Invitation
 	Escrow      *EscrowBundle
+
+	// Converted is true when the log has a members entry: the vault was
+	// converted in place from a plaintext vault. ConvertedAtSeq is then the
+	// signed bound of its plaintext history: the vault's last change sequence
+	// number before the conversion. A vault without one was created encrypted.
+	Converted      bool
+	ConvertedAtSeq uint64
 
 	// lastEscrow is the escrow bundle most recently named in the log, kept
 	// while escrow is off so that turning it back on must chain from it.
@@ -598,7 +614,7 @@ func applyEntry(vaultID string, state LogState, used map[string]bool, entry Entr
 			return LogState{}, errors.New("members entry not directly after genesis")
 		}
 
-		listed, err := parseMembersPayload(payload)
+		convertedAtSeq, listed, err := parseMembersPayload(payload)
 		if err != nil {
 			return LogState{}, err
 		}
@@ -616,6 +632,9 @@ func applyEntry(vaultID string, state LogState, used map[string]bool, entry Entr
 
 			next.Members[member.Bundle.UserID] = member
 		}
+
+		next.Converted = true
+		next.ConvertedAtSeq = convertedAtSeq
 	default:
 		return LogState{}, errors.New("unknown entry type")
 	}

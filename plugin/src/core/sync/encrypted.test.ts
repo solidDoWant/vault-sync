@@ -42,7 +42,7 @@ class WithheldKeyring implements VaultKeyring {
     return this.withheld.has(epoch) ? undefined : this.keys.epochKey(epoch);
   }
 
-  conversionSeq(): bigint {
+  conversionSeq(): bigint | undefined {
     return this.keys.conversionSeq();
   }
 }

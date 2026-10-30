@@ -129,10 +129,11 @@ export interface VaultKeyring {
   epochKey(epoch: number): Uint8Array | undefined;
   /**
    * For a vault converted to encryption in place, the vault's head seq at the
-   * conversion (as of the last refresh): epoch-0 revisions up to it are the
-   * vault's plaintext history. 0 for a vault never converted.
+   * conversion, from the verified membership log (as of the last refresh):
+   * epoch-0 revisions up to it are the vault's plaintext history. Undefined
+   * for a vault created encrypted, which never accepts epoch 0.
    */
-  conversionSeq(): bigint;
+  conversionSeq(): bigint | undefined;
 }
 
 /** This device does not hold a key it needs: an owner has not shared it yet, or it was refused. */
@@ -252,11 +253,13 @@ export class EncryptedCodec implements RevisionCodec {
   /**
    * A revision of a converted vault's plaintext history (epoch 0), which the
    * re-key job has not encrypted yet: read as in a plaintext vault. Only
-   * revisions committed up to the conversion may be at epoch 0; a later one
-   * is refused (docs/design/encryption.md, "Epoch 0").
+   * revisions committed up to the conversion may be at epoch 0; a later one,
+   * and every one of a vault created encrypted, is refused
+   * (docs/design/encryption.md, "Epoch 0").
    */
   private decodePlaintextHistory(revision: Revision): IncomingRevision {
-    if (revision.seq > this.keys.conversionSeq()) throw new RemoteContentError(`revision ${revision.id} of an encrypted vault is not encrypted`);
+    const converted = this.keys.conversionSeq();
+    if (converted === undefined || revision.seq > converted) throw new RemoteContentError(`revision ${revision.id} of an encrypted vault is not encrypted`);
     const plain = toIncoming(revision);
     if (revision.contentRef !== undefined) this.plaintextHashes.add(plain.remote.contentHash);
     return plain;

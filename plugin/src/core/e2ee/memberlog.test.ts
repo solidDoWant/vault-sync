@@ -97,6 +97,7 @@ function stateJson(state: LogState): unknown {
       kem_pub_hash: bytesToHex(sha256(invitation.kemPub)),
     })),
     escrow: state.escrow === undefined ? "" : bytesToHex(encodeEscrowBundle(state.escrow)),
+    ...(state.convertedAtSeq === undefined ? {} : { converted_at_seq: Number(state.convertedAtSeq) }),
   };
 }
 

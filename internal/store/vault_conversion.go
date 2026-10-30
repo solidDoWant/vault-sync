@@ -23,6 +23,10 @@ var (
 	// name exactly the vault's live documents: they changed since the
 	// owner's device listed them.
 	ErrConversionStale = errors.New("the path keys do not name exactly the vault's live documents")
+	// ErrConversionHeadMoved is returned when the vault's head change
+	// sequence number is no longer the members entry's converted_at_seq: a
+	// change was committed after the converting device synced.
+	ErrConversionHeadMoved = errors.New("the vault's head change sequence number is not the conversion's")
 )
 
 // ConversionBlockedError refuses a conversion the vault is not ready for:
@@ -52,10 +56,12 @@ type ConversionMember struct {
 
 // Conversion is a plaintext vault's switch to end-to-end encryption.
 type Conversion struct {
-	// Genesis and MembersEntry (nil when the creator is the only member)
-	// start the vault's membership log.
+	// Genesis and MembersEntry start the vault's membership log.
 	Genesis      LogEntry
-	MembersEntry *LogEntry
+	MembersEntry LogEntry
+	// ConvertedAtSeq is the members entry's signed converted_at_seq. The
+	// vault converts only while its head_seq still equals it.
+	ConvertedAtSeq uint64
 	// CheckMembers, under the vault row lock, refuses a log that does not
 	// name exactly members (with their roles and keys); its error is
 	// returned as is.
@@ -76,7 +82,8 @@ type Conversion struct {
 // It returns ErrVaultEncrypted for a vault that already is end-to-end
 // encrypted, a *ConversionBlockedError when a member has no complete user
 // key or an invitation is pending (expired invitations are deleted),
-// CheckMembers' error, ErrConversionStale when PathKeys do not name exactly
+// CheckMembers' error, ErrConversionHeadMoved when head_seq is not
+// ConvertedAtSeq, ErrConversionStale when PathKeys do not name exactly
 // the live documents, ErrPathKeyTaken for two equal path keys, and the
 // errors of RotateEpoch for epoch 1.
 func (vault *VaultStore) ConvertVault(ctx context.Context, creatorID uuid.UUID, conversion Conversion) (Epoch, int64, error) {
@@ -102,6 +109,10 @@ func (vault *VaultStore) ConvertVault(ctx context.Context, creatorID uuid.UUID, 
 			return ErrVaultEncrypted
 		}
 
+		if conversionSeq < 0 || uint64(conversionSeq) != conversion.ConvertedAtSeq {
+			return ErrConversionHeadMoved
+		}
+
 		members, err := conversionReady(ctx, tx, vault.vaultID)
 		if err != nil {
 			return err
@@ -119,10 +130,8 @@ func (vault *VaultStore) ConvertVault(ctx context.Context, creatorID uuid.UUID, 
 			return err
 		}
 
-		if conversion.MembersEntry != nil {
-			if err := insertLogEntry(ctx, tx, vault.vaultID, *conversion.MembersEntry); err != nil {
-				return err
-			}
+		if err := insertLogEntry(ctx, tx, vault.vaultID, conversion.MembersEntry); err != nil {
+			return err
 		}
 
 		_, err = tx.Exec(ctx, `

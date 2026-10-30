@@ -15,6 +15,7 @@ import { MemoryEpochKeyStore, VaultKeyManager } from "../keys/vault-keys";
 import { LogVerificationError, MemoryVerifiedLogStore } from "../keys/verified-log";
 import { createProtocolClient } from "../protocol/client";
 import { InMemoryServer } from "./memory-server";
+import { RemoteContentError } from "./remote";
 import { Device } from "./testing";
 
 // docs/design/encryption.md, "Hard stop": on any verification failure the
@@ -164,6 +165,22 @@ describe("a verification failure stops syncing the vault and keeps its files", (
     server.currentEpoch = 1;
 
     await expectHardStop(owner, server, keys);
+  });
+
+  it("[P4-10] refuses plaintext revisions the server injects into a vault created encrypted, whatever conversion seq it reports", async () => {
+    const { keys, server, owner } = await ownerDevice();
+    const note = [...(await owner.journal.load()).docs.values()].find((doc) => doc.path === "plan.md");
+    if (note === undefined) throw new Error("no plan.md");
+    // The server claims a conversion the verified log does not record, and
+    // serves epoch-0 revisions: an edit of a member's note and a new file.
+    keys.conversionSeq = 1n << 60n;
+    server.commit({ documentId: note.documentId, path: "plan.md", content: "content forged by the server\n" });
+    server.commit({ documentId: crypto.randomUUID(), path: "injected.md", content: "file forged by the server\n" });
+
+    await expect(owner.sync()).rejects.toBeInstanceOf(RemoteContentError);
+
+    expect(await owner.files()).toEqual({ "plan.md": "first draft\n" });
+    expect(owner.engine.status).toBe("error");
   });
 
   it("keeps syncing an honest vault with the real key manager", async () => {

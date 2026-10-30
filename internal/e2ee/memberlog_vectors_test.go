@@ -136,6 +136,9 @@ type logStateJSON struct {
 	Invitations []invitationJSON `json:"invitations"`
 	// Escrow is the encoded escrow bundle, empty when escrow is off.
 	Escrow string `json:"escrow"`
+	// ConvertedAtSeq is the members entry's bound of a converted vault's
+	// plaintext history, absent for a vault created encrypted.
+	ConvertedAtSeq *uint64 `json:"converted_at_seq,omitempty"`
 }
 
 type recipientJSON struct {
@@ -327,6 +330,10 @@ func stateJSON(state LogState) logStateJSON {
 
 	if state.Escrow != nil {
 		out.Escrow = hex.EncodeToString(must(state.Escrow.Encode()))
+	}
+
+	if state.Converted {
+		out.ConvertedAtSeq = &state.ConvertedAtSeq
 	}
 
 	return out
@@ -645,12 +652,15 @@ func generateIdentityVectors(t *testing.T) identityVectors {
 		EscrowRotations: rotations, Entries: slices.Clone(builder.entries[:2]),
 	})
 
-	// The log of a converted vault: genesis, then a members entry naming
-	// the members the vault already had.
+	// The log of a converted vault: genesis, then a members entry with the
+	// vault's last change sequence number before the conversion, naming the
+	// members the vault already had.
+	const convertedAtSeq = 41
+
 	converted := &logBuilder{vaultID: vectorVaultID}
 	convertedMembers := []Member{{Bundle: bob.bundle, Role: RoleEditor}, {Bundle: carol.bundle, Role: RoleViewer}}
 	converted.add(EntryGenesis, must(GenesisPayload(alice.bundle, nil)), aliceSeed)
-	converted.add(EntryMembers, must(MembersPayload(convertedMembers)), aliceSeed)
+	converted.add(EntryMembers, must(MembersPayload(convertedAtSeq, convertedMembers)), aliceSeed)
 	converted.add(EntrySetRole, must(SetRolePayload(vectorBobID, RoleOwner)), aliceSeed)
 
 	convertedStates, err := ReplayLog(vectorVaultID, decodeEntries(t, vectorVaultID, converted.entries), ReplayOptions{})
@@ -675,7 +685,7 @@ func generateIdentityVectors(t *testing.T) identityVectors {
 			Name: name, VaultID: vectorVaultID, EscrowRotations: []escrowRotationJSON{}, Entries: log.entries,
 		})
 	}
-	membersOf := func(members ...Member) []byte { return must(MembersPayload(members)) }
+	membersOf := func(members ...Member) []byte { return must(MembersPayload(convertedAtSeq, members)) }
 
 	rejectConverted("members entry after another entry", func(log *logBuilder) {
 		log.add(EntryInvite, must(InvitePayload(vectorInvitationOne, RoleEditor, invitePubs[vectorInvitationOne], invitationKeys[vectorInvitationOne])), aliceSeed)
@@ -696,8 +706,11 @@ func generateIdentityVectors(t *testing.T) identityVectors {
 	})
 	rejectConverted("members entry with a count larger than its list", func(log *logBuilder) {
 		payload := membersOf(convertedMembers...)
-		payload[1]++
+		payload[9]++
 		log.add(EntryMembers, payload, aliceSeed)
+	})
+	rejectConverted("members entry without converted_at_seq", func(log *logBuilder) {
+		log.add(EntryMembers, membersOf(convertedMembers...)[8:], aliceSeed)
 	})
 	rejectConverted("members entry with an unknown role", func(log *logBuilder) {
 		payload := membersOf(convertedMembers...)

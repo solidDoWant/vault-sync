@@ -15,7 +15,7 @@ import { logRole } from "./encrypted-membership";
 import { MemoryVaultKeyServer } from "./memory-vault-keys";
 import type { UserKeyPair } from "./user-key";
 import { MemoryVerifiedLogStore } from "./verified-log";
-import { MemoryEpochKeyStore } from "./vault-keys";
+import { MemoryEpochKeyStore, VaultKeyManager } from "./vault-keys";
 
 const vaultId = "0190a5b4-0000-7000-8000-000000000001";
 const ownerId = "0190a5b4-0000-7000-8000-000000000101";
@@ -138,6 +138,60 @@ describe("converting a plaintext vault in place", () => {
       expect(containsBytes(request?.bytes ?? new Uint8Array(), pathKey(secret, path))).toBe(true);
     }
     expect(containsBytes(request?.bytes ?? new Uint8Array(), pathKey(secret, "gone.md"))).toBe(false);
+  });
+
+  it("[P4-10] signs the head seq it read the documents at as the bound of the plaintext history, which readers take instead of the server's conversion seq", async () => {
+    const { sync, keys, client, owner, convert } = await plaintextVault();
+
+    await convert(await conversionMembers(client.membership, vaultId));
+
+    const signed = replayLog(vaultId, keys.log).at(-1)?.convertedAtSeq;
+    expect(signed).toBe(sync.currentHeadSeq);
+    // The server reports a later conversion than the signed one.
+    keys.conversionSeq = sync.currentHeadSeq + 5n;
+    const manager = new VaultKeyManager({
+      vaultId,
+      userKey: owner,
+      owner: true,
+      keys: client.vaultKeys,
+      membership: client.membership,
+      store: new MemoryEpochKeyStore(),
+      trust: { userKey: owner, log: client.vaultKeys, anchors: client.userKeys, verifiedLogs: new MemoryVerifiedLogStore() },
+    });
+    await manager.sync();
+    expect(manager.conversionSeq()).toBe(sync.currentHeadSeq);
+  });
+
+  it("[P4-10] writes a members entry with the bound of the plaintext history when the owner is the vault's only member", async () => {
+    const sync = new InMemoryServer({ vaultId });
+    const device = new Device(sync, "device-a");
+    await device.write("a.md", "a\n");
+    await device.sync();
+    const keys = new MemoryVaultKeyServer(vaultId);
+    keys.plaintextVault();
+    const owner = userKey(ownerId, 1);
+    keys.addPlaintextMember(ownerId, VaultRole.OWNER, owner);
+    keys.headSeq = sync.currentHeadSeq;
+    keys.liveDocuments = new Set(sync.liveDocuments().values());
+    const client = createProtocolClient({ transport: keys.transport(ownerId) });
+
+    await convertVault({
+      vaultId,
+      userKey: owner,
+      compared: await conversionMembers(client.membership, vaultId),
+      escrow: undefined,
+      membership: client.membership,
+      sync: createProtocolClient({ transport: sync.transport }).sync,
+      keys: client.vaultKeys,
+      anchors: client.userKeys,
+      verifiedLogs: new MemoryVerifiedLogStore(),
+      store: new MemoryEpochKeyStore(),
+    });
+
+    expect(keys.log.map((entry) => entry.type)).toEqual([EntryType.genesis, EntryType.members]);
+    const state = replayLog(vaultId, keys.log).at(-1);
+    expect(state?.members.size).toBe(1);
+    expect(state?.convertedAtSeq).toBe(sync.currentHeadSeq);
   });
 
   it("[P4-10] is refused, listing them, while a member has no key", async () => {
