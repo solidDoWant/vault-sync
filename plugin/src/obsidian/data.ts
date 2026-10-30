@@ -61,6 +61,39 @@ export interface PluginData {
    * synced, logged or shown; dropped on sign-out with `userKey`.
    */
   vaultKeys?: CachedVaultKeys;
+  /**
+   * The Argon2id parameters this device has seen for each account
+   * (docs/design/encryption.md, "Passphrase parameters"): unlocking with
+   * lower ones is refused. Not secret; kept on sign-out.
+   */
+  passphraseParams?: RememberedPassphraseParams[];
+  /**
+   * The escrow bundle this device pinned for each server
+   * (docs/design/encryption.md, "Escrow key"): a new escrow key is used only
+   * when signed rotation statements chain it to this one. Not secret; kept
+   * on sign-out.
+   */
+  escrowPins?: PinnedEscrowBundle[];
+}
+
+/** The Argon2id parameters an account's key was seen with on this device. */
+export interface RememberedPassphraseParams {
+  /** The server and account, as in RegisteredDevice. */
+  serverUrl: string;
+  issuer: string;
+  subject: string;
+  /** Memory cost in KiB. */
+  memory: number;
+  iterations: number;
+  parallelism: number;
+}
+
+/** A server's escrow bundle as pinned on this device. */
+export interface PinnedEscrowBundle {
+  /** The server (serverBaseUrl). */
+  serverUrl: string;
+  /** The encoded escrow bundle (docs/design/crypto.md), in lowercase hex. */
+  bundle: string;
 }
 
 /** A vault's epoch keys as cached on the device, hex-encoded by epoch, with the account and vault they belong to. */
@@ -188,7 +221,34 @@ export function parsePluginData(raw: unknown): PluginData {
   if (userKey !== undefined) data.userKey = userKey;
   const vaultKeys = parseVaultKeys(stored.vaultKeys);
   if (vaultKeys !== undefined) data.vaultKeys = vaultKeys;
+  const passphraseParams = list(stored.passphraseParams, parsePassphraseParams);
+  if (passphraseParams.length > 0) data.passphraseParams = passphraseParams;
+  const escrowPins = list(stored.escrowPins, parseEscrowPin);
+  if (escrowPins.length > 0) data.escrowPins = escrowPins;
   return data;
+}
+
+/** The well-formed items of a stored list. */
+function list<Item>(raw: unknown, parse: (item: unknown) => Item | undefined): Item[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map(parse).filter((item): item is Item => item !== undefined);
+}
+
+/** Remembered Argon2id parameters; dropped unless every field is well formed. */
+function parsePassphraseParams(raw: unknown): RememberedPassphraseParams | undefined {
+  const account = record(raw, ["serverUrl", "issuer", "subject"]);
+  if (account === undefined) return undefined;
+  const stored = raw as Record<string, unknown>;
+  const { memory, iterations, parallelism } = stored;
+  const positive = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) > 0;
+  if (!positive(memory) || !positive(iterations) || !positive(parallelism)) return undefined;
+  return { ...account, memory, iterations, parallelism };
+}
+
+/** A pinned escrow bundle; dropped unless it is lowercase hex. */
+function parseEscrowPin(raw: unknown): PinnedEscrowBundle | undefined {
+  const pin = record(raw, ["serverUrl", "bundle"]);
+  return pin !== undefined && /^(?:[0-9a-f]{2})+$/.test(pin.bundle) ? pin : undefined;
 }
 
 /** A 32-byte key in lowercase hex. */

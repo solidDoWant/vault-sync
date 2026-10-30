@@ -17,6 +17,7 @@ import {
   MemoryUserKeyServer,
 } from "./memory-user-keys";
 import {
+  changePassphrase,
   enableEncryption,
   NoUserKeyError,
   PassphraseAttemptsExhaustedError,
@@ -24,7 +25,9 @@ import {
   storedPublicKey,
   unlockUserKey,
   userKeyAad,
+  WeakerPassphraseParamsError,
   WrongPassphraseError,
+  type PassphraseParamsMemory,
 } from "./user-key";
 
 /** The cheapest parameters the bounds allow, so the tests stay fast. */
@@ -249,5 +252,81 @@ describe("unlocking on another device", ARGON2_TIMEOUT, () => {
     await expect(unlockUserKey(device(server), passphrase)).rejects.toThrow(
       "the key the server released does not match its public key",
     );
+  });
+});
+
+/** A {@link PassphraseParamsMemory} in memory. */
+class MemoryParams implements PassphraseParamsMemory {
+  constructor(public params?: Argon2Params) {}
+
+  load(): Promise<Argon2Params | undefined> {
+    return Promise.resolve(this.params);
+  }
+
+  save(params: Argon2Params): Promise<void> {
+    this.params = { ...params };
+    return Promise.resolve();
+  }
+}
+
+describe("remembering the Argon2id parameters", ARGON2_TIMEOUT, () => {
+  it("remembers the parameters of the key this device created", async () => {
+    const remembered = new MemoryParams();
+    await enableEncryption(device(new MemoryUserKeyServer()), passphrase, cheap, remembered);
+    expect(remembered.params).toEqual(cheap);
+  });
+
+  it.each([
+    ["memory", { ...cheap, memory: cheap.memory + 1 }],
+    ["passes", { ...cheap, iterations: cheap.iterations + 1 }],
+    ["lanes", { ...cheap, parallelism: cheap.parallelism + 1 }],
+  ])("refuses to unlock with lower %s than it remembers, before deriving or sending anything", async (_name, higher) => {
+    const server = new MemoryUserKeyServer();
+    await enableEncryption(device(server), passphrase, cheap);
+    const remembered = new MemoryParams(higher);
+    const before = server.requests.length;
+
+    await expect(unlockUserKey(device(server), passphrase, remembered)).rejects.toBeInstanceOf(WeakerPassphraseParamsError);
+
+    expect(server.requests.slice(before).map((request) => request.procedure)).toEqual(["GetUserKeyParams"]);
+    expect(remembered.params).toEqual(higher);
+  });
+
+  it("unlocks with the parameters it remembers", async () => {
+    const server = new MemoryUserKeyServer();
+    const { key } = await enableEncryption(device(server), passphrase, cheap);
+    const remembered = new MemoryParams({ ...cheap });
+
+    expect((await unlockUserKey(device(server), passphrase, remembered)).publicKey).toEqual(key.publicKey);
+    expect(remembered.params).toEqual(cheap);
+  });
+
+  it("unlocks with higher parameters and remembers them", async () => {
+    const higher = { ...cheap, iterations: cheap.iterations + 1 };
+    const server = new MemoryUserKeyServer();
+    await enableEncryption(device(server), passphrase, higher);
+    const remembered = new MemoryParams({ ...cheap });
+
+    await unlockUserKey(device(server), passphrase, remembered);
+    expect(remembered.params).toEqual(higher);
+  });
+
+  it("refuses to change the passphrase of a key with lower parameters than it remembers", async () => {
+    const server = new MemoryUserKeyServer();
+    await enableEncryption(device(server), passphrase, cheap);
+    const remembered = new MemoryParams({ ...cheap, iterations: cheap.iterations + 1 });
+
+    await expect(changePassphrase(device(server), passphrase, "another long passphrase", cheap, remembered)).rejects.toBeInstanceOf(
+      WeakerPassphraseParamsError,
+    );
+    expect(server.requests.map((request) => request.procedure)).not.toContain("ChangePassphrase");
+  });
+
+  it("refuses, when another device enabled encryption first, to unlock its key with lower parameters", async () => {
+    const server = new MemoryUserKeyServer();
+    await enableEncryption(device(server), passphrase, cheap);
+    const remembered = new MemoryParams({ ...cheap, memory: cheap.memory + 1 });
+
+    await expect(enableEncryption(device(server), passphrase, cheap, remembered)).rejects.toBeInstanceOf(WeakerPassphraseParamsError);
   });
 });

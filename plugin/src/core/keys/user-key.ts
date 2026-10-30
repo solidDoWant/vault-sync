@@ -56,6 +56,43 @@ export interface UserKeyPair {
   signSeed: Uint8Array;
 }
 
+/**
+ * Where a device remembers the Argon2id parameters it has seen for the
+ * signed-in account (docs/design/encryption.md, "Passphrase parameters"):
+ * device-local, per account.
+ */
+export interface PassphraseParamsMemory {
+  /** The parameters remembered for the account, or undefined before this device saw any. */
+  load(): Promise<Argon2Params | undefined>;
+  /** Remembers `params` for the account, replacing what was remembered. */
+  save(params: Argon2Params): Promise<void>;
+}
+
+/** The server's key uses lower Argon2id parameters than this device has seen for the account; nothing was derived or sent. */
+export class WeakerPassphraseParamsError extends Error {
+  constructor() {
+    super(
+      "the server's key uses weaker passphrase protection than this device has seen for the account, so the passphrase was not used",
+    );
+    this.name = "WeakerPassphraseParamsError";
+  }
+}
+
+/** Throws {@link WeakerPassphraseParamsError} when `params` is lower than the remembered parameters in memory, passes or lanes. */
+async function requireNotWeaker(
+  memory: PassphraseParamsMemory | undefined,
+  params: Argon2Params,
+): Promise<void> {
+  const remembered = await memory?.load();
+  if (
+    remembered !== undefined &&
+    (params.memory < remembered.memory ||
+      params.iterations < remembered.iterations ||
+      params.parallelism < remembered.parallelism)
+  )
+    throw new WeakerPassphraseParamsError();
+}
+
 /** The fewest characters (grapheme clusters) a new recovery passphrase may have. */
 export const MIN_PASSPHRASE_LENGTH = 10;
 
@@ -134,6 +171,7 @@ export async function enableEncryption(
   client: UserKeyClient,
   passphrase: string,
   params: Argon2Params = DEFAULT_ARGON2_PARAMS,
+  remembered?: PassphraseParamsMemory,
 ): Promise<{ key: UserKeyPair; created: boolean }> {
   const problem = passphraseProblem(passphrase);
   if (problem !== undefined) throw new Error(problem);
@@ -167,10 +205,14 @@ export async function enableEncryption(
     key.userId = serverUserId(response.userId);
   } catch (error) {
     if (error instanceof ConnectError && error.code === Code.AlreadyExists) {
-      return { key: await unlockUserKey(client, passphrase), created: false };
+      return {
+        key: await unlockUserKey(client, passphrase, remembered),
+        created: false,
+      };
     }
     throw error;
   }
+  await remembered?.save(header.params);
   return { key, created: true };
 }
 
@@ -189,18 +231,25 @@ function serverUserId(userId: string): string {
  * Rejects with {@link WrongPassphraseError}, {@link
  * PassphraseAttemptsExhaustedError} (with the server's retry time) or
  * {@link NoUserKeyError}; and with an Error when what the server released
- * does not open or does not match the stored public key.
+ * does not open or does not match the stored public key. With `remembered`,
+ * stored parameters lower than the remembered ones are refused with {@link
+ * WeakerPassphraseParamsError} before anything is derived, and the
+ * parameters of a successful unlock are remembered.
  */
 export async function unlockUserKey(
   client: UserKeyClient,
   passphrase: string,
+  remembered?: PassphraseParamsMemory,
 ): Promise<UserKeyPair> {
   const stored = await call(() => client.getUserKeyParams({}));
   const params = argon2Params(stored.params);
-  return release(
+  await requireNotWeaker(remembered, params.argon2);
+  const key = await release(
     client,
     await derivePassphraseKeys(passphrase, params.argon2, params.salt),
   );
+  await remembered?.save(params.argon2);
+  return key;
 }
 
 /** Has the server release the wrapped private key for `keys.authKey`, and unwraps it with `keys.wrapKey`. */
@@ -254,12 +303,14 @@ export async function changePassphrase(
   current: string,
   next: string,
   params: Argon2Params = DEFAULT_ARGON2_PARAMS,
+  remembered?: PassphraseParamsMemory,
 ): Promise<UserKeyPair> {
   const problem = passphraseProblem(next);
   if (problem !== undefined) throw new Error(problem);
   const stored = argon2Params(
     (await call(() => client.getUserKeyParams({}))).params,
   );
+  await requireNotWeaker(remembered, stored.argon2);
   const currentKeys = await derivePassphraseKeys(
     current,
     stored.argon2,
@@ -288,6 +339,7 @@ export async function changePassphrase(
       newAuthKey: authKey,
     }),
   );
+  await remembered?.save(header.params);
   return key;
 }
 

@@ -3,10 +3,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Argon2Params } from "../core/e2ee/e2ee";
 import { MAX_FAILED_ATTEMPTS, MemoryUserKeyServer } from "../core/keys/memory-user-keys";
-import { WrongPassphraseError } from "../core/keys/user-key";
+import { WeakerPassphraseParamsError, WrongPassphraseError } from "../core/keys/user-key";
+import { ageRecipient, generateKeyPair } from "../core/e2ee/hybrid";
+import { signPublicKey } from "../core/e2ee/identity";
 import { createProtocolClient } from "../core/protocol/client";
 import { parsePluginData, type PluginData } from "./data";
-import { changePassphraseOnDevice, enableOnDevice, encryptionState, forgetEncryptionKeys, passphraseErrorMessage, pluginDataEpochKeyStore, unlockedUserKey, unlockOnDevice, type EncryptionOptions } from "./encryption";
+import { changePassphraseOnDevice, enableOnDevice, encryptionState, forgetEncryptionKeys, passphraseErrorMessage, pluginDataEpochKeyStore, pluginDataEscrowPin, unlockedUserKey, unlockOnDevice, type EncryptionOptions } from "./encryption";
 
 const cheap: Argon2Params = {
   memory: 19 * 1024,
@@ -252,5 +254,55 @@ describe("vault epoch keys on a device", ARGON2_TIMEOUT, () => {
     expect(data.userKey).toBeUndefined();
     expect(data.vaultKeys).toBeUndefined();
     expect(forgetEncryptionKeys(data)).toBe(false);
+  });
+});
+
+describe("remembered Argon2id parameters on a device", ARGON2_TIMEOUT, () => {
+  it("refuses to unlock the account's key once the server lowers its parameters, even after sign-out and a restart", async () => {
+    const server = new MemoryUserKeyServer();
+    const first = device(server);
+    first.options.params = { ...cheap, iterations: cheap.iterations + 1 };
+    await enableOnDevice(first.options, passphrase);
+    expect(first.data.passphraseParams).toEqual([
+      { serverUrl: "https://sync.example", issuer: "https://auth.example/", subject: "alice", ...first.options.params },
+    ]);
+    // A hostile server lowers the parameters it hands out.
+    if (server.stored === undefined) throw new Error("no stored key");
+    server.stored.params = { ...server.stored.params, iterations: cheap.iterations };
+    forgetEncryptionKeys(first.data);
+    const restarted = { ...first.options, data: parsePluginData(JSON.parse(first.saved.at(-1) ?? "{}")) };
+    forgetEncryptionKeys(restarted.data);
+
+    await expect(unlockOnDevice(restarted, passphrase)).rejects.toBeInstanceOf(WeakerPassphraseParamsError);
+    expect(restarted.data.userKey).toBeUndefined();
+  });
+
+  it("does not hold another account's remembered parameters against this one", async () => {
+    const server = new MemoryUserKeyServer();
+    const alice = device(server, "alice");
+    alice.options.params = { ...cheap, iterations: cheap.iterations + 1 };
+    await enableOnDevice(alice.options, passphrase);
+    if (server.stored === undefined) throw new Error("no stored key");
+    server.stored.params = { ...server.stored.params, iterations: cheap.iterations };
+    const bob = { ...alice.options, accessToken: () => Promise.resolve(tokenFor("bob")) };
+
+    // Bob's unlock derives with the lowered parameters (and so gets the passphrase wrong) instead of being refused.
+    await expect(unlockOnDevice(bob, passphrase)).rejects.toBeInstanceOf(WrongPassphraseError);
+  });
+});
+
+describe("the pinned escrow bundle on a device", () => {
+  it("keeps one pin per server in the device's plugin data, across a restart and sign-out", async () => {
+    const { data, saved, options } = device(new MemoryUserKeyServer());
+    const bundle = { signPub: signPublicKey(new Uint8Array(32).fill(9)), recipient: ageRecipient(generateKeyPair().publicKey) };
+    const other = { signPub: signPublicKey(new Uint8Array(32).fill(10)), recipient: ageRecipient(generateKeyPair().publicKey) };
+    expect(await pluginDataEscrowPin(data, options.save, "https://sync.example").load()).toBeUndefined();
+    await pluginDataEscrowPin(data, options.save, "https://sync.example").save(bundle);
+    await pluginDataEscrowPin(data, options.save, "https://other.example").save(other);
+
+    const restarted = parsePluginData(JSON.parse(saved.at(-1) ?? "{}"));
+    forgetEncryptionKeys(restarted);
+    expect(await pluginDataEscrowPin(restarted, options.save, "https://sync.example").load()).toEqual(bundle);
+    expect(await pluginDataEscrowPin(restarted, options.save, "https://other.example").load()).toEqual(other);
   });
 });

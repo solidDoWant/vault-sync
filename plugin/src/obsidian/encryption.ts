@@ -1,6 +1,8 @@
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 
 import type { Argon2Params } from "../core/e2ee/e2ee";
+import { encodeEscrowBundle, parseEscrowBundle } from "../core/e2ee/identity";
+import type { EscrowPin } from "../core/keys/encrypted-vault";
 import {
   changePassphrase,
   enableEncryption,
@@ -8,6 +10,7 @@ import {
   storedPublicKey,
   unlockUserKey,
   WrongPassphraseError,
+  type PassphraseParamsMemory,
   type UserKeyClient,
   type UserKeyPair,
 } from "../core/keys/user-key";
@@ -67,6 +70,7 @@ export async function enableOnDevice(
     options.client,
     passphrase,
     options.params,
+    rememberedPassphraseParams(options, account),
   );
   await cache(options, account, key);
   return created;
@@ -103,7 +107,11 @@ export async function unlockOnDevice(
   await cache(
     options,
     account,
-    await unlockUserKey(options.client, passphrase),
+    await unlockUserKey(
+      options.client,
+      passphrase,
+      rememberedPassphraseParams(options, account),
+    ),
   );
 }
 
@@ -121,8 +129,89 @@ export async function changePassphraseOnDevice(
   await cache(
     options,
     account,
-    await changePassphrase(options.client, current, next, options.params),
+    await changePassphrase(
+      options.client,
+      current,
+      next,
+      options.params,
+      rememberedPassphraseParams(options, account),
+    ),
   );
+}
+
+/**
+ * The Argon2id parameters this device remembers for `account`, in its
+ * plugin data (docs/design/encryption.md, "Passphrase parameters").
+ */
+export function rememberedPassphraseParams(
+  options: Pick<EncryptionOptions, "data" | "save">,
+  account: Account,
+): PassphraseParamsMemory {
+  const { data } = options;
+  return {
+    load: () => {
+      const stored = data.passphraseParams?.find((entry) =>
+        sameAccount(entry, account),
+      );
+      return Promise.resolve(
+        stored === undefined
+          ? undefined
+          : {
+              memory: stored.memory,
+              iterations: stored.iterations,
+              parallelism: stored.parallelism,
+            },
+      );
+    },
+    save: async (params) => {
+      data.passphraseParams = [
+        ...(data.passphraseParams ?? []).filter(
+          (entry) => !sameAccount(entry, account),
+        ),
+        {
+          serverUrl: account.serverUrl,
+          issuer: account.issuer,
+          subject: account.subject,
+          memory: params.memory,
+          iterations: params.iterations,
+          parallelism: params.parallelism,
+        },
+      ];
+      await options.save();
+    },
+  };
+}
+
+/**
+ * The escrow bundle this device pinned for the server at `serverUrl`, in
+ * its plugin data (docs/design/encryption.md, "Escrow key").
+ */
+export function pluginDataEscrowPin(
+  data: PluginData,
+  save: () => Promise<void>,
+  serverUrl: string,
+): EscrowPin {
+  return {
+    load: () => {
+      const stored = data.escrowPins?.find(
+        (entry) => entry.serverUrl === serverUrl,
+      );
+      return Promise.resolve(
+        stored === undefined
+          ? undefined
+          : parseEscrowBundle(hexToBytes(stored.bundle)),
+      );
+    },
+    save: async (bundle) => {
+      data.escrowPins = [
+        ...(data.escrowPins ?? []).filter(
+          (entry) => entry.serverUrl !== serverUrl,
+        ),
+        { serverUrl, bundle: bytesToHex(encodeEscrowBundle(bundle)) },
+      ];
+      await save();
+    },
+  };
 }
 
 async function cache(

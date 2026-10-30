@@ -14,7 +14,16 @@ import type { GetServerInfoResponse } from "../../gen/vaultsync/v1/server_info_p
 import { VaultEncryption, type Vault } from "../../gen/vaultsync/v1/types_pb";
 import type { VaultService } from "../../gen/vaultsync/v1/vault_pb";
 import { PUBLIC_KEY_SIZE } from "../e2ee/hybrid";
-import { bundleOf, escrowKeyId, parseEscrowBundle, type EscrowBundle } from "../e2ee/identity";
+import {
+  bundleOf,
+  escrowEqual,
+  escrowKeyId,
+  escrowReachable,
+  parseEscrowBundle,
+  verifyEscrowChain,
+  type EscrowBundle,
+  type EscrowRotation,
+} from "../e2ee/identity";
 import { entryHash, genesisPayload } from "../e2ee/memberlog";
 import { sha256Hex } from "../hash";
 import { addAnchor, type AnchorListClient } from "./anchor-list";
@@ -39,26 +48,87 @@ export interface EscrowOffer {
 }
 
 /**
+ * Where a device keeps the deployment's escrow bundle it pinned
+ * (docs/design/encryption.md, "Escrow key"): device-local, per server.
+ */
+export interface EscrowPin {
+  /** The pinned bundle, or undefined before the device first saw one. */
+  load(): Promise<EscrowBundle | undefined>;
+  /** Pins `bundle`, replacing the previous pin. */
+  save(bundle: EscrowBundle): Promise<void>;
+}
+
+/** An {@link EscrowPin} in memory, for tests. */
+export class MemoryEscrowPin implements EscrowPin {
+  constructor(public bundle?: EscrowBundle) {}
+
+  load(): Promise<EscrowBundle | undefined> {
+    return Promise.resolve(this.bundle);
+  }
+
+  save(bundle: EscrowBundle): Promise<void> {
+    this.bundle = bundle;
+    return Promise.resolve();
+  }
+}
+
+/** The server published an escrow key this device cannot reach from its pinned bundle through signed rotation statements. */
+export class EscrowKeyChangedError extends Error {
+  constructor(reason: string) {
+    super(`the server's escrow key changed without a rotation statement signed by the previous escrow key (${reason}); nothing was escrowed to it`);
+    this.name = "EscrowKeyChangedError";
+  }
+}
+
+type EscrowInfo = Pick<GetServerInfoResponse, "escrowPublicKey" | "escrowKeyId" | "escrowDefault" | "escrowRootBundle" | "escrowRotations">;
+
+function parsedBundle(encoded: Uint8Array): EscrowBundle {
+  try {
+    return parseEscrowBundle(encoded);
+  } catch (error) {
+    throw new Error("the server's escrow bundle is malformed", { cause: error });
+  }
+}
+
+/**
  * The escrow offer of a GetServerInfo response. A published key must be a
  * hybrid public key named by its id, `sha256:` and the hex SHA-256 of the
  * key, so that an escrow slot always names the key it is wrapped to;
  * anything else is refused rather than escrowed to. The current escrow
  * bundle (the last rotation's, or the root bundle) must name the same key.
+ *
+ * The device pins the current bundle when it first sees it, after checking
+ * the published chain from its root. Later, the current bundle must be the
+ * pinned one or follow from it through rotation statements, each signed by
+ * the key it replaces; the pin then moves to it. Any other change throws
+ * {@link EscrowKeyChangedError}, so neither vault creation nor rotation
+ * wraps a key to it.
  */
-export function escrowOffer(
-  info: Pick<GetServerInfoResponse, "escrowPublicKey" | "escrowKeyId" | "escrowDefault" | "escrowRootBundle" | "escrowRotations">,
-): EscrowOffer {
+export async function escrowOffer(info: EscrowInfo, pin: EscrowPin): Promise<EscrowOffer> {
   if (info.escrowPublicKey.length === 0) return { recipient: undefined, byDefault: false };
   if (info.escrowPublicKey.length !== PUBLIC_KEY_SIZE) throw new Error("the server's escrow key is malformed");
   if (info.escrowKeyId !== `sha256:${sha256Hex(info.escrowPublicKey)}`) throw new Error("the server's escrow key id does not name its escrow key");
-  const encoded = info.escrowRotations.at(-1)?.newBundle ?? info.escrowRootBundle;
-  let bundle: EscrowBundle;
-  try {
-    bundle = parseEscrowBundle(encoded);
-  } catch (error) {
-    throw new Error("the server's escrow bundle is malformed", { cause: error });
-  }
+  const root = parsedBundle(info.escrowRootBundle);
+  const rotations: EscrowRotation[] = info.escrowRotations.map((statement) => ({
+    oldBundleHash: statement.oldBundleHash,
+    newBundle: parsedBundle(statement.newBundle),
+    signature: statement.signature,
+  }));
+  const bundle = rotations.at(-1)?.newBundle ?? root;
   if (escrowKeyId(bundle) !== info.escrowKeyId) throw new Error("the server's escrow bundle does not name its escrow key");
+  const pinned = await pin.load();
+  if (pinned === undefined) {
+    try {
+      verifyEscrowChain(root, rotations);
+    } catch {
+      throw new EscrowKeyChangedError("the published escrow chain does not verify");
+    }
+    await pin.save(bundle);
+  } else if (!escrowEqual(pinned, bundle)) {
+    const refusal = escrowReachable(pinned, bundle, rotations);
+    if (refusal !== undefined) throw new EscrowKeyChangedError(refusal);
+    await pin.save(bundle);
+  }
   return { recipient: { keyId: info.escrowKeyId, publicKey: info.escrowPublicKey, bundle }, byDefault: info.escrowDefault };
 }
 
