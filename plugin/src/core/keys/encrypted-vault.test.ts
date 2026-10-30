@@ -253,7 +253,7 @@ describe("escrowOffer pins the escrow key", () => {
     expect(pin.bundle).toEqual(key.recipient.bundle);
   });
 
-  it("[P4-22] offers the pinned key, not a swapped escrow key without a rotation statement, and keeps the pin", async () => {
+  it("[P4-22] refuses a swapped escrow key without a rotation statement, and keeps the pin", async () => {
     const pinned = escrowKey(9);
     const swapped = escrowKey(10);
     const pin = new MemoryEscrowPin(pinned.recipient.bundle);
@@ -272,7 +272,7 @@ describe("escrowOffer pins the escrow key", () => {
     expect(pin.bundle).toEqual(pinned.recipient.bundle);
   });
 
-  it("[P4-22] offers the pinned key, not a swapped escrow key chained from another root than the pinned key", async () => {
+  it("[P4-22] refuses a swapped escrow key chained from another root than the pinned key", async () => {
     const pinned = escrowKey(9);
     const otherRoot = escrowKey(11);
     const swapped = escrowKey(10);
