@@ -95,8 +95,10 @@ func documentedSections(t *testing.T) []variableSection {
 
 			constant := value.Names[0].Name
 			require.Len(t, value.Values, 1, constant)
+
 			literal, ok := value.Values[0].(*ast.BasicLit)
 			require.True(t, ok, "%s must be a string literal", constant)
+
 			name, err := strconv.Unquote(literal.Value)
 			require.NoError(t, err, constant)
 
