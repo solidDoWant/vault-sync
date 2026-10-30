@@ -96,10 +96,10 @@ async function confirmRemove(): Promise<void> {
  */
 function recordNotices() {
   return browser.executeObsidian(({ app }) => {
-    const state = window as unknown as { vaultSyncNotices?: Set<Element> };
-    if (state.vaultSyncNotices !== undefined) return;
-    const shown = new Set<Element>();
-    state.vaultSyncNotices = shown;
+    // Each time the settings open they may be in a new document: its notices are recorded from then on too.
+    const state = window as unknown as { vaultSyncNotices?: Set<Element>; vaultSyncNoticeDocuments?: WeakSet<Document> };
+    const shown = (state.vaultSyncNotices ??= new Set<Element>());
+    const observed = (state.vaultSyncNoticeDocuments ??= new WeakSet<Document>());
     // Kept as elements, read when checked: a notice's text may be set after it is added.
     const observer = new MutationObserver((records) => {
       for (const record of records) {
@@ -110,7 +110,11 @@ function recordNotices() {
         }
       }
     });
-    for (const shownIn of new Set([document, (app as unknown as { setting: { activeTab?: { containerEl: HTMLElement } } }).setting.activeTab?.containerEl.ownerDocument ?? document])) observer.observe(shownIn.body, { childList: true, subtree: true });
+    for (const shownIn of new Set([document, (app as unknown as { setting: { activeTab?: { containerEl: HTMLElement } } }).setting.activeTab?.containerEl.ownerDocument ?? document])) {
+      if (observed.has(shownIn)) continue;
+      observed.add(shownIn);
+      observer.observe(shownIn.body, { childList: true, subtree: true });
+    }
   });
 }
 
@@ -348,6 +352,7 @@ describe("the settings device list", function () {
     // A failed rename: a notice, and the setting shows the name the server accepted.
     await callHarness("failNextRenameDevice");
     await typeDeviceName("e2e refused name");
+    await browser.waitUntil(async () => (await callHarness("renameDeviceCalls")).length === renamesBefore + 2, { timeoutMsg: "the refused name was never sent" });
     await browser.waitUntil(async () => (await renameFailedNotices()) === 1, { timeoutMsg: "no notice said this device could not be renamed" });
     expect(await deviceNameShown()).toEqual({ field: renamed, setting: renamed });
     expect((await callHarness("renameDeviceCalls")).slice(renamesBefore)).toEqual([renamed, "e2e refused name"]);
