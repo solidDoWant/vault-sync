@@ -43,15 +43,16 @@ Status: approved by the owner on 2026-10-29. It adds to `SPEC.md` §9.3–§9.4,
 
 ## Re-encrypting history (re-key job)
 
-- **What it is:** a resumable job on an owner's device. It walks every retained revision that isn't on the current epoch, re-encrypts it, and calls an owner-only `ReplaceRevisionCiphertext(revision, from_epoch, to_epoch, …)`.
+- **What it is:** a resumable job on an owner's device. It pages through every retained revision that isn't on the current epoch with an owner-only `ListStaleRevisions(vault_id, page_token)`. Tombstones, folders and conflict copies are included. For each one it re-seals the path under the target epoch and, for content, uploads the blob under that epoch's `blob_id` if the server lacks it. Then it calls an owner-only `ReplaceRevisionCiphertext(revision, from_epoch, to_epoch, sealed_path, content_ref)`. `path_key` never changes, because it comes from epoch 1.
 - **Conditional rewrites:** the server applies a rewrite only if the revision is still at `from_epoch` and `to_epoch` is still current. A rewrite that loses is skipped. A rotation during the job makes the job restart with the newer target.
-- **Retiring old keys:** epochs are retired (their slots and old ciphertext deleted) only by a conditional server step that confirms no revision still uses them.
+- **Retiring old keys:** an epoch is retired only by an owner-only conditional server step that confirms no revision still uses it. Epoch 1 is never retired. Retirement deletes the epoch's key slots, member and escrow, and nothing else of the epoch. **Its signed epoch record and commitment stay**, because every later record chains to the previous commitment, and a new device verifies the whole chain. Old content blobs are deleted by the existing unreferenced-blob cleanup, once no revision references them.
+- **Content gone mid-sync:** a device whose blob download fails with `NOT_FOUND` re-reads the revision and retries once with the revision's current epoch and content reference. A re-key or retirement may have moved it in the meantime.
 - **Current versions:** the job never changes which revision is current, so sync is unaffected while it runs.
 
 ## Converting a plaintext vault in place
 
 1. **Every member must have a user key.** Otherwise conversion is refused and the members without one are listed.
-2. **One atomic switch:** the owner's device creates epoch 1 with all its slots, submits the HMAC path key of every live document, and flips the vault to encrypted. From then on, plaintext commits are refused.
+2. **One atomic switch:** the owner's device creates epoch 1 with all its slots, submits the HMAC path key of every live document, and flips the vault to encrypted. From then on, plaintext commits are refused with `FAILED_PRECONDITION` and reason `VAULT_ENCRYPTED`. A device that gets it reloads the vault, unlocks its user key (prompting if it must), syncs the keys, re-encrypts the pending change and retries, as after `EPOCH_NOT_CURRENT`. Until the user unlocks, sync of that vault pauses and keeps local files.
 3. **Plaintext history becomes epoch 0,** and the re-key job encrypts it. Readers treat epoch 0 as plaintext until then.
 
 ## Escrow
