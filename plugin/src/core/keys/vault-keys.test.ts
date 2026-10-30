@@ -7,7 +7,7 @@ import { generateKeyPair } from "../e2ee/hybrid";
 import { keyCommitment, openKeySlot, sealKeySlot } from "../e2ee/keyslot";
 import { create } from "@bufbuild/protobuf";
 import { EpochRecordSchema, KeyRecipientKind, type EpochRecord as EpochRecordMessage } from "../../gen/vaultsync/v1/vault_key_pb";
-import { entryHash, epochRecipients, signEpochRecord } from "../e2ee/memberlog";
+import { entryHash, epochRecipients, replayLog, signEpochRecord } from "../e2ee/memberlog";
 import { epochRecordMessage } from "./verified-epochs";
 import { createProtocolClient } from "../protocol/client";
 import { addAnchor } from "./anchor-list";
@@ -633,6 +633,69 @@ describe("only verified epochs are used (P4-20)", () => {
 
     await expect(member.manager.sync()).rejects.toThrow(/lower than this device has verified/);
     expect(member.verifiedLogs.epochs.get(vaultId)).toBe(2);
+  });
+});
+
+describe("epochs signed at a stale log position are refused", () => {
+  /** A vault of alice (owner), carol (editor) and mallory (owner) at epoch 1, after alice removed mallory under epoch 2. */
+  async function afterRemoval() {
+    const server = new MemoryVaultKeyServer(vaultId);
+    await join(server, alice, VaultRole.OWNER);
+    await join(server, carol, VaultRole.EDITOR);
+    await join(server, mallory, VaultRole.OWNER);
+    const owner = device(server, alice, true);
+    await owner.manager.sync();
+    await owner.manager.removeMember(mallory.id);
+    expect(server.currentEpoch).toBe(2);
+    return { server, owner };
+  }
+
+  it("[P4-20] refuses an epoch a removed owner signed at the log position before their removal, on a member's and an owner's device", async () => {
+    const { server, owner } = await afterRemoval();
+    const states = replayLog(vaultId, server.log);
+    const stale = states.at(-2);
+    if (stale === undefined) throw new Error("no state before the removal");
+    expect(stale.members.get(mallory.id)?.role).toBeDefined();
+    const malloryKey = generateKey();
+    const commitment = keyCommitment(malloryKey, vaultId, 3);
+    const prevCommitment = commitmentOf(server, 2);
+    if (prevCommitment === undefined) throw new Error("no epoch 2");
+    const record = signEpochRecord(
+      { vaultId, epoch: 3, commitment, prevCommitment, logSeq: stale.seq, logHash: stale.hash, recipients: epochRecipients(stale) },
+      mallory.key.signSeed,
+    );
+    server.epochs.push({ epoch: 3, commitment, creator: mallory.id, record: create(EpochRecordSchema, epochRecordMessage(record)) });
+    server.currentEpoch = 3;
+    for (const member of [carol, alice]) {
+      server.slots.push({
+        epoch: 3,
+        recipientKind: KeyRecipientKind.USER,
+        recipientId: member.id,
+        creator: mallory.id,
+        wrappedKey: await sealKeySlot(member.key.publicKey, malloryKey, { vaultId, epoch: 3, recipientKind: "user", recipientId: member.id }),
+      });
+    }
+
+    const member = device(server, carol, false);
+    await expect(member.manager.sync()).rejects.toBeInstanceOf(LogVerificationError);
+    expect(member.manager.epochKey(3)).toBeUndefined();
+    expect(member.store.keys.has(3)).toBe(false);
+
+    await expect(owner.manager.sync()).rejects.toBeInstanceOf(LogVerificationError);
+    expect(owner.manager.epochKey(3)).toBeUndefined();
+    expect(owner.store.keys.has(3)).toBe(false);
+  });
+
+  it("[P4-07] refuses a current epoch from before the log's last member removal when the server withholds the removal's epoch", async () => {
+    const { server } = await afterRemoval();
+    server.epochs.pop();
+    const kept = server.slots.filter((slot) => slot.epoch !== 2);
+    server.slots.splice(0, server.slots.length, ...kept);
+    server.currentEpoch = 1;
+
+    const member = device(server, carol, false);
+    await expect(member.manager.sync()).rejects.toBeInstanceOf(LogVerificationError);
+    expect(member.manager.epochKey(1)).toBeUndefined();
   });
 });
 

@@ -28,7 +28,7 @@ import {
   signPublicKey,
   verifyEscrowChain,
 } from "./identity";
-import { type Entry, entryHash, epochRecordBody, type EpochRecord, EpochRecordError, LogError, type LogState, replayLog, Role, signEntry, signEpochRecord, verifyEpochRecord } from "./memberlog";
+import { type Entry, entryHash, epochRecordBody, type EpochRecord, EpochRecordError, LogError, type LogState, replayLog, Role, signEntry, signEpochRecord, verifyEpochPositions, verifyEpochRecord } from "./memberlog";
 
 const vectors = shared.identity_keys;
 
@@ -251,6 +251,18 @@ describe("the membership log matches the shared vectors", () => {
     }
     for (const vector of vectors.rejected_epoch_records) {
       expect(() => { verifyEpochRecord(log.vault_id, states, recordOf(log.vault_id, vector)); }, vector.name).toThrow(EpochRecordError);
+    }
+  });
+
+  it("accepts epoch positions that never go backwards and end at or after the last removal, and refuses the rejected ones", () => {
+    const states = replayLog(log.vault_id, entries, { escrowRotations: rotationsOf(log.escrow_rotations) });
+    expect(vectors.epoch_positions.length).toBeGreaterThan(0);
+    expect(vectors.rejected_epoch_positions.length).toBeGreaterThan(0);
+    for (const vector of vectors.epoch_positions) {
+      expect(() => { verifyEpochPositions(states, vector.log_seqs); }, vector.name).not.toThrow();
+    }
+    for (const vector of vectors.rejected_epoch_positions) {
+      expect(() => { verifyEpochPositions(states, vector.log_seqs); }, vector.name).toThrow(EpochRecordError);
     }
   });
 

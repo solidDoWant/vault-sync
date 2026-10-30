@@ -5,7 +5,7 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { config as base, obsidianApkSha256, obsidianVersion } from "./wdio.conf.mjs";
+import { config as base, obsidianAndroidVersion, obsidianApkSha256 } from "./wdio.conf.mjs";
 
 // The e2e suite on the real Obsidian Android app (docs/testing/e2e.md,
 // "Android emulator job"), in an Android emulator that is already booted
@@ -32,17 +32,17 @@ const appiumService = (await import(pathToFileURL(path.join(androidTools, "node_
 })) as { launcher: new (...args: never[]) => WebdriverIO.ServiceInstance };
 
 /**
- * The APK of the Obsidian version wdio.conf.mts pins, from Obsidian's own
+ * The APK of the Android Obsidian version wdio.conf.mts pins, from Obsidian's own
  * release, downloaded once into the cache. Its SHA-256 is checked against
  * the pinned value on every run, cached or not, before Appium may install
  * it: wdio-obsidian-service does not check it.
  */
 async function verifiedApk(): Promise<string> {
   const directory = path.join(cacheDir, "android");
-  const apk = path.join(directory, `Obsidian-${obsidianVersion}.apk`);
+  const apk = path.join(directory, `Obsidian-${obsidianAndroidVersion}.apk`);
   let content = await readFile(apk).catch(() => undefined);
   if (content === undefined) {
-    const url = `https://github.com/obsidianmd/obsidian-releases/releases/download/v${obsidianVersion}/Obsidian-${obsidianVersion}.apk`;
+    const url = `https://github.com/obsidianmd/obsidian-releases/releases/download/v${obsidianAndroidVersion}/Obsidian-${obsidianAndroidVersion}.apk`;
     const response = await fetch(url);
     if (!response.ok) throw new Error(`downloading ${url}: HTTP ${String(response.status)}`);
     content = Buffer.from(await response.arrayBuffer());
@@ -56,7 +56,7 @@ async function verifiedApk(): Promise<string> {
     // A tampered or truncated download, or a version bump without its hash:
     // drop it, so the next run downloads it again, and install nothing.
     await rm(apk, { force: true });
-    throw new Error(`Obsidian-${obsidianVersion}.apk has SHA-256 ${digest}, not the pinned ${obsidianApkSha256} (wdio.conf.mts, obsidianApkSha256)`);
+    throw new Error(`Obsidian-${obsidianAndroidVersion}.apk has SHA-256 ${digest}, not the pinned ${obsidianApkSha256} (wdio.conf.mts, obsidianApkSha256)`);
   }
   return apk;
 }
@@ -90,7 +90,7 @@ export const config: WebdriverIO.Config = {
   capabilities: [
     {
       browserName: "obsidian",
-      browserVersion: obsidianVersion,
+      browserVersion: obsidianAndroidVersion,
       platformName: "Android",
       "appium:automationName": "UiAutomator2",
       "appium:udid": androidSerial,

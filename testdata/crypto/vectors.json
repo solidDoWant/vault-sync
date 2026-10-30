@@ -4936,6 +4936,65 @@
         "signer_seed": "40474c4e7d6e5c341037fc3fe6c88d7ae0d26ded35263c2c214693fc6ed74ebe",
         "signature": "adf884c51570fc2ba96358cabf40ae8e3bec7200dae2c1451b56a639ce6568a3ff5a074549b1918e72be3edd2a4016bb4c0c3016b2ec91da5099e227923f880e"
       }
+    ],
+    "epoch_positions": [
+      {
+        "name": "the log's epochs 1 to 3",
+        "log_seqs": [
+          1,
+          6,
+          10
+        ]
+      },
+      {
+        "name": "two epochs at one position",
+        "log_seqs": [
+          1,
+          6,
+          6,
+          10
+        ]
+      },
+      {
+        "name": "an epoch after the removal's",
+        "log_seqs": [
+          1,
+          6,
+          10,
+          13
+        ]
+      },
+      {
+        "name": "no epoch yet",
+        "log_seqs": []
+      }
+    ],
+    "rejected_epoch_positions": [
+      {
+        "name": "epoch signed at a position before the previous epoch's",
+        "log_seqs": [
+          1,
+          6,
+          10,
+          9
+        ]
+      },
+      {
+        "name": "positions going backwards before the removal",
+        "log_seqs": [
+          1,
+          6,
+          4,
+          10
+        ]
+      },
+      {
+        "name": "current epoch before the last remove-member entry",
+        "log_seqs": [
+          1,
+          6
+        ]
+      }
     ]
   }
 }

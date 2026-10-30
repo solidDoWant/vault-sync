@@ -326,6 +326,10 @@ type LogState struct {
 	// lastEscrow is the escrow bundle most recently named in the log, kept
 	// while escrow is off so that turning it back on must chain from it.
 	lastEscrow *EscrowBundle
+
+	// lastRemoval is the seq of the last remove-member entry at or before
+	// this state, 0 if there is none.
+	lastRemoval uint64
 }
 
 func (state LogState) clone() LogState {
@@ -538,6 +542,10 @@ func applyEntry(vaultID string, state LogState, used map[string]bool, entry Entr
 		user, err := uuidString(payload)
 		if err != nil {
 			return LogState{}, err
+		}
+
+		if entry.Type == EntryRemoveMember {
+			next.lastRemoval = entry.Seq
 		}
 
 		member, ok := state.Members[user]
