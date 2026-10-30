@@ -5,6 +5,7 @@ package store_test
 import (
 	"crypto/sha256"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -256,5 +257,28 @@ func TestRetireEpochDeletesTheSlotsOfAnUnusedEpoch(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, 1, added)
+	assert.Zero(t, fixture.slotCount(t, 2))
+
+	// An invitation needs no slot for the retired epoch, and a redemption's
+	// slot for it is accepted but not stored.
+	invitationID := uuid.Must(uuid.NewV7())
+	codeHash := randomBytes(t, 32)
+	slotsFor := func(kind store.RecipientKind, id uuid.UUID, epochs ...int32) []store.KeySlot {
+		slots := []store.KeySlot{}
+		for _, epoch := range epochs {
+			slots = append(slots, store.KeySlot{Epoch: epoch, RecipientKind: kind, RecipientID: id.String(), WrappedKey: randomBytes(t, 105)})
+		}
+
+		return slots
+	}
+
+	_, err = fixture.vault.CreateInvitation(t.Context(), fixture.owner, invitationID, store.RoleEditor, codeHash, time.Hour, 10, fixture.logEntry(t),
+		&store.InvitationKeys{Slots: slotsFor(store.RecipientInvitation, invitationID, 1, 3, 4), Anchor: randomBytes(t, 96)})
+	require.NoError(t, err)
+
+	guest := fixture.keyedUser(t, "guest")
+	_, err = fixture.queries.RedeemInvitation(t.Context(), guest, codeHash, 10, fixture.logEntry(t), slotsFor(store.RecipientUser, guest, 1, 2, 3, 4))
+	require.NoError(t, err)
+	assert.True(t, fixture.isMember(t, guest))
 	assert.Zero(t, fixture.slotCount(t, 2))
 }
