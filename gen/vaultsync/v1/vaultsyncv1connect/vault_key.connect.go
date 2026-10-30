@@ -181,19 +181,21 @@ type VaultKeyServiceClient interface {
 	// submitted HMAC path key, and switches the vault to
 	// VAULT_ENCRYPTION_E2EE. Members, documents and history are kept. The
 	// stored revisions stay at epoch 0, as plaintext, until the re-key job
-	// moves them (ReplaceRevisionCiphertext). The response, and from then on
-	// ListEpochsResponse.conversion_seq, gives the vault's head_seq at the
-	// switch: every epoch-0 revision has a seq at most this, and readers
-	// refuse an epoch-0 revision with a later seq. After the switch a
+	// moves them (ReplaceRevisionCiphertext). The members entry signs the
+	// vault's head_seq the converting device read it at (converted_at_seq),
+	// and the server converts only while its head_seq still equals it, under
+	// the vault row lock (ABORTED otherwise): every epoch-0 revision has a seq
+	// at most this, and readers take that bound from the verified members
+	// entry only, refusing an epoch-0 revision with a later seq and every
+	// epoch-0 revision of a vault whose log has no members entry. After the switch a
 	// plaintext commit gets FAILED_PRECONDITION with reason
 	// ERROR_REASON_VAULT_ENCRYPTED.
 	//
 	// The log must name exactly the vault's members, with their roles and
 	// their current keys as UserKeyService stores them: the genesis entry
 	// (seq 1) is signed by the caller and names them as creator, and the
-	// members entry (seq 2) lists every other member. A vault whose caller is
-	// its only member needs no members entry. Epoch 1's record names the
-	// log's last entry.
+	// members entry (seq 2) lists every other member, none when the caller is
+	// the vault's only member. Epoch 1's record names the log's last entry.
 	//
 	// Errors: FAILED_PRECONDITION with a ConversionRefused error detail when
 	// a member has no user key (or one without a signing key) or the vault
@@ -464,19 +466,21 @@ type VaultKeyServiceHandler interface {
 	// submitted HMAC path key, and switches the vault to
 	// VAULT_ENCRYPTION_E2EE. Members, documents and history are kept. The
 	// stored revisions stay at epoch 0, as plaintext, until the re-key job
-	// moves them (ReplaceRevisionCiphertext). The response, and from then on
-	// ListEpochsResponse.conversion_seq, gives the vault's head_seq at the
-	// switch: every epoch-0 revision has a seq at most this, and readers
-	// refuse an epoch-0 revision with a later seq. After the switch a
+	// moves them (ReplaceRevisionCiphertext). The members entry signs the
+	// vault's head_seq the converting device read it at (converted_at_seq),
+	// and the server converts only while its head_seq still equals it, under
+	// the vault row lock (ABORTED otherwise): every epoch-0 revision has a seq
+	// at most this, and readers take that bound from the verified members
+	// entry only, refusing an epoch-0 revision with a later seq and every
+	// epoch-0 revision of a vault whose log has no members entry. After the switch a
 	// plaintext commit gets FAILED_PRECONDITION with reason
 	// ERROR_REASON_VAULT_ENCRYPTED.
 	//
 	// The log must name exactly the vault's members, with their roles and
 	// their current keys as UserKeyService stores them: the genesis entry
 	// (seq 1) is signed by the caller and names them as creator, and the
-	// members entry (seq 2) lists every other member. A vault whose caller is
-	// its only member needs no members entry. Epoch 1's record names the
-	// log's last entry.
+	// members entry (seq 2) lists every other member, none when the caller is
+	// the vault's only member. Epoch 1's record names the log's last entry.
 	//
 	// Errors: FAILED_PRECONDITION with a ConversionRefused error detail when
 	// a member has no user key (or one without a signing key) or the vault

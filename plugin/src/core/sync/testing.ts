@@ -128,8 +128,8 @@ export class TestKeyring implements VaultKeyring {
     return this.keys.get(epoch);
   }
 
-  conversionSeq(): bigint {
-    return this.server.conversionSeq;
+  conversionSeq(): bigint | undefined {
+    return this.server.conversionSeq === 0n ? undefined : this.server.conversionSeq;
   }
 
   /** A stored revision's path and content, decrypted with the key of its epoch. */

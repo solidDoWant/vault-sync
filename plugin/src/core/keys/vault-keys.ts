@@ -175,8 +175,12 @@ export class VaultKeyManager {
   private keys: Map<number, Uint8Array> | undefined;
   /** Epochs whose held key the last read refused: never used or shared. */
   private refusedEpochs = new Set<number>();
-  /** The vault's head seq at its conversion to encryption, as of the last read (ListEpochs); 0 for a vault never converted. */
-  private converted = 0n;
+  /**
+   * The verified log's bound of the vault's plaintext history: the members
+   * entry's signed converted_at_seq, as of the last read. Undefined for a vault
+   * created encrypted, which has no members entry.
+   */
+  private converted: bigint | undefined;
 
   constructor(private readonly options: VaultKeyManagerOptions) {}
 
@@ -185,8 +189,13 @@ export class VaultKeyManager {
     return this.refusedEpochs.has(epoch) ? undefined : this.keys?.get(epoch);
   }
 
-  /** For a vault converted in place, its head seq at the conversion, as of the last sync: epoch-0 revisions up to it are plaintext history. */
-  conversionSeq(): bigint {
+  /**
+   * For a vault converted in place, the head seq its verified members entry
+   * signs, as of the last sync: epoch-0 revisions up to it are plaintext
+   * history. Undefined for a vault created encrypted. Never the server's
+   * ListEpochs conversion_seq, which the server could set to anything.
+   */
+  conversionSeq(): bigint | undefined {
     return this.converted;
   }
 
@@ -324,6 +333,7 @@ export class VaultKeyManager {
     const { states } = await readMemberLog(this.options.trust, vaultId);
     const head = states.at(-1);
     if (head === undefined) throw new Error("the membership log is empty");
+    this.converted = head.convertedAtSeq;
     const keys = await this.loaded();
     let currentEpoch = 0;
     let rotationPending = false;
@@ -332,7 +342,6 @@ export class VaultKeyManager {
       const response = await this.options.keys.listEpochs({ vaultId, pageToken });
       currentEpoch = response.currentEpoch;
       rotationPending = response.rotationPending;
-      this.converted = response.conversionSeq;
       return { items: response.epochs, next: response.nextPageToken };
     });
     await verifyEpochs(this.options.trust.verifiedLogs, vaultId, states, epochs, currentEpoch);

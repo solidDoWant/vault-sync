@@ -3,7 +3,8 @@
  * (docs/design/encryption.md, "Converting a plaintext vault in place" and
  * "Converting a plaintext vault" under "Protection against an active
  * server"). The owner's device writes the vault's membership log (genesis,
- * then a members entry listing every other member's bundle and role as the
+ * then a members entry with the head change sequence number it read the
+ * vault's documents at, listing every other member's bundle and role as the
  * server reports them), epoch 1 with its slots and signed record, and the
  * HMAC path key of every live document, and sends them in one ConvertVault.
  * History stays plaintext at epoch 0 until the re-key job encrypts it.
@@ -122,8 +123,8 @@ function sameFingerprints(compared: readonly ConversionMember[], reported: reado
   return reported.every((member) => member.fingerprint !== undefined && expected.has(member.userId) && expected.get(member.userId) === member.fingerprint);
 }
 
-/** The current path of every live document of the plaintext vault, by document id. */
-async function liveDocuments(client: ConversionSyncClient, vaultId: string): Promise<Map<string, string>> {
+/** The current path of every live document of the plaintext vault, by document id, and the vault's head seq they were read at. */
+async function liveDocuments(client: ConversionSyncClient, vaultId: string): Promise<{ live: Map<string, string>; headSeq: bigint }> {
   const heads = new Map<string, { deleted: boolean; path: string }>();
   let sinceSeq = 0n;
   for (let page = 0; page < MAX_PAGES; page++) {
@@ -135,7 +136,7 @@ async function liveDocuments(client: ConversionSyncClient, vaultId: string): Pro
     if (!response.hasMore) {
       const live = new Map<string, string>();
       for (const [documentId, head] of heads) if (!head.deleted) live.set(documentId, head.path);
-      return live;
+      return { live, headSeq: response.headSeq };
     }
   }
   throw new Error("the server's list of changes does not end");
@@ -183,18 +184,23 @@ export async function convertVault(options: ConvertVaultOptions): Promise<bigint
       throw new Error("the server reports another key for you than this device's");
     }
 
+    // The documents are read first: the members entry signs the head seq
+    // they were read at, the bound of the vault's plaintext history, and the
+    // server converts only while its head seq is still that one.
+    const documents = await liveDocuments(options.sync, vaultId);
     const genesis = genesisEntry(vaultId, genesisPayload(creator, options.escrow?.bundle), userKey.signSeed);
     const log: Entry[] = [genesis];
     const others = members.filter((member) => member.userId !== userKey.userId);
-    if (others.length > 0) {
-      const payload = membersPayload(others.map((member) => ({ bundle: member.bundle as Bundle, role: logRole(member.role) })));
-      log.push(nextEntry(vaultId, log, { type: EntryType.members, payload, signSeeds: [userKey.signSeed] }));
-    }
+    const payload = membersPayload(
+      documents.headSeq,
+      others.map((member) => ({ bundle: member.bundle as Bundle, role: logRole(member.role) })),
+    );
+    log.push(nextEntry(vaultId, log, { type: EntryType.members, payload, signSeeds: [userKey.signSeed] }));
     const at = replayLog(vaultId, log).at(-1);
     if (at === undefined) throw new Error("the membership log is empty");
     const built = await buildEpoch({ vaultId, signSeed: userKey.signSeed, at, expected: 0, prevCommitment: NO_PREVIOUS_COMMITMENT, escrow: options.escrow });
     const secret = deriveSubkey(built.epochKey, "path_key_secret");
-    const pathKeys = [...(await liveDocuments(options.sync, vaultId))].map(([documentId, path]) => ({ documentId, pathKey: pathKey(secret, path) }));
+    const pathKeys = [...documents.live].map(([documentId, path]) => ({ documentId, pathKey: pathKey(secret, path) }));
 
     await addAnchor(options.anchors, userKey, options.verifiedLogs, { vaultId, genesisHash: entryHash(genesis) });
     let conversionSeq: bigint;
@@ -202,7 +208,7 @@ export async function convertVault(options: ConvertVaultOptions): Promise<bigint
       const response = await options.keys.convertVault({
         vaultId,
         genesis: toLogEntry(genesis),
-        membersEntry: log[1] === undefined ? undefined : toLogEntry(log[1]),
+        membersEntry: toLogEntry(log[1] as Entry),
         nextEpoch: built.nextEpoch,
         record: built.record,
         escrow: options.escrow !== undefined,

@@ -62,11 +62,24 @@ type conversion struct {
 	epochKey []byte
 }
 
-// conversionOf builds owner's conversion of their vault: genesis, a members
-// entry naming others (none when others is empty), epoch 1 wrapped to
-// every member and its record at the log's head, and the path key of each
-// live document in paths (document id to current path).
-func conversionOf(t *testing.T, owner *keyedMember, others []convertingMember, paths map[string]string) conversion {
+// conversionOf builds owner's conversion of their vault at its current head
+// change sequence number (see conversionAt).
+func (fixture *syncFixture) conversionOf(t *testing.T, owner *keyedMember, others []convertingMember, paths map[string]string) conversion {
+	t.Helper()
+
+	var headSeq int64
+
+	err := fixture.pool.QueryRow(t.Context(), `SELECT head_seq FROM vaults WHERE id = $1`, owner.vaultID).Scan(&headSeq)
+	require.NoError(t, err)
+
+	return conversionAt(t, owner, others, paths, uint64(headSeq)) //nolint:gosec // head_seq is never negative.
+}
+
+// conversionAt builds owner's conversion of their vault: genesis, a members
+// entry with convertedAtSeq naming others, epoch 1 wrapped to every member
+// and its record at the log's head, and the path key of each live document
+// in paths (document id to current path).
+func conversionAt(t *testing.T, owner *keyedMember, others []convertingMember, paths map[string]string, convertedAtSeq uint64) conversion {
 	t.Helper()
 
 	vaultID := owner.vaultID
@@ -86,31 +99,29 @@ func conversionOf(t *testing.T, owner *keyedMember, others []convertingMember, p
 	request := &vaultsyncv1.ConvertVaultRequest{VaultId: vaultID, Genesis: logtest.EntryMessage(genesis)}
 	recipients := []*keyedMember{owner}
 
-	if len(others) > 0 {
-		listed := make([]e2ee.Member, 0, len(others))
+	listed := make([]e2ee.Member, 0, len(others))
 
-		for _, other := range others {
-			bundle, err := other.member.secret.Bundle(other.member.userID.String())
-			require.NoError(t, err)
-
-			listed = append(listed, e2ee.Member{Bundle: bundle, Role: other.role})
-			recipients = append(recipients, other.member)
-		}
-
-		payload, err := e2ee.MembersPayload(listed)
+	for _, other := range others {
+		bundle, err := other.member.secret.Bundle(other.member.userID.String())
 		require.NoError(t, err)
 
-		prevHash, err := genesis.Hash()
-		require.NoError(t, err)
-
-		members, err := e2ee.Entry{
-			VaultID: vaultID, Seq: 2, PrevHash: prevHash, Type: e2ee.EntryMembers, Payload: payload,
-		}.Sign(owner.secret.SignKey())
-		require.NoError(t, err)
-
-		entries = append(entries, members)
-		request.MembersEntry = logtest.EntryMessage(members)
+		listed = append(listed, e2ee.Member{Bundle: bundle, Role: other.role})
+		recipients = append(recipients, other.member)
 	}
+
+	payload, err := e2ee.MembersPayload(convertedAtSeq, listed)
+	require.NoError(t, err)
+
+	prevHash, err := genesis.Hash()
+	require.NoError(t, err)
+
+	members, err := e2ee.Entry{
+		VaultID: vaultID, Seq: 2, PrevHash: prevHash, Type: e2ee.EntryMembers, Payload: payload,
+	}.Sign(owner.secret.SignKey())
+	require.NoError(t, err)
+
+	entries = append(entries, members)
+	request.MembersEntry = logtest.EntryMessage(members)
 
 	states, err := e2ee.ReplayLog(vaultID, entries, e2ee.ReplayOptions{})
 	require.NoError(t, err)
@@ -224,7 +235,7 @@ func TestConvertVaultRefusesMembersWithoutAKeyAndPendingInvitationsAgainstPostgr
 	invitation := fixture.mustInvite(t, alice.token, alice.vaultID, vaultsyncv1.VaultRole_VAULT_ROLE_EDITOR)
 
 	before := fixture.conversionState(t, alice.vaultID)
-	request := conversionOf(t, alice, []convertingMember{{bob, e2ee.RoleEditor}}, nil).request
+	request := fixture.conversionOf(t, alice, []convertingMember{{bob, e2ee.RoleEditor}}, nil).request
 
 	_, err := fixture.convert(t, alice, request)
 	require.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err), "%v", err)
@@ -255,7 +266,7 @@ func TestConvertVaultRefusesMembersWithoutAKeyAndPendingInvitationsAgainstPostgr
 	fixture.plaintextVault(t, erin)
 	pending := fixture.mustInvite(t, erin.token, erin.vaultID, vaultsyncv1.VaultRole_VAULT_ROLE_VIEWER)
 
-	_, err = fixture.convert(t, erin, conversionOf(t, erin, nil, nil).request)
+	_, err = fixture.convert(t, erin, fixture.conversionOf(t, erin, nil, nil).request)
 	require.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err), "%v", err)
 
 	refusal = conversionRefusal(err)
@@ -298,7 +309,7 @@ func newConvertedVault(t *testing.T, fixture *syncFixture) convertedVault {
 	vault.kept = vault.bob.mustCommit(t, vault.bob.create(t, "Kept.md", vault.bob.content(t, "kept")))
 	vault.headBefore = vault.kept.GetSeq()
 
-	vault.conversion = conversionOf(t, alice, []convertingMember{{vault.bob, e2ee.RoleEditor}, {vault.carol, e2ee.RoleViewer}},
+	vault.conversion = fixture.conversionOf(t, alice, []convertingMember{{vault.bob, e2ee.RoleEditor}, {vault.carol, e2ee.RoleViewer}},
 		map[string]string{vault.edited.GetDocumentId(): "Plans/Plan.md", vault.kept.GetDocumentId(): "Kept.md"})
 
 	response, err := fixture.convert(t, alice, vault.conversion.request)
@@ -330,7 +341,7 @@ func TestConvertVaultRefusesAStaleOrInconsistentConversionAtomicallyAgainstPostg
 		{
 			name: "a live document without its path key",
 			request: func() *vaultsyncv1.ConvertVaultRequest {
-				return conversionOf(t, alice, []convertingMember{{bob, e2ee.RoleEditor}}, map[string]string{plan.GetDocumentId(): "Plan.md"}).request
+				return fixture.conversionOf(t, alice, []convertingMember{{bob, e2ee.RoleEditor}}, map[string]string{plan.GetDocumentId(): "Plan.md"}).request
 			},
 			code: connect.CodeAborted,
 		},
@@ -342,14 +353,14 @@ func TestConvertVaultRefusesAStaleOrInconsistentConversionAtomicallyAgainstPostg
 					extra[id] = path
 				}
 
-				return conversionOf(t, alice, []convertingMember{{bob, e2ee.RoleEditor}}, extra).request
+				return fixture.conversionOf(t, alice, []convertingMember{{bob, e2ee.RoleEditor}}, extra).request
 			},
 			code: connect.CodeAborted,
 		},
 		{
 			name: "two live documents with the same path key",
 			request: func() *vaultsyncv1.ConvertVaultRequest {
-				return conversionOf(t, alice, []convertingMember{{bob, e2ee.RoleEditor}},
+				return fixture.conversionOf(t, alice, []convertingMember{{bob, e2ee.RoleEditor}},
 					map[string]string{plan.GetDocumentId(): "Same.md", notes.GetDocumentId(): "same.md"}).request
 			},
 			code: connect.CodeInvalidArgument,
@@ -357,17 +368,42 @@ func TestConvertVaultRefusesAStaleOrInconsistentConversionAtomicallyAgainstPostg
 		{
 			name: "a members entry with another role than the server's",
 			request: func() *vaultsyncv1.ConvertVaultRequest {
-				return conversionOf(t, alice, []convertingMember{{bob, e2ee.RoleViewer}}, paths).request
+				return fixture.conversionOf(t, alice, []convertingMember{{bob, e2ee.RoleViewer}}, paths).request
 			},
 			code: connect.CodeAborted,
 		},
 		{
-			name: "no members entry while the vault has other members",
+			name: "a members entry without the vault's other members",
 			request: func() *vaultsyncv1.ConvertVaultRequest {
-				request := conversionOf(t, alice, nil, paths).request
+				request := fixture.conversionOf(t, alice, nil, paths).request
 				request.NextEpoch.Slots = append(request.NextEpoch.Slots, sealedSlot(t, alice.vaultID, 0, make([]byte, 32), bob))
 
 				return request
+			},
+			code: connect.CodeAborted,
+		},
+		{
+			name: "no members entry",
+			request: func() *vaultsyncv1.ConvertVaultRequest {
+				request := fixture.conversionOf(t, alice, []convertingMember{{bob, e2ee.RoleEditor}}, paths).request
+				request.MembersEntry = nil
+				request.Record.LogSeq = 1
+
+				return request
+			},
+			code: connect.CodeInvalidArgument,
+		},
+		{
+			name: "a converted_at_seq before the vault's head",
+			request: func() *vaultsyncv1.ConvertVaultRequest {
+				return conversionAt(t, alice, []convertingMember{{bob, e2ee.RoleEditor}}, paths, notes.GetSeq()-1).request
+			},
+			code: connect.CodeAborted,
+		},
+		{
+			name: "a converted_at_seq after the vault's head",
+			request: func() *vaultsyncv1.ConvertVaultRequest {
+				return conversionAt(t, alice, []convertingMember{{bob, e2ee.RoleEditor}}, paths, notes.GetSeq()+1).request
 			},
 			code: connect.CodeAborted,
 		},
@@ -383,14 +419,14 @@ func TestConvertVaultRefusesAStaleOrInconsistentConversionAtomicallyAgainstPostg
 
 				impostor.secret, impostor.publicKey = secret, bundle.KEMPub
 
-				return conversionOf(t, alice, []convertingMember{{impostor, e2ee.RoleEditor}}, paths).request
+				return fixture.conversionOf(t, alice, []convertingMember{{impostor, e2ee.RoleEditor}}, paths).request
 			},
 			code: connect.CodeAborted,
 		},
 		{
 			name: "a record that names the genesis instead of the members entry",
 			request: func() *vaultsyncv1.ConvertVaultRequest {
-				request := conversionOf(t, alice, []convertingMember{{bob, e2ee.RoleEditor}}, paths).request
+				request := fixture.conversionOf(t, alice, []convertingMember{{bob, e2ee.RoleEditor}}, paths).request
 				request.Record.LogSeq = 1
 
 				return request
@@ -400,7 +436,7 @@ func TestConvertVaultRefusesAStaleOrInconsistentConversionAtomicallyAgainstPostg
 		{
 			name: "a genesis signed by another key than the caller's",
 			request: func() *vaultsyncv1.ConvertVaultRequest {
-				request := conversionOf(t, alice, []convertingMember{{bob, e2ee.RoleEditor}}, paths).request
+				request := fixture.conversionOf(t, alice, []convertingMember{{bob, e2ee.RoleEditor}}, paths).request
 				request.Genesis.Signatures[0][0] ^= 0xff
 
 				return request
@@ -418,7 +454,7 @@ func TestConvertVaultRefusesAStaleOrInconsistentConversionAtomicallyAgainstPostg
 	}
 
 	// The same vault then converts.
-	_, err := fixture.convert(t, alice, conversionOf(t, alice, []convertingMember{{bob, e2ee.RoleEditor}}, paths).request)
+	_, err := fixture.convert(t, alice, fixture.conversionOf(t, alice, []convertingMember{{bob, e2ee.RoleEditor}}, paths).request)
 	require.NoError(t, err)
 }
 
@@ -501,7 +537,7 @@ func TestConvertVaultKeepsHistoryAndMembersAgainstPostgres(t *testing.T) {
 	}
 
 	// A second conversion is refused.
-	_, err = fixture.convert(t, alice, conversionOf(t, alice, nil, nil).request)
+	_, err = fixture.convert(t, alice, fixture.conversionOf(t, alice, nil, nil).request)
 	require.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err), "%v", err)
 	assert.Nil(t, conversionRefusal(err))
 }

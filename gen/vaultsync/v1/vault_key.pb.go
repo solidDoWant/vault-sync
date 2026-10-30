@@ -759,6 +759,8 @@ type ListEpochsResponse struct {
 	// the conversion: only revisions with a seq at most this may be at epoch
 	// 0, and they are plaintext. 0 for a vault that was never converted, or
 	// was converted with no revisions; then no revision may be at epoch 0.
+	// Informational: clients take this bound only from the signed members
+	// entry of the verified log, never from this field.
 	ConversionSeq uint64 `protobuf:"varint,5,opt,name=conversion_seq,json=conversionSeq,proto3" json:"conversion_seq,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1741,9 +1743,10 @@ type ConvertVaultRequest struct {
 	// caller, naming the caller as creator and recording the escrow key
 	// exactly when escrow is set.
 	Genesis *LogEntry `protobuf:"bytes,2,opt,name=genesis,proto3" json:"genesis,omitempty"`
-	// The members entry (seq 2, type 9), signed by the caller, listing every
-	// other member with their role and keys. Unset only when the caller is
-	// the vault's only member.
+	// The members entry (seq 2, type 9), signed by the caller: the vault's
+	// head_seq it was read at (converted_at_seq) and every other member with
+	// their role and keys, none when the caller is the vault's only member.
+	// Required.
 	MembersEntry *LogEntry `protobuf:"bytes,3,opt,name=members_entry,json=membersEntry,proto3" json:"members_entry,omitempty"`
 	// Epoch 1: expected_epoch 0, its commitment and a slot for every member
 	// (and the escrow key with escrow).

@@ -45,17 +45,18 @@ func (service VaultKeyService) ConvertVault(ctx context.Context, request *connec
 
 	entries := []store.LogEntry{*genesis}
 
-	var membersEntry *store.LogEntry
-
-	if message.GetMembersEntry() != nil {
-		parsed, err := parseMembersEntry(message.GetMembersEntry())
-		if err != nil {
-			return nil, err
-		}
-
-		membersEntry = &parsed
-		entries = append(entries, parsed)
+	// Every converted vault's log has a members entry: it marks the vault
+	// as converted and signs the bound of its plaintext history.
+	if message.GetMembersEntry() == nil {
+		return nil, invalidArgument("members_entry is required")
 	}
+
+	membersEntry, err := parseMembersEntry(message.GetMembersEntry())
+	if err != nil {
+		return nil, err
+	}
+
+	entries = append(entries, membersEntry)
 
 	logEntries := make([]e2ee.Entry, len(entries))
 	for index, entry := range entries {
@@ -99,12 +100,13 @@ func (service VaultKeyService) ConvertVault(ctx context.Context, request *connec
 	head := states[len(states)-1]
 
 	epoch, conversionSeq, err := vault.ConvertVault(ctx, user.ID, store.Conversion{
-		Genesis:      *genesis,
-		MembersEntry: membersEntry,
-		CheckMembers: func(members []store.ConversionMember) error { return logNamesMembers(head, members) },
-		Escrow:       message.GetEscrow(),
-		Epoch:        next,
-		PathKeys:     pathKeys,
+		Genesis:        *genesis,
+		MembersEntry:   membersEntry,
+		ConvertedAtSeq: head.ConvertedAtSeq,
+		CheckMembers:   func(members []store.ConversionMember) error { return logNamesMembers(head, members) },
+		Escrow:         message.GetEscrow(),
+		Epoch:          next,
+		PathKeys:       pathKeys,
 	})
 	if err != nil {
 		return nil, service.conversionError(ctx, err)
@@ -142,6 +144,8 @@ func (service VaultKeyService) conversionError(ctx context.Context, err error) e
 		return connect.NewError(connect.CodeFailedPrecondition, errors.New("the vault is already end-to-end encrypted"))
 	case errors.Is(err, errConversionMembers):
 		return connect.NewError(connect.CodeAborted, err)
+	case errors.Is(err, store.ErrConversionHeadMoved):
+		return connect.NewError(connect.CodeAborted, errors.New("the vault changed since the members entry's converted_at_seq; sync and retry"))
 	case errors.Is(err, store.ErrConversionStale):
 		return connect.NewError(connect.CodeAborted, errors.New("path_keys do not name exactly the vault's live documents; list them again and retry"))
 	case errors.Is(err, store.ErrPathKeyTaken):

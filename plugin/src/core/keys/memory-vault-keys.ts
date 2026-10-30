@@ -314,8 +314,8 @@ export class MemoryVaultKeyServer {
               ]);
             }
             if (request.genesis === undefined) throw new ConnectError("genesis is required", Code.InvalidArgument);
-            const log = [fromLogEntry(this.vaultId, request.genesis)];
-            if (request.membersEntry !== undefined) log.push(fromLogEntry(this.vaultId, request.membersEntry));
+            if (request.membersEntry === undefined) throw new ConnectError("members_entry is required", Code.InvalidArgument);
+            const log = [fromLogEntry(this.vaultId, request.genesis), fromLogEntry(this.vaultId, request.membersEntry)];
             let state: LogState | undefined;
             try {
               state = replayLog(this.vaultId, log).at(-1);
@@ -339,6 +339,7 @@ export class MemoryVaultKeyServer {
                 );
               });
             if (!named) throw new ConnectError("the log does not name the vault's members, roles and keys", Code.Aborted);
+            if (state.convertedAtSeq !== this.headSeq) throw new ConnectError("the vault changed since the members entry's converted_at_seq", Code.Aborted);
             const documents = new Set(request.pathKeys.map((entry) => entry.documentId));
             if (documents.size !== request.pathKeys.length || request.pathKeys.some((entry) => entry.pathKey.length !== 32)) {
               throw new ConnectError("one 32-byte path key per document", Code.InvalidArgument);
