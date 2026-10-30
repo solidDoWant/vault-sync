@@ -8,7 +8,7 @@
 import type { MessageInitShape } from "@bufbuild/protobuf";
 
 import type { EpochRecord as EpochRecordMessage, EpochRecordSchema } from "../../gen/vaultsync/v1/vault_key_pb";
-import { EpochRecordError, verifyEpochRecord, type EpochRecord, type LogState } from "../e2ee/memberlog";
+import { EpochRecordError, verifyEpochPositions, verifyEpochRecord, type EpochRecord, type LogState } from "../e2ee/memberlog";
 import { LogVerificationError, type VerifiedLogStore } from "./verified-log";
 
 /** An epoch as the server lists it. */
@@ -34,7 +34,9 @@ export function epochRecordMessage(record: EpochRecord): MessageInitShape<typeof
 /**
  * Checks that `epochs` are exactly 1 to `currentEpoch`, each with a record
  * signed by an owner at its position in `states` over its commitment and the
- * previous epoch's, and that `currentEpoch` is not below the highest epoch
+ * previous epoch's, that those positions never go backwards and the current
+ * epoch's is at or after the log's last member removal
+ * ({@link verifyEpochPositions}), and that `currentEpoch` is not below the highest epoch
  * this device has verified for the vault; then records `currentEpoch` as
  * verified.
  */
@@ -46,6 +48,7 @@ export async function verifyEpochs(store: VerifiedLogStore, vaultId: string, sta
     throw new LogVerificationError(vaultId, "the vault's epochs are not numbered 1 to its current epoch");
   }
   let prevCommitment: Uint8Array = NO_PREVIOUS_COMMITMENT;
+  const logSeqs: number[] = [];
   for (const listed of sorted) {
     const { record } = listed;
     if (record === undefined) throw new LogVerificationError(vaultId, `epoch ${String(listed.epoch)} has no owner-signed record`);
@@ -66,6 +69,13 @@ export async function verifyEpochs(store: VerifiedLogStore, vaultId: string, sta
       throw new LogVerificationError(vaultId, `epoch ${String(listed.epoch)} is not signed by an owner in the verified membership log, or its recipients are not the log's`, { cause: error });
     }
     prevCommitment = listed.commitment;
+    logSeqs.push(Number(record.logSeq));
+  }
+  try {
+    verifyEpochPositions(states, logSeqs);
+  } catch (error) {
+    if (!(error instanceof Error)) throw error;
+    throw new LogVerificationError(vaultId, "an epoch's record names a log position before the previous epoch's, or the current epoch's before the log's last member removal", { cause: error });
   }
   if (currentEpoch > highest) await store.saveHighestEpoch(vaultId, currentEpoch);
 }

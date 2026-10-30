@@ -206,6 +206,8 @@ export interface LogState {
   escrow: EscrowBundle | undefined;
   /** The escrow bundle most recently named in the log, kept while escrow is off. */
   lastEscrow: EscrowBundle | undefined;
+  /** The seq of the last remove-member entry at or before this state, 0 if there is none. */
+  lastRemoval: number;
 }
 
 /** What a device trusts beyond the log. */
@@ -232,7 +234,7 @@ export function replayLog(vaultId: string, entries: readonly Entry[], options: R
   if (entries.length === 0) throw new LogError("empty log");
   const states: LogState[] = [];
   const used = new Set<string>();
-  let state: LogState = { seq: 0, hash: new Uint8Array(HASH_SIZE), members: new Map(), invitations: new Map(), escrow: undefined, lastEscrow: undefined };
+  let state: LogState = { seq: 0, hash: new Uint8Array(HASH_SIZE), members: new Map(), invitations: new Map(), escrow: undefined, lastEscrow: undefined, lastRemoval: 0 };
   for (const entry of entries) {
     let next: LogState;
     try {
@@ -262,7 +264,7 @@ function applyEntry(vaultId: string, state: LogState, used: Set<string>, entry: 
 
   const members = new Map(state.members);
   const invitations = new Map(state.invitations);
-  let { escrow, lastEscrow } = state;
+  let { escrow, lastEscrow, lastRemoval } = state;
   const payload = entry.payload;
   const signature = entry.signatures[0] ?? new Uint8Array();
   const requireOwner = (): void => {
@@ -321,6 +323,7 @@ function applyEntry(vaultId: string, state: LogState, used: Set<string>, entry: 
       const signed = entry.type === EntryType.leave ? verifySignature(member.bundle.signPub, body, signature) : ownerSigned(state, body, signature);
       if (!signed) throw new Error("wrong signer");
       members.delete(user);
+      if (entry.type === EntryType.removeMember) lastRemoval = entry.seq;
       break;
     }
     case EntryType.setRole: {
@@ -363,7 +366,7 @@ function applyEntry(vaultId: string, state: LogState, used: Set<string>, entry: 
   }
 
   if (![...members.values()].some((member) => member.role === Role.owner)) throw new Error("no owner left");
-  return { seq: entry.seq, hash: sha256(body), members, invitations, escrow, lastEscrow };
+  return { seq: entry.seq, hash: sha256(body), members, invitations, escrow, lastEscrow, lastRemoval };
 }
 
 /** One recipient of an epoch: kind (0x01 user, 0x02 escrow, 0x03 invitation), encoded recipient id, SHA-256 of its public key. */
@@ -468,4 +471,23 @@ export function verifyEpochRecord(vaultId: string, states: readonly LogState[], 
       return other !== undefined && recipient.kind === other.kind && equalBytes(recipient.id, other.id) && equalBytes(recipient.keyHash, other.keyHash);
     });
   if (!same) throw new EpochRecordError();
+}
+
+/**
+ * Checks the log positions the verified records of epochs 1 to N name
+ * (`logSeqs[i]` is epoch i + 1's) against the replayed log states: positions
+ * never go backwards, so a removed or demoted owner cannot sign a new epoch
+ * at a position from before the change, and the current epoch's position is
+ * at or after the log's last remove-member entry. A vault without an epoch
+ * yet passes. Throws {@link EpochRecordError}.
+ */
+export function verifyEpochPositions(states: readonly LogState[], logSeqs: readonly number[]): void {
+  const current = logSeqs.at(-1);
+  if (current === undefined) return;
+  const head = states.at(-1);
+  if (head === undefined) throw new EpochRecordError();
+  for (let index = 1; index < logSeqs.length; index++) {
+    if ((logSeqs[index] ?? 0) < (logSeqs[index - 1] ?? 0)) throw new EpochRecordError();
+  }
+  if (current < head.lastRemoval) throw new EpochRecordError();
 }

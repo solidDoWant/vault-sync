@@ -226,8 +226,9 @@ func userSlots(privateKey, genesisHash []byte) slotOpener {
 // epoch with opener, and checks each key against its epoch's key
 // commitment before it is used. Before it opens a slot, it verifies the
 // vault's membership log from opener's genesis and the owner-signed records
-// of both epochs, and refuses a log or epoch rolled back from seen, which it
-// then advances.
+// of every epoch up to the current one, whose log positions must not go
+// backwards (e2ee.VerifyEpochPositions), and refuses a log or epoch rolled
+// back from seen, which it then advances.
 func (client *apiClient) vaultKeys(ctx context.Context, vaultID uuid.UUID, opener slotOpener, seen *verifiedState) (*vaultKeys, error) {
 	states, err := client.verifiedLog(ctx, vaultID, opener.genesisHash, seen)
 	if err != nil {
@@ -267,10 +268,18 @@ func (client *apiClient) vaultKeys(ctx context.Context, vaultID uuid.UUID, opene
 		return nil, notVerified("the vault's epoch was rolled back from %d to %d", seen.epoch, current)
 	}
 
-	for _, epoch := range []uint64{1, current} {
+	logSeqs := make([]uint64, 0, min(current, uint64(len(records))))
+
+	for epoch := uint64(1); epoch <= current; epoch++ {
 		if err := verifyEpoch(vaultID, states, epoch, commitments, records); err != nil {
 			return nil, err
 		}
+
+		logSeqs = append(logSeqs, records[epoch].GetLogSeq())
+	}
+
+	if err := e2ee.VerifyEpochPositions(states, logSeqs); err != nil {
+		return nil, notVerified("an epoch's record names a log position before the previous epoch's, or the current epoch's before the log's last member removal")
 	}
 
 	epochKeys := map[uint64][]byte{}
