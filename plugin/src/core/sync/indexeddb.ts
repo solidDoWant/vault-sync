@@ -1,8 +1,8 @@
-import type { ConflictEntry, Cursor, DocEntry, JournalChange, JournalState, PendingOp, SkippedEntry, SyncJournal, WaitingEntry } from "./journal";
+import type { ConflictEntry, Cursor, DocEntry, JournalChange, JournalState, PendingOp, SkippedEntry, SyncJournal, VacatedFolder, WaitingEntry } from "./journal";
 
-/** The schema version of the database: 2 added the `waiting` store. */
-const version = 2;
-const stores = ["meta", "docs", "pending", "conflicts", "skipped", "waiting"] as const;
+/** The schema version of the database: 2 added the `waiting` store, 3 the `vacated` store. */
+const version = 3;
+const stores = ["meta", "docs", "pending", "conflicts", "skipped", "waiting", "vacated"] as const;
 
 interface StoredCursor {
   /** The meta store's record key: "cursor". */
@@ -41,6 +41,7 @@ export class IndexedDbSyncJournal implements SyncJournal {
           db.createObjectStore("skipped", { keyPath: "documentId" });
         }
         if (event.oldVersion < 2) db.createObjectStore("waiting", { keyPath: "documentId" });
+        if (event.oldVersion < 3) db.createObjectStore("vacated", { keyPath: "path" });
       };
       request.onsuccess = () => {
         resolve(new IndexedDbSyncJournal(request.result));
@@ -57,13 +58,14 @@ export class IndexedDbSyncJournal implements SyncJournal {
 
   async load(): Promise<JournalState> {
     const transaction = this.db.transaction([...stores], "readonly");
-    const [meta, docs, pending, conflicts, skipped, waiting] = await Promise.all([
+    const [meta, docs, pending, conflicts, skipped, waiting, vacated] = await Promise.all([
       all<StoredCursor>(transaction.objectStore("meta")),
       all<DocEntry>(transaction.objectStore("docs")),
       all<PendingOp>(transaction.objectStore("pending")),
       all<ConflictEntry>(transaction.objectStore("conflicts")),
       all<SkippedEntry>(transaction.objectStore("skipped")),
       all<WaitingEntry>(transaction.objectStore("waiting")),
+      all<VacatedFolder>(transaction.objectStore("vacated")),
     ]);
     const stored = meta.find((record) => record.key === "cursor");
     const cursor: Cursor = stored === undefined ? { seq: 0n, anchor: new Uint8Array() } : { seq: BigInt(stored.seq), anchor: stored.anchor };
@@ -74,6 +76,7 @@ export class IndexedDbSyncJournal implements SyncJournal {
       conflicts: new Map(conflicts.map((entry) => [entry.path, entry])),
       skipped: new Map(skipped.map((entry) => [entry.documentId, entry])),
       waiting: new Map(waiting.map((entry) => [entry.documentId, entry])),
+      vacated: new Map(vacated.map((entry) => [entry.path, entry])),
     };
   }
 
@@ -114,6 +117,9 @@ export class IndexedDbSyncJournal implements SyncJournal {
       const waiting = transaction.objectStore("waiting");
       for (const id of change.deleteWaiting ?? []) waiting.delete(id);
       for (const entry of change.putWaiting ?? []) waiting.put(entry);
+      const vacated = transaction.objectStore("vacated");
+      for (const path of change.deleteVacated ?? []) vacated.delete(path);
+      for (const entry of change.putVacated ?? []) vacated.put(entry);
     });
   }
 }
