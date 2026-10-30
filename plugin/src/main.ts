@@ -30,6 +30,7 @@ import {
   leaveVault,
   loadSharing,
   removeMember,
+  rotateVaultKey,
   revokeInvitation,
   setMemberRole,
   type CreatedInvitation,
@@ -449,6 +450,10 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
 
   async removeMember(userId: string): Promise<void> {
     return removeMember(this.protocolClient(), this.sharedVaultId(), userId, await this.encryptedSharing());
+  }
+
+  async rotateVaultKey(): Promise<void> {
+    return rotateVaultKey(await this.encryptedSharing());
   }
 
   /**

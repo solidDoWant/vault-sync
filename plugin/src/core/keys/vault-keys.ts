@@ -5,8 +5,8 @@
  * its epoch's key commitment before using it, and keeps the keys only in an
  * {@link EpochKeyStore} (device-local plugin data in the plugin, never
  * synced). On an owner device it also creates the next epoch when the vault
- * is rotation-pending, builds the next epoch a member's removal needs, and
- * grants slots to members who are missing them.
+ * is rotation-pending or the owner rotates by hand, builds the next epoch a
+ * member's removal needs, and grants slots to members who are missing them.
  *
  * Against an active server (docs/design/encryption.md, "Signed epochs"), it
  * uses an epoch key only from an epoch whose record an owner signed in the
@@ -200,20 +200,39 @@ export class VaultKeyManager {
    * epoch first, adopts that one instead of creating another.
    */
   async sync(): Promise<VaultKeyState> {
-    let view = await this.read();
-    let rotated = false;
-    if (this.options.owner && view.rotationPending) {
-      try {
-        await this.createEpoch(view, view.head, (nextEpoch, record) => this.options.keys.rotateEpoch({ vaultId: this.options.vaultId, nextEpoch, record }));
-        rotated = true;
-      } catch (error) {
-        // Another owner device won the rotation: adopt its epoch.
-        if (!isEpochNotCurrent(error)) throw error;
-      }
-      view = await this.read();
-    }
+    const view = await this.read();
+    if (this.options.owner && view.rotationPending) return this.rotateFrom(view);
     const granted = this.options.owner ? await this.grantMissing(view.head) : 0;
-    return this.state(view, rotated, granted);
+    return this.state(view, false, granted);
+  }
+
+  /**
+   * An owner's manual rotation: creates the epoch after the current one with
+   * a fresh key, wrapped for every recipient the verified log names at its
+   * head, and its signed record (RotateEpoch, a compare-and-set on the
+   * current epoch). When another rotation wins the compare-and-set, adopts
+   * the winner's epoch instead of creating another, so two rotations at once
+   * leave one new epoch. In an escrowed vault it refuses to rotate without
+   * the pinned escrow key.
+   */
+  async rotate(): Promise<VaultKeyState> {
+    if (!this.options.owner) throw new Error("only an owner can rotate the vault key");
+    return this.rotateFrom(await this.read());
+  }
+
+  /** Creates the epoch after `view`'s current one, or adopts the one that won the race, then grants missing slots. */
+  private async rotateFrom(view: EpochView): Promise<VaultKeyState> {
+    let rotated = false;
+    try {
+      await this.createEpoch(view, view.head, (nextEpoch, record) => this.options.keys.rotateEpoch({ vaultId: this.options.vaultId, nextEpoch, record }));
+      rotated = true;
+    } catch (error) {
+      // Another owner device won the rotation: adopt its epoch.
+      if (!isEpochNotCurrent(error)) throw error;
+    }
+    const after = await this.read();
+    const granted = await this.grantMissing(after.head);
+    return this.state(after, rotated, granted);
   }
 
   /**

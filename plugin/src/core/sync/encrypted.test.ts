@@ -61,7 +61,7 @@ describe("sync in an end-to-end encrypted vault", () => {
     expect(sha256Hex(received)).toBe(sha256Hex(image));
   });
 
-  it("re-encrypts and lands a commit sealed under an epoch a rotation replaced", async () => {
+  it("[P4-08] re-encrypts and lands a commit sealed under an epoch a rotation replaced", async () => {
     const { server, keys, a, b } = setup();
     await a.write("note.md", "first\n");
     await a.sync();
