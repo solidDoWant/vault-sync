@@ -5,10 +5,12 @@ package server_test
 import (
 	"encoding/base64"
 	"errors"
+	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -553,4 +555,54 @@ func TestConvertedVaultRefusesPlaintextCommitsAgainstPostgres(t *testing.T) {
 	}, alice.token))
 	require.NoError(t, err)
 	assert.True(t, replaced.Msg.GetReplaced())
+}
+
+func TestConvertedVaultKeepsNoPlaintextPathAfterHistoryIsReencryptedAgainstPostgres(t *testing.T) {
+	fixture := newSyncFixture(t, api.SyncLimits{})
+	vault := newConvertedVault(t, fixture)
+	alice := vault.alice
+
+	// The owner's re-key job moves every revision committed before the
+	// conversion to epoch 1.
+	rows, err := fixture.pool.Query(t.Context(), `SELECT id FROM revisions WHERE vault_id = $1 AND epoch = 0`, alice.vaultID)
+	require.NoError(t, err)
+
+	stale, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+	require.NoError(t, err)
+	require.NotEmpty(t, stale)
+
+	for _, revision := range stale {
+		replaced, err := fixture.vaultKeys(0).ReplaceRevisionCiphertext(t.Context(), authorized(&vaultsyncv1.ReplaceRevisionCiphertextRequest{
+			VaultId: alice.vaultID, RevisionId: revision.String(), FromEpoch: 0, ToEpoch: 1,
+			Path: opaqueBytes(t, 64), ContentRef: alice.content(t, "sealed"),
+		}, alice.token))
+		require.NoError(t, err)
+		require.True(t, replaced.Msg.GetReplaced())
+	}
+
+	// No document or revision of the vault holds a path, or its normalized
+	// form, deleted documents included.
+	rows, err = fixture.pool.Query(t.Context(), `
+		SELECT path_key FROM documents WHERE vault_id = $1
+		UNION ALL SELECT path FROM revisions WHERE vault_id = $1`, alice.vaultID)
+	require.NoError(t, err)
+
+	stored, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	require.NoError(t, err)
+
+	for _, value := range stored {
+		for _, path := range []string{"plan.md", "plans/plan.md", "old.md", "kept.md"} {
+			assert.NotContains(t, strings.ToLower(value), path)
+		}
+	}
+
+	// Path uniqueness among live documents keeps working: the deleted
+	// document's path can be taken again, once.
+	recreated := alice.encryptedCreate(t, 1, opaqueBytes(t, 64), pathKeyOf(t, vault.conversion.epochKey, "Old.md"), alice.content(t, "again"))
+	_, err = alice.commit(t, recreated)
+	require.NoError(t, err)
+
+	clash := alice.encryptedCreate(t, 1, opaqueBytes(t, 64), pathKeyOf(t, vault.conversion.epochKey, "OLD.md"), alice.content(t, "clash"))
+	_, err = alice.commit(t, clash)
+	require.Equal(t, connect.CodeAlreadyExists, connect.CodeOf(err), "%v", err)
 }

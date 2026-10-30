@@ -52,7 +52,7 @@ Status: approved by the owner on 2026-10-29. It adds to `SPEC.md` §9.3–§9.4,
 ## Converting a plaintext vault in place
 
 1. **Every member must have a user key.** Otherwise conversion is refused and the members without one are listed.
-2. **One atomic switch:** the owner's device creates epoch 1 with all its slots, submits the HMAC path key of every live document, and flips the vault to encrypted. From then on, plaintext commits are refused with `FAILED_PRECONDITION` and reason `VAULT_ENCRYPTED`. A device that gets it reloads the vault, unlocks its user key (prompting if it must), syncs the keys, re-encrypts the pending change and retries, as after `EPOCH_NOT_CURRENT`. Until the user unlocks, sync of that vault pauses and keeps local files.
+2. **One atomic switch:** the owner's device creates epoch 1 with all its slots, submits the HMAC path key of every live document, and flips the vault to encrypted. The server stores those keys and replaces the plaintext `path_key` of every deleted document with a placeholder unique to it, so once history is re-encrypted no plaintext path is left in the database. From then on, plaintext commits are refused with `FAILED_PRECONDITION` and reason `VAULT_ENCRYPTED`. A device that gets it reloads the vault, unlocks its user key (prompting if it must), syncs the keys, re-encrypts the pending change and retries, as after `EPOCH_NOT_CURRENT`. Until the user unlocks, sync of that vault pauses and keeps local files.
 3. **Plaintext history becomes epoch 0,** and the re-key job encrypts it. Readers treat epoch 0 as plaintext until then.
 
 ## Escrow
