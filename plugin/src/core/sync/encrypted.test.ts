@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { deriveSubkey, seal } from "../e2ee/e2ee";
 import { contentAad } from "../e2ee/revision";
 import { sha256Hex } from "../hash";
+import type { VaultKeyring } from "./codec";
 import { InMemoryServer } from "./memory-server";
 import { RemoteContentError } from "./remote";
 import { Device, type TestKeyring, containsBytes, encryptedServer } from "./testing";
@@ -16,6 +17,34 @@ function setup(options: Parameters<typeof encryptedServer>[0] = {}) {
   const a = new Device(server, "device-a", { keys });
   const b = new Device(server, "device-b", { keys });
   return { server, keys, a, b };
+}
+
+/** A device's view of `keys` without the keys of some epochs, until an owner grants them. */
+class WithheldKeyring implements VaultKeyring {
+  private readonly withheld: Set<number>;
+
+  constructor(
+    private readonly keys: TestKeyring,
+    withheld: number[],
+  ) {
+    this.withheld = new Set(withheld);
+  }
+
+  grant(epoch: number): void {
+    this.withheld.delete(epoch);
+  }
+
+  refresh(): Promise<number> {
+    return this.keys.refresh();
+  }
+
+  epochKey(epoch: number): Uint8Array | undefined {
+    return this.withheld.has(epoch) ? undefined : this.keys.epochKey(epoch);
+  }
+
+  conversionSeq(): bigint {
+    return this.keys.conversionSeq();
+  }
 }
 
 /** The head revision of the document at `path` on `device`. */
@@ -190,5 +219,23 @@ describe("sync in an end-to-end encrypted vault", () => {
     server.corruptBlob(head, seal(deriveSubkey(key, "content"), encoder.encode("forged!\n"), contentAad(server.vaultId, 1)));
     await expect(b.sync()).rejects.toBeInstanceOf(RemoteContentError);
     expect(await b.files()).toEqual({});
+  });
+
+  // Fails until the engine keeps back only that document: https://github.com/solidDoWant/vault-sync/issues/1344
+  it.skip("keeps back only the document whose epoch key the device lacks after a key sync, and applies it at a later sync once the key arrives", async () => {
+    const { keys, a, server } = setup();
+    await a.write("old.md", "under epoch 1\n");
+    await a.sync();
+    keys.rotate();
+    await a.write("new.md", "under epoch 2\n");
+    await a.sync();
+    // A newcomer's device that an owner has granted epoch 2 but not epoch 1 yet.
+    const granted = new WithheldKeyring(keys, [1]);
+    const b = new Device(server, "device-b", { keys: granted });
+    await b.sync().catch(() => undefined);
+    expect(await b.files()).toEqual({ "new.md": "under epoch 2\n" });
+    granted.grant(1);
+    await b.sync();
+    expect(await b.files()).toEqual({ "new.md": "under epoch 2\n", "old.md": "under epoch 1\n" });
   });
 });
