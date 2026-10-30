@@ -71,7 +71,7 @@ type Conversion struct {
 // end-to-end encryption in one transaction: it appends the log entries,
 // switches the vault to EncryptionE2EE with conversion_seq set to its
 // head_seq, creates epoch 1 (see RotateEpoch) and replaces the path_key of
-// every live document. It returns epoch 1 and the conversion seq.
+// every document (see replacePathKeys). It returns epoch 1 and the conversion seq.
 //
 // It returns ErrVaultEncrypted for a vault that already is end-to-end
 // encrypted, a *ConversionBlockedError when a member has no complete user
@@ -225,18 +225,23 @@ func checkLiveDocuments(ctx context.Context, tx pgx.Tx, vaultID uuid.UUID, pathK
 }
 
 // replacePathKeys sets the path_key of each live document to its encrypted
-// path key. The live keys first move to temporary keys unique per document
-// (a "/" never occurs in an encrypted key), so that a new key equal to
-// another document's old plaintext key cannot trip the unique live
-// path_key index midway.
+// path key, and that of each deleted document to a placeholder unique per
+// document, so no plaintext path stays in documents once history is
+// re-encrypted. A deleted document's path_key takes no part in path
+// uniqueness, and its next revision sets a new one. The live keys first
+// move to temporary keys unique per document (a "/" never occurs in an
+// encrypted key), so that a new key equal to another document's old
+// plaintext key cannot trip the unique live path_key index midway.
 func replacePathKeys(ctx context.Context, tx pgx.Tx, vaultID uuid.UUID, pathKeys map[uuid.UUID]string) error {
-	if len(pathKeys) == 0 {
-		return nil
-	}
-
-	_, err := tx.Exec(ctx, `UPDATE documents SET path_key = 'converting/' || id::text WHERE vault_id = $1 AND NOT deleted`, vaultID)
+	_, err := tx.Exec(ctx, `
+		UPDATE documents SET path_key = CASE WHEN deleted THEN 'deleted/' ELSE 'converting/' END || id::text
+		WHERE vault_id = $1`, vaultID)
 	if err != nil {
 		return fmt.Errorf("clear path keys: %w", err)
+	}
+
+	if len(pathKeys) == 0 {
+		return nil
 	}
 
 	ids := make([]uuid.UUID, 0, len(pathKeys))
