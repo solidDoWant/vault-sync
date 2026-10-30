@@ -281,7 +281,7 @@ describe("InMemoryServer's RenameDevice", () => {
     const server = new InMemoryServer();
     server.deviceNames.set("laptop", "Laptop");
     expect(await rename(server, "laptop", "a".repeat(256))).toBe("ok");
-    for (const name of ["a".repeat(257), "é".repeat(128) + "a", "", "  ", "Lap\u0000top", "Lap​top", "Lap top", "Lap top"]) {
+    for (const name of ["a".repeat(257), "é".repeat(128) + "a", "", "  ", "Lap\u0000top", "Lap\u200btop", "Lap\u2028top", "Lap\u2029top"]) {
       expect(await rename(server, "laptop", name)).toBe("InvalidArgument");
     }
     expect(server.deviceNames.get("laptop")).toBe("a".repeat(256));

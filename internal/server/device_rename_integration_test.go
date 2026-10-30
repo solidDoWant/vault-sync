@@ -80,9 +80,9 @@ func TestRenameDeviceNameAndIDRules(t *testing.T) {
 		{name: "empty", value: "", wantCode: connect.CodeInvalidArgument},
 		{name: "blank", value: " \t ", wantCode: connect.CodeInvalidArgument},
 		{name: "control character", value: "Lap\x00top", wantCode: connect.CodeInvalidArgument},
-		{name: "format character", value: "Lap​top", wantCode: connect.CodeInvalidArgument},
-		{name: "line separator", value: "Lap top", wantCode: connect.CodeInvalidArgument},
-		{name: "paragraph separator", value: "Lap top", wantCode: connect.CodeInvalidArgument},
+		{name: "format character", value: "Lap\u200btop", wantCode: connect.CodeInvalidArgument},
+		{name: "line separator", value: "Lap\u2028top", wantCode: connect.CodeInvalidArgument},
+		{name: "paragraph separator", value: "Lap\u2029top", wantCode: connect.CodeInvalidArgument},
 	}
 
 	for _, test := range tests {
