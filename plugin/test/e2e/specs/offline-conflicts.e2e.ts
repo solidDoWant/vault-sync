@@ -102,6 +102,25 @@ describe("offline edits and conflicts between two devices", function () {
     expect(conflictCopies(files)).toEqual([]);
   });
 
+  it("canvas edits from two devices (one moves a node, the other recolours it) are merged on both devices, with no conflict copy", async function () {
+    const base = '{"nodes":[{"id":"a","type":"text","text":"A","x":0,"y":0,"width":250,"height":60},{"id":"b","type":"text","text":"B","x":0,"y":100,"width":250,"height":60}],"edges":[]}';
+    await shared("Board.canvas", base);
+    await goOffline(b);
+    await use(a);
+    const fromA = base.replace('"x":0,"y":0', '"x":40,"y":0');
+    await writeNote("Board.canvas", fromA);
+    await waitForServer(a, (heads) => heads["Board.canvas"] === contentOf(fromA), "A's edit");
+    await use(b);
+    await writeNote("Board.canvas", base.replace('"text":"A",', '"text":"A","color":"4",'));
+    await goOnline(b, remoteVaultName);
+
+    const merged = '{"nodes":[{"id":"a","type":"text","text":"A","x":40,"y":0,"width":250,"height":60,"color":"4"},{"id":"b","type":"text","text":"B","x":0,"y":100,"width":250,"height":60}],"edges":[]}';
+    await waitForText(a, "Board.canvas", merged);
+    const files = await converged(a, b);
+    expect(files["Board.canvas"]).toBe(contentOf(merged));
+    expect(conflictCopies(files)).toEqual([]);
+  });
+
   it("[AC-12] edits to the same lines keep the server's version at the path and exactly one conflict copy of the other", async function () {
     await shared("Clash.md", "intro\nthe same line\noutro\n");
     await goOffline(b);

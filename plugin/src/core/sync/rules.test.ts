@@ -124,6 +124,58 @@ describe("rule M: Bases (.base) files", () => {
   });
 });
 
+const canvasBase = '{"nodes":[{"id":"a","type":"text","text":"A","x":0,"y":0,"width":250,"height":60},{"id":"b","type":"text","text":"B","x":0,"y":100,"width":250,"height":60}],"edges":[]}';
+
+describe("rule M: other merged types", () => {
+  it("canvas edits on two devices (one moves a node, the other recolours it) merge with no conflict copy", async () => {
+    const { a, b } = setup();
+    await shared(a, b, "Board.canvas", canvasBase);
+    await a.write("Board.canvas", canvasBase.replace('"x":0,"y":0', '"x":40,"y":0'));
+    await a.sync();
+    await b.write("Board.canvas", canvasBase.replace('"text":"A",', '"text":"A","color":"4",'));
+    await converge(a, b);
+    const merged = canvasBase.replace('"text":"A","x":0,"y":0', '"text":"A","x":40,"y":0,"color":"4"');
+    expect(JSON.parse((await b.files())["Board.canvas"] ?? "")).toEqual(JSON.parse(merged));
+    expect(Object.keys(await b.files())).toEqual(["Board.canvas"]);
+    expect(await a.files()).toEqual(await b.files());
+  });
+
+  it("both devices moving the same canvas node fall back to the blob rule's conflict copy", async () => {
+    const { a, b } = setup();
+    await shared(a, b, "Board.canvas", canvasBase);
+    const remote = canvasBase.replace('"x":0,"y":0', '"x":40,"y":0');
+    const local = canvasBase.replace('"x":0,"y":0', '"x":90,"y":0');
+    await a.write("Board.canvas", remote);
+    await a.sync();
+    await b.write("Board.canvas", local);
+    await b.sync();
+    expect(await b.files()).toEqual({ "Board.canvas": remote, "Board (Conflicted copy Bob device-b 202610291200).canvas": local });
+  });
+
+  it("CSV edits to different rows on two devices merge with no conflict copy", async () => {
+    const { a, b } = setup();
+    const csv = "id,qty\n1,3\n2,5\n3,7\n";
+    await shared(a, b, "Stock.csv", csv);
+    await a.write("Stock.csv", csv.replace("1,3", "1,40"));
+    await a.sync();
+    await b.write("Stock.csv", csv.replace("3,7", "3,800"));
+    await converge(a, b);
+    expect(await b.files()).toEqual({ "Stock.csv": "id,qty\n1,40\n2,5\n3,800\n" });
+    expect(await a.files()).toEqual(await b.files());
+  });
+
+  it("an overlapping CSV edit falls back to the blob rule's conflict copy", async () => {
+    const { a, b } = setup();
+    const csv = "id,qty\n1,3\n2,5\n3,7\n";
+    await shared(a, b, "Stock.csv", csv);
+    await a.write("Stock.csv", csv.replace("2,5", "2,60"));
+    await a.sync();
+    await b.write("Stock.csv", csv.replace("2,5", "2,900"));
+    await b.sync();
+    expect(await b.files()).toEqual({ "Stock.csv": csv.replace("2,5", "2,60"), "Stock (Conflicted copy Bob device-b 202610291200).csv": csv.replace("2,5", "2,900") });
+  });
+});
+
 describe("rule C: conflict copy names", () => {
   const date = new Date(Date.UTC(2026, 9, 29, 7, 5));
   const free = () => false;
