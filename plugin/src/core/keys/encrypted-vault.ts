@@ -185,6 +185,7 @@ export async function createEncryptedVault(options: CreateEncryptedVaultOptions)
     keys: options.keys,
     membership: options.membership,
     store: options.store(vault.id),
+    trust: { userKey, log: options.keys, anchors: options.anchors, verifiedLogs: options.verifiedLogs },
     escrow,
   });
   // A new encrypted vault is rotation-pending: the owner's sync creates epoch 1.

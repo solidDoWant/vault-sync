@@ -188,7 +188,7 @@ export async function setMemberRole(client: ProtocolClient, vaultId: string, use
 
 /** Removes a member; in an encrypted vault together with the next epoch, which the removed member gets no key of. */
 export async function removeMember(client: ProtocolClient, vaultId: string, userId: string, encrypted?: EncryptedSharing): Promise<void> {
-  if (encrypted !== undefined) return encrypted.manager.removeMember(userId, encrypted.context);
+  if (encrypted !== undefined) return encrypted.manager.removeMember(userId);
   await client.membership.removeMember({ vaultId, userId });
 }
 

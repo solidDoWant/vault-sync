@@ -67,6 +67,7 @@ import {
 } from "./verified-log";
 import type { UserKeyPair } from "./user-key";
 import { isEpochNotCurrent } from "./vault-keys";
+import { verifyEpochs } from "./verified-epochs";
 
 /** The MembershipService calls that change an encrypted vault's membership (ProtocolClient.membership). */
 export type EncryptedMembershipClient = Pick<
@@ -357,7 +358,7 @@ export async function redeemEncryptedInvitation(
     } catch {
       throw new InviteAnchorError();
     }
-    const { entries: log } = await readVerifiedLog(
+    const { entries: log, states } = await readVerifiedLog(
       context.log,
       context.verifiedLogs,
       vaultId,
@@ -368,6 +369,8 @@ export async function redeemEncryptedInvitation(
       vaultId,
       genesisHash: anchor.genesisHash,
     });
+    // Every epoch key comes from an epoch an owner signed in the verified log.
+    await verifyEpochs(context.verifiedLogs, vaultId, states, invitation.epochs, invitation.epochs.length);
     const invitationKey = invitationKeyPair(link.secret, vaultId, invitationId);
     const slots: SlotInit[] = [];
     for (const epoch of invitation.epochs) {

@@ -87,10 +87,12 @@ interface StoredVerifiedLogs {
   account: Account;
   anchorListVersion: number;
   checkpoints: Record<string, { seq: number; hash: string }>;
+  /** The highest epoch verified per vault. */
+  epochs: Record<string, number>;
 }
 
 function parseVerifiedLogs(value: unknown, account: Account): StoredVerifiedLogs {
-  const empty: StoredVerifiedLogs = { account, anchorListVersion: 0, checkpoints: {} };
+  const empty: StoredVerifiedLogs = { account, anchorListVersion: 0, checkpoints: {}, epochs: {} };
   if (typeof value !== "object" || value === null) return empty;
   const stored = value as Partial<StoredVerifiedLogs>;
   if (typeof stored.account !== "object" || !sameAccount(stored.account, account)) return empty;
@@ -100,8 +102,14 @@ function parseVerifiedLogs(value: unknown, account: Account): StoredVerifiedLogs
       if (Number.isSafeInteger(checkpoint.seq) && checkpoint.seq > 0 && /^[0-9a-f]{64}$/u.test(checkpoint.hash)) checkpoints[vaultId] = checkpoint;
     }
   }
+  const epochs: StoredVerifiedLogs["epochs"] = {};
+  if (typeof stored.epochs === "object") {
+    for (const [vaultId, epoch] of Object.entries(stored.epochs)) {
+      if (Number.isSafeInteger(epoch) && epoch > 0) epochs[vaultId] = epoch;
+    }
+  }
   const version = Number.isSafeInteger(stored.anchorListVersion) ? Number(stored.anchorListVersion) : 0;
-  return { account, anchorListVersion: version, checkpoints };
+  return { account, anchorListVersion: version, checkpoints, epochs };
 }
 
 /**
@@ -123,6 +131,12 @@ export function deviceVerifiedLogStore(storage: DeviceStorage, account: Account)
     saveCheckpoint: (vaultId, checkpoint) => {
       const stored = load();
       stored.checkpoints[vaultId] = { seq: checkpoint.seq, hash: bytesToHex(checkpoint.hash) };
+      return save(stored);
+    },
+    highestEpoch: (vaultId) => Promise.resolve(load().epochs[vaultId] ?? 0),
+    saveHighestEpoch: (vaultId, epoch) => {
+      const stored = load();
+      stored.epochs[vaultId] = epoch;
       return save(stored);
     },
     anchorListVersion: () => Promise.resolve(load().anchorListVersion),

@@ -31,6 +31,9 @@ export interface VerifiedLogStore {
   /** The highest position verified for the vault, if any. */
   checkpoint(vaultId: string): Promise<LogCheckpoint | undefined>;
   saveCheckpoint(vaultId: string, checkpoint: LogCheckpoint): Promise<void>;
+  /** The highest epoch verified for the vault (0 for none). */
+  highestEpoch(vaultId: string): Promise<number>;
+  saveHighestEpoch(vaultId: string, epoch: number): Promise<void>;
   /** The highest version of the user's anchor list seen (0 for none). */
   anchorListVersion(): Promise<number>;
   saveAnchorListVersion(version: number): Promise<void>;
@@ -39,7 +42,17 @@ export interface VerifiedLogStore {
 /** A {@link VerifiedLogStore} in memory, for tests. */
 export class MemoryVerifiedLogStore implements VerifiedLogStore {
   readonly checkpoints = new Map<string, LogCheckpoint>();
+  readonly epochs = new Map<string, number>();
   anchorVersion = 0;
+
+  highestEpoch(vaultId: string): Promise<number> {
+    return Promise.resolve(this.epochs.get(vaultId) ?? 0);
+  }
+
+  saveHighestEpoch(vaultId: string, epoch: number): Promise<void> {
+    this.epochs.set(vaultId, epoch);
+    return Promise.resolve();
+  }
 
   checkpoint(vaultId: string): Promise<LogCheckpoint | undefined> {
     return Promise.resolve(this.checkpoints.get(vaultId));

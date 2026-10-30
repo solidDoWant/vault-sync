@@ -8,6 +8,12 @@
  * is rotation-pending, builds the next epoch a member's removal needs, and
  * grants slots to members who are missing them.
  *
+ * Against an active server (docs/design/encryption.md, "Signed epochs"), it
+ * uses an epoch key only from an epoch whose record an owner signed in the
+ * membership log this device verified, refuses an epoch below the highest it
+ * has verified, and wraps keys only to the recipients that log names, with
+ * their keys from the log: never to a key the server adds or swaps.
+ *
  * Nothing here logs, and no error message or state carries a key.
  */
 import type { MessageInitShape } from "@bufbuild/protobuf";
@@ -15,19 +21,21 @@ import { Code, ConnectError, type Client } from "@connectrpc/connect";
 
 import { ErrorDetailSchema, ErrorReason } from "../../gen/vaultsync/v1/errors_pb";
 import type { MembershipService } from "../../gen/vaultsync/v1/membership_pb";
-import { KeyRecipientKind, type KeySlotSchema, type NextEpochSchema, type VaultKeyService } from "../../gen/vaultsync/v1/vault_key_pb";
+import { KeyRecipientKind, type EpochRecordSchema, type KeySlotSchema, type NextEpochSchema, type VaultKeyService } from "../../gen/vaultsync/v1/vault_key_pb";
 import { DecryptError, generateKey } from "../e2ee/e2ee";
 import { KeyCommitmentError, keyCommitment, openKeySlot, sealKeySlot, verifyKeyCommitment } from "../e2ee/keyslot";
-import { EntryType, idPayload } from "../e2ee/memberlog";
+import { EntryType, epochRecipients, idPayload, replayLog, signEpochRecord, type LogState } from "../e2ee/memberlog";
+import { escrowEqual, type EscrowBundle } from "../e2ee/identity";
 import { nextEntry, toLogEntry } from "./member-log";
 import type { UserKeyPair } from "./user-key";
+import { epochRecordMessage, NO_PREVIOUS_COMMITMENT, verifyEpochs } from "./verified-epochs";
 import { readMemberLog, type LogTrust } from "./verified-log";
 
 /** The VaultKeyService calls the manager makes (ProtocolClient.vaultKeys). */
 export type VaultKeyClient = Pick<Client<typeof VaultKeyService>, "listKeySlots" | "listEpochs" | "listMissingSlots" | "rotateEpoch" | "addKeySlots" | "listLogEntries">;
 
 /** The MembershipService calls the manager makes on an owner device (ProtocolClient.membership). */
-export type MemberKeyClient = Pick<Client<typeof MembershipService>, "listMembers" | "removeMember">;
+export type MemberKeyClient = Pick<Client<typeof MembershipService>, "removeMember">;
 
 /** Where a device keeps the epoch keys it unwrapped: device-local only, never synced. */
 export interface EpochKeyStore {
@@ -60,6 +68,8 @@ export interface VaultKeyManagerOptions {
   keys: VaultKeyClient;
   membership: MemberKeyClient;
   store: EpochKeyStore;
+  /** What this device verifies the vault's membership log, and so its epochs, with. */
+  trust: LogTrust;
   /**
    * The deployment's escrow key, in a vault with escrow: every epoch this
    * device creates also wraps its key to it (SPEC.md §9.4). Undefined in a
@@ -74,6 +84,8 @@ export interface EscrowRecipient {
   keyId: string;
   /** The hybrid ML-KEM-768 + X25519 public key (1216 bytes). */
   publicKey: Uint8Array;
+  /** The pinned escrow bundle naming this key, which the vault's log must name too. */
+  bundle?: EscrowBundle;
 }
 
 /** A key slot this device refused: it did not open with the user key, or its key does not match the epoch's commitment. */
@@ -139,6 +151,7 @@ const MAX_REMOVE_ATTEMPTS = 3;
 
 type SlotInit = MessageInitShape<typeof KeySlotSchema>;
 type NextEpochInit = MessageInitShape<typeof NextEpochSchema>;
+type EpochRecordInit = MessageInitShape<typeof EpochRecordSchema>;
 
 /** Whether `error` is the server's refusal of a stale expected_epoch: another epoch change won. */
 export function isEpochNotCurrent(error: unknown): boolean {
@@ -154,6 +167,8 @@ interface EpochView {
   rotationPending: boolean;
   commitments: Map<number, Uint8Array>;
   refused: VaultKeyRefusedError[];
+  /** The membership after the verified log's last entry. */
+  head: LogState;
 }
 
 export class VaultKeyManager {
@@ -180,7 +195,7 @@ export class VaultKeyManager {
     let rotated = false;
     if (this.options.owner && view.rotationPending) {
       try {
-        await this.createEpoch(view.currentEpoch, undefined, (nextEpoch) => this.options.keys.rotateEpoch({ vaultId: this.options.vaultId, nextEpoch }));
+        await this.createEpoch(view, view.head, (nextEpoch, record) => this.options.keys.rotateEpoch({ vaultId: this.options.vaultId, nextEpoch, record }));
         rotated = true;
       } catch (error) {
         // Another owner device won the rotation: adopt its epoch.
@@ -188,28 +203,31 @@ export class VaultKeyManager {
       }
       view = await this.read();
     }
-    const granted = this.options.owner ? await this.grantMissing() : 0;
+    const granted = this.options.owner ? await this.grantMissing(view.head) : 0;
     return this.state(view, rotated, granted);
   }
 
   /**
-   * Removes `userId` from the vault: sends RemoveMember with the next epoch,
-   * wrapped for every remaining member with a user key and not for the
-   * removed member, so the removal and the new epoch take effect together,
-   * and with the remove-member entry signed on top of the log's head, read
-   * verified with `trust`.
+   * Removes `userId` from the vault: sends RemoveMember with the
+   * remove-member entry signed on top of the verified log's head, and the
+   * next epoch with its signed record at that entry, wrapped for every
+   * recipient the log names after it (so not for the removed member): the
+   * removal and the new epoch take effect together.
    * When another epoch change or log entry wins meanwhile, adopts it and
    * builds the epoch and the entry after it.
    */
-  async removeMember(userId: string, trust: LogTrust): Promise<void> {
+  async removeMember(userId: string): Promise<void> {
     if (!this.options.owner) throw new Error("only an owner can remove a member");
     const { vaultId, userKey } = this.options;
     for (let attempt = 1; ; attempt++) {
       const view = await this.read();
-      const { entries: log } = await readMemberLog(trust, vaultId);
-      const logEntry = toLogEntry(nextEntry(vaultId, log, { type: EntryType.removeMember, payload: idPayload(userId), signSeeds: [userKey.signSeed] }));
+      const { entries: log } = await readMemberLog(this.options.trust, vaultId);
+      const entry = nextEntry(vaultId, log, { type: EntryType.removeMember, payload: idPayload(userId), signSeeds: [userKey.signSeed] });
+      const after = replayLog(vaultId, [...log, entry]).at(-1);
+      if (after === undefined) throw new Error("the membership log is empty");
+      const logEntry = toLogEntry(entry);
       try {
-        await this.createEpoch(view.currentEpoch, userId, (nextEpoch) => this.options.membership.removeMember({ vaultId, userId, nextEpoch, logEntry }));
+        await this.createEpoch(view, after, (nextEpoch, record) => this.options.membership.removeMember({ vaultId, userId, nextEpoch, logEntry, record }));
         return;
       } catch (error) {
         const raced = isEpochNotCurrent(error) || (error instanceof ConnectError && error.code === Code.Aborted);
@@ -219,31 +237,40 @@ export class VaultKeyManager {
   }
 
   /**
-   * Creates epoch `expected + 1` with a fresh key, wrapped for every member
-   * with a user key but `removed`, and for the escrow key in a vault with
-   * escrow, through `send`; keeps its key once the
-   * server accepted it. Should the response be lost, the key is not: the
-   * device's own slot is in the epoch.
+   * Creates the epoch after `view`'s current one with a fresh key, wrapped
+   * for every recipient the log names at `at` (members, pending invitations,
+   * and the escrow key if escrow is on there), each to its key in the log,
+   * and signs its record at that position; sends both through `send`, and
+   * keeps the key once the server accepted it. Should the response be lost,
+   * the key is not: the device's own slot is in the epoch.
    */
-  private async createEpoch(expected: number, removed: string | undefined, send: (nextEpoch: NextEpochInit) => Promise<unknown>): Promise<void> {
-    const { vaultId } = this.options;
+  private async createEpoch(view: EpochView, at: LogState, send: (nextEpoch: NextEpochInit, record: EpochRecordInit) => Promise<unknown>): Promise<void> {
+    const { vaultId, userKey } = this.options;
+    const expected = view.currentEpoch;
     const epoch = expected + 1;
-    const members = (await this.options.membership.listMembers({ vaultId })).members;
     const epochKey = generateKey();
-    const slots = await Promise.all(
-      members
-        .filter((member) => member.userId !== removed && member.publicKey.length > 0)
-        .map(
-          async (member): Promise<SlotInit> => ({
-            epoch,
-            recipientKind: KeyRecipientKind.USER,
-            recipientId: member.userId,
-            wrappedKey: await sealKeySlot(member.publicKey, epochKey, { vaultId, epoch, recipientKind: "user", recipientId: member.userId }),
-          }),
-        ),
-    );
-    const { escrow } = this.options;
-    if (escrow !== undefined) {
+    const slots: SlotInit[] = [];
+    for (const [userId, member] of at.members) {
+      slots.push({
+        epoch,
+        recipientKind: KeyRecipientKind.USER,
+        recipientId: userId,
+        wrappedKey: await sealKeySlot(member.bundle.kemPub, epochKey, { vaultId, epoch, recipientKind: "user", recipientId: userId }),
+      });
+    }
+    for (const [invitationId, invitation] of at.invitations) {
+      slots.push({
+        epoch,
+        recipientKind: KeyRecipientKind.INVITATION,
+        recipientId: invitationId,
+        wrappedKey: await sealKeySlot(invitation.kemPub, epochKey, { vaultId, epoch, recipientKind: "invitation", recipientId: invitationId }),
+      });
+    }
+    if (at.escrow !== undefined) {
+      const { escrow } = this.options;
+      if (escrow?.bundle === undefined || !escrowEqual(escrow.bundle, at.escrow)) {
+        throw new Error("the vault's membership log names another escrow key than the one this device pinned, so it does not rotate");
+      }
       slots.push({
         epoch,
         recipientKind: KeyRecipientKind.ESCROW,
@@ -251,14 +278,18 @@ export class VaultKeyManager {
         wrappedKey: await sealKeySlot(escrow.publicKey, epochKey, { vaultId, epoch, recipientKind: "escrow", recipientId: escrow.keyId }),
       });
     }
-    await send({ expectedEpoch: expected, commitment: keyCommitment(epochKey, vaultId, epoch), slots });
+    const commitment = keyCommitment(epochKey, vaultId, epoch);
+    const prevCommitment = expected === 0 ? NO_PREVIOUS_COMMITMENT : view.commitments.get(expected);
+    if (prevCommitment === undefined) throw new Error(`the vault lists no commitment for epoch ${String(expected)}`);
+    const record = signEpochRecord({ vaultId, epoch, commitment, prevCommitment, logSeq: at.seq, logHash: at.hash, recipients: epochRecipients(at) }, userKey.signSeed);
+    await send({ expectedEpoch: expected, commitment, slots }, epochRecordMessage(record));
     const keys = await this.loaded();
     keys.set(epoch, epochKey);
     await this.options.store.save(keys);
   }
 
   /** Grants every missing slot of an epoch this device holds (AddKeySlots); resolves how many were stored. */
-  private async grantMissing(): Promise<number> {
+  private async grantMissing(head: LogState): Promise<number> {
     const { vaultId } = this.options;
     const missing = await allPages(async (pageToken) => {
       const response = await this.options.keys.listMissingSlots({ vaultId, pageToken });
@@ -267,12 +298,15 @@ export class VaultKeyManager {
     const slots: SlotInit[] = [];
     for (const entry of missing) {
       const epochKey = this.epochKey(entry.epoch);
-      if (epochKey === undefined || entry.publicKey.length === 0) continue;
+      // The recipient and its key come from the verified log, never from the
+      // server's listing: a user the log does not name gets nothing.
+      const member = head.members.get(entry.userId);
+      if (epochKey === undefined || member === undefined) continue;
       slots.push({
         epoch: entry.epoch,
         recipientKind: KeyRecipientKind.USER,
         recipientId: entry.userId,
-        wrappedKey: await sealKeySlot(entry.publicKey, epochKey, { vaultId, epoch: entry.epoch, recipientKind: "user", recipientId: entry.userId }),
+        wrappedKey: await sealKeySlot(member.bundle.kemPub, epochKey, { vaultId, epoch: entry.epoch, recipientKind: "user", recipientId: entry.userId }),
       });
     }
     let granted = 0;
@@ -285,6 +319,9 @@ export class VaultKeyManager {
   /** Reads the vault's epochs and the user's slots, and takes every slot key that opens and matches its commitment. */
   private async read(): Promise<EpochView> {
     const { vaultId, userKey } = this.options;
+    const { states } = await readMemberLog(this.options.trust, vaultId);
+    const head = states.at(-1);
+    if (head === undefined) throw new Error("the membership log is empty");
     const keys = await this.loaded();
     let currentEpoch = 0;
     let rotationPending = false;
@@ -295,6 +332,7 @@ export class VaultKeyManager {
       rotationPending = response.rotationPending;
       return { items: response.epochs, next: response.nextPageToken };
     });
+    await verifyEpochs(this.options.trust.verifiedLogs, vaultId, states, epochs, currentEpoch);
     for (const epoch of epochs) commitments.set(epoch.epoch, epoch.commitment);
     const slots = await allPages(async (pageToken) => {
       const response = await this.options.keys.listKeySlots({ vaultId, pageToken });
@@ -342,7 +380,7 @@ export class VaultKeyManager {
     }
     if (changed) await this.options.store.save(keys);
     this.refusedEpochs = new Set(refused.map((error) => error.epoch));
-    return { currentEpoch, rotationPending, commitments, refused };
+    return { currentEpoch, rotationPending, commitments, refused, head };
   }
 
   private state(view: EpochView, rotated: boolean, granted: number): VaultKeyState {

@@ -246,7 +246,7 @@ describe("the verified log positions on this device", () => {
   const account = { serverUrl: "https://sync.example", issuer: "https://idp.example", subject: "alice" };
   const vaultId = "0190a5b4-0000-7000-8000-000000000001";
 
-  it("keeps each vault's checkpoint and the anchor list version in local storage, for the account only", async () => {
+  it("keeps each vault's checkpoint, highest verified epoch and the anchor list version in local storage, for the account only", async () => {
     const local = new Map<string, unknown>();
     const storage: DeviceStorage = {
       loadLocalStorage: (key) => (local.has(key) ? (JSON.parse(JSON.stringify(local.get(key))) as unknown) : null),
@@ -255,12 +255,15 @@ describe("the verified log positions on this device", () => {
     const hash = new Uint8Array(32).fill(5);
     await deviceVerifiedLogStore(storage, account).saveCheckpoint(vaultId, { seq: 4, hash });
     await deviceVerifiedLogStore(storage, account).saveAnchorListVersion(3);
+    await deviceVerifiedLogStore(storage, account).saveHighestEpoch(vaultId, 7);
 
     const restarted = deviceVerifiedLogStore(storage, account);
     expect(await restarted.checkpoint(vaultId)).toEqual({ seq: 4, hash });
     expect(await restarted.anchorListVersion()).toBe(3);
+    expect(await restarted.highestEpoch(vaultId)).toBe(7);
     const other = deviceVerifiedLogStore(storage, { ...account, subject: "bob" });
     expect(await other.checkpoint(vaultId)).toBeUndefined();
     expect(await other.anchorListVersion()).toBe(0);
+    expect(await other.highestEpoch(vaultId)).toBe(0);
   });
 });
