@@ -7,7 +7,7 @@ import { connectProblem } from "./controller";
 import { type ConnectedVault, type PluginData } from "./data";
 import { DeviceListLoads, DeviceRemovals, type DeviceRow } from "./devices";
 import { quotedVaultLabel, vaultLabel } from "./display-text";
-import { deleteConfirmed, membershipErrorMessage, parseInvitationDays, roleDescription, roleName, roles, type CreatedInvitation, type MemberRow, type Sharing } from "./sharing";
+import { deleteConfirmed, memberKeyText, membershipErrorMessage, parseInvitationDays, vaultKeysText, roleDescription, roleName, roles, type CreatedInvitation, type MemberRow, type Sharing } from "./sharing";
 import type { EncryptionState } from "./encryption";
 import { PassphraseModal, type PassphraseMode } from "./passphrase-modal";
 import { errorMessage, statusDescription, statusText, type SyncStatus } from "./status";
@@ -388,13 +388,17 @@ export class VaultSyncSettingTab extends PluginSettingTab {
     const role = sharing.kind === "owner" ? VaultRole.OWNER : sharing.role;
     intro.setDesc(`Your role: ${roleName(role)}. ${roleDescription(role)}`);
     intro.settingEl.addClass("vault-sync-sharing-role");
+    if (sharing.keys !== undefined) {
+      new Setting(section).setName("Fingerprints").setDesc(vaultKeysText(sharing.keys)).settingEl.addClass("vault-sync-fingerprint");
+    }
     if (sharing.kind === "owner") {
       new Setting(section).setName("Members").setHeading();
       const members = section.createDiv({ cls: "vault-sync-members" });
       for (const member of sharing.members) {
-        new Setting(members)
-          .setName(member.label)
-          .setDesc(member.description)
+        const row = new Setting(members).setName(member.label).setDesc(member.description);
+        const keyText = memberKeyText(member, sharing.keys);
+        if (keyText !== undefined) row.descEl.createDiv({ cls: "vault-sync-fingerprint", text: keyText });
+        row
           .addDropdown((dropdown) => {
             for (const option of roles) dropdown.addOption(String(option), roleName(option));
             dropdown.setValue(String(member.role)).onChange((value) => {

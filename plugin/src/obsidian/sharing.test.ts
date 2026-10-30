@@ -3,9 +3,9 @@ import { timestampFromDate } from "@bufbuild/protobuf/wkt";
 import { Code, ConnectError, createClient, createRouterTransport } from "@connectrpc/connect";
 import { describe, expect, it } from "vitest";
 
-import { InvitationSchema, MemberSchema, MembershipService, type Invitation, type Member } from "../gen/vaultsync/v1/membership_pb";
+import { InvitationSchema, ListInvitationsResponseSchema, MemberSchema, MembershipService, type Invitation, type Member } from "../gen/vaultsync/v1/membership_pb";
 import { VaultEncryption, VaultRole, VaultSchema, type Vault } from "../gen/vaultsync/v1/types_pb";
-import { VaultService } from "../gen/vaultsync/v1/vault_pb";
+import { ListVaultsResponseSchema, VaultService } from "../gen/vaultsync/v1/vault_pb";
 import { createProtocolClient, type ProtocolClient } from "../core/protocol/client";
 import { generateKeyPair } from "../core/e2ee/hybrid";
 import { createEncryptedInvitation } from "../core/keys/encrypted-membership";
@@ -13,7 +13,10 @@ import { createEncryptedVault } from "../core/keys/encrypted-vault";
 import { MemoryVaultKeyServer } from "../core/keys/memory-vault-keys";
 import type { UserKeyPair } from "../core/keys/user-key";
 import { MemoryEpochKeyStore } from "../core/keys/vault-keys";
-import { MemoryVerifiedLogStore } from "../core/keys/verified-log";
+import { MemoryVerifiedLogStore, type LogTrust } from "../core/keys/verified-log";
+import { addAnchor } from "../core/keys/anchor-list";
+import { bundleOf, fingerprint, formatFingerprint } from "../core/e2ee/identity";
+import { entryHash } from "../core/e2ee/memberlog";
 import {
   AlreadyMemberError,
   createInvitation,
@@ -28,6 +31,9 @@ import {
   removeMember,
   revokeInvitation,
   setMemberRole,
+  memberKeyText,
+  vaultFingerprint,
+  vaultKeysText,
   type Sharing,
 } from "./sharing";
 
@@ -385,5 +391,109 @@ describe("joining with an invite code (#34)", () => {
     server.client.membership.redeemInvitation = () => Promise.reject(new ConnectError("a vault may have at most 100 members", Code.ResourceExhausted));
 
     await expect(joinVault(server.client, "code")).rejects.toMatchObject({ code: Code.ResourceExhausted });
+  });
+});
+
+describe("key fingerprints in an encrypted vault", () => {
+  const editorKey: UserKeyPair = { ...generateKeyPair(), signSeed: new Uint8Array(32).fill(4), userId: editorId };
+
+  /** An encrypted vault created by an owner with an editor, as `caller` reads it, with the trust its log is verified from. */
+  async function encryptedVault(caller: "owner" | "editor") {
+    const owner: UserKeyPair = { ...generateKeyPair(), signSeed: new Uint8Array(32).fill(3), userId: ownerId };
+    const server = new MemoryVaultKeyServer(vaultId);
+    server.userKeys.set(owner.userId, owner.publicKey);
+    server.userKeys.set(editorKey.userId, editorKey.publicKey);
+    const ownerClient = createProtocolClient({ transport: server.transport(owner.userId) });
+    const ownerLogs = new MemoryVerifiedLogStore();
+    const store = new MemoryEpochKeyStore();
+    const vault = await createEncryptedVault({ name: "Secret", escrow: undefined, userKey: owner, vaults: ownerClient.vaults, anchors: ownerClient.userKeys, verifiedLogs: ownerLogs, keys: ownerClient.vaultKeys, membership: ownerClient.membership, store: () => store });
+    server.seedMember(editorKey, VaultRole.EDITOR, owner);
+    const callerKey = caller === "owner" ? owner : editorKey;
+    if (caller === "editor") {
+      // The editor's anchor list names the vault, as redeeming its invitation leaves it.
+      const editorClient = createProtocolClient({ transport: server.transport(editorId) });
+      await addAnchor(editorClient.userKeys, callerKey, new MemoryVerifiedLogStore(), { vaultId: vault.id, genesisHash: genesisHashOf(server) });
+    }
+    const base = createProtocolClient({ transport: server.transport(callerKey.userId) });
+    const role = caller === "owner" ? VaultRole.OWNER : VaultRole.EDITOR;
+    const client: ProtocolClient = {
+      ...base,
+      vaults: { ...base.vaults, listVaults: () => Promise.resolve(create(ListVaultsResponseSchema, { vaults: [create(VaultSchema, { id: vault.id, name: "Secret", encryption: VaultEncryption.E2EE, role })] })) },
+      membership: { ...base.membership, listInvitations: () => Promise.resolve(create(ListInvitationsResponseSchema, {})) },
+    };
+    const trust = (): Promise<LogTrust> => Promise.resolve({ userKey: callerKey, log: client.vaultKeys, anchors: client.userKeys, verifiedLogs: new MemoryVerifiedLogStore() });
+    return { id: vault.id, client, trust, owner, genesis: genesisHashOf(server) };
+  }
+
+  function genesisHashOf(server: MemoryVaultKeyServer): Uint8Array {
+    const genesis = server.log[0];
+    if (genesis === undefined) throw new Error("no genesis");
+    return entryHash(genesis);
+  }
+
+  function bundleFingerprint(key: UserKeyPair): string {
+    return formatFingerprint(fingerprint(bundleOf({ kemSeed: key.privateKey, signSeed: key.signSeed }, key.userId)));
+  }
+
+  it("shows every member's key fingerprint and the vault fingerprint to an owner", async () => {
+    const { id, client, trust, owner, genesis } = await encryptedVault("owner");
+
+    const sharing = owned(await loadSharing(client, id, formatDate, trust));
+
+    expect(sharing.members.map((member) => [member.userId, member.fingerprint])).toEqual([
+      [ownerId, bundleFingerprint(owner)],
+      [editorId, bundleFingerprint(editorKey)],
+    ]);
+    expect(bundleFingerprint(owner)).toMatch(/^[0-9A-HJKMNP-TV-Z]{4}( [0-9A-HJKMNP-TV-Z]{4}){7}$/u);
+    expect(sharing.keys).toEqual({ kind: "verified", vaultFingerprint: vaultFingerprint(genesis) });
+  });
+
+  it("shows an editor the vault fingerprint", async () => {
+    const { id, client, trust, genesis } = await encryptedVault("editor");
+
+    expect(await loadSharing(client, id, formatDate, trust)).toEqual({ kind: "member", role: VaultRole.EDITOR, keys: { kind: "verified", vaultFingerprint: vaultFingerprint(genesis) } });
+  });
+
+  it("still lists the members, without fingerprints, when the log cannot be verified", async () => {
+    const { id, client } = await encryptedVault("owner");
+
+    const sharing = owned(await loadSharing(client, id, formatDate, () => Promise.reject(new Error("Unlock end-to-end encryption on this device first."))));
+
+    expect(sharing.members.map((member) => member.fingerprint)).toEqual([undefined, undefined]);
+    expect(sharing.keys).toEqual({ kind: "unavailable", reason: "Unlock end-to-end encryption on this device first." });
+  });
+
+  it("shows no fingerprints in a plaintext vault", async () => {
+    const server = fakeServer();
+
+    const sharing = owned(await loadSharing(server.client, vaultId, formatDate, () => Promise.reject(new Error("not asked"))));
+
+    expect(sharing.keys).toBeUndefined();
+    expect(sharing.members.every((member) => member.fingerprint === undefined)).toBe(true);
+  });
+});
+
+describe("what the member list says about keys", () => {
+  const member = { userId: ownerId, label: "Ada", role: VaultRole.OWNER, description: "Owner." };
+  const verified = { kind: "verified", vaultFingerprint: "0008 1018" } as const;
+
+  it("shows a member's fingerprint, says when the verified log names no key, and says nothing in a plaintext vault or without a verified log", () => {
+    expect(memberKeyText({ ...member, fingerprint: "ABCD EFGH" }, verified)).toBe("Key fingerprint: ABCD EFGH");
+    expect(memberKeyText(member, verified)).toBe("No key for this member in the verified membership log.");
+    expect(memberKeyText({ ...member, fingerprint: "ABCD EFGH" }, undefined)).toBeUndefined();
+    expect(memberKeyText(member, { kind: "unavailable", reason: "locked" })).toBeUndefined();
+  });
+
+  it("shows the vault fingerprint, or why no fingerprints are shown", () => {
+    expect(vaultKeysText(verified)).toContain("Vault fingerprint: 0008 1018.");
+    expect(vaultKeysText({ kind: "unavailable", reason: "Unlock end-to-end encryption on this device first." })).toBe("Key fingerprints are not shown: Unlock end-to-end encryption on this device first.");
+  });
+});
+
+describe("the vault fingerprint", () => {
+  it("is the whole genesis hash as 64 hex digits in groups of four", () => {
+    const hash = Uint8Array.from({ length: 32 }, (_, index) => index * 8);
+
+    expect(vaultFingerprint(hash)).toBe("0008 1018 2028 3038 4048 5058 6068 7078 8088 9098 a0a8 b0b8 c0c8 d0d8 e0e8 f0f8");
   });
 });

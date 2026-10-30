@@ -85,3 +85,10 @@
   font-size: var(--font-ui-small);
   text-align: center;
 }
+
+/* Key fingerprints are compared character by character, and copied. */
+.vault-sync-fingerprint .setting-item-description,
+div.vault-sync-fingerprint {
+  font-family: var(--font-monospace);
+  user-select: text;
+}

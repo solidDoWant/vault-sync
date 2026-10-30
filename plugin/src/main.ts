@@ -37,6 +37,7 @@ import {
   type Sharing,
 } from "./obsidian/sharing";
 import { VaultKeyManager } from "./core/keys/vault-keys";
+import type { LogTrust } from "./core/keys/verified-log";
 import { SignInCancelledError, SignInModal } from "./obsidian/sign-in-modal";
 import { initialStatus, isStoppedState, statusDescription, statusIcon, statusText, type SyncStatus } from "./obsidian/status";
 import { ObsidianVaultAdapter } from "./obsidian/vault-adapter";
@@ -429,9 +430,22 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
     return "connected";
   }
 
-  /** The connected vault's Sharing section (#34): its members and invitations for an owner, the user's role otherwise. */
+  /**
+   * The connected vault's Sharing section: its members and invitations for
+   * an owner, the user's role otherwise, and in an encrypted vault the
+   * fingerprints from its verified membership log.
+   */
   loadSharing(): Promise<Sharing> {
-    return loadSharing(this.protocolClient(), this.sharedVaultId(), formatDate);
+    return loadSharing(this.protocolClient(), this.sharedVaultId(), formatDate, () => this.logTrust());
+  }
+
+  /** What this device verifies an encrypted vault's membership log with: the unlocked user key (an error while it is locked). */
+  private async logTrust(): Promise<LogTrust> {
+    const client = this.protocolClient();
+    const options = this.encryptionOptions();
+    const userKey = await unlockedUserKey(options);
+    const account = await currentAccount(this.data, options.accessToken);
+    return { userKey, log: client.vaultKeys, anchors: client.userKeys, verifiedLogs: deviceVerifiedLogStore(this.app, account) };
   }
 
   /** Creates an invitation to the connected vault; its code is shown once and never stored. */
@@ -462,12 +476,11 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
     const vault = (await listRemoteVaults(client)).find((listed) => listed.id === vaultId);
     if (vault === undefined || vault.encryption !== VaultEncryption.E2EE) return undefined;
     const options = this.encryptionOptions();
-    const userKey = await unlockedUserKey(options);
+    const trust = await this.logTrust();
+    const { userKey } = trust;
     const account = await currentAccount(this.data, options.accessToken);
     const escrow = vault.escrow ? (await this.escrowOffer()).recipient : undefined;
     if (vault.escrow && escrow === undefined) throw new Error("this server has no escrow key");
-    const verifiedLogs = deviceVerifiedLogStore(this.app, account);
-    const trust = { userKey, log: client.vaultKeys, anchors: client.userKeys, verifiedLogs };
     const manager = new VaultKeyManager({
       vaultId,
       userKey,
