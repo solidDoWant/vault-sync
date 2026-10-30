@@ -368,6 +368,7 @@
     "ports" (list
       (dict "name" "http" "containerPort" $httpPort "protocol" "TCP")
       (dict "name" "metrics" "containerPort" $metricsPort "protocol" "TCP")
+      (dict "name" "service-metrics" "containerPort" $serviceMetricsPort "protocol" "TCP")
     )
     "probes" (dict
       "startup" (merge (dict "spec" (dict
@@ -419,27 +420,44 @@
 {{/* ============================================================ */}}
 {{/* Service, ServiceMonitor and HTTPRoute                         */}}
 {{/* ============================================================ */}}
-{{/* One Service with both ports, so ingress and route backends resolve to
+{{/* One Service with every port, so ingress and route backends resolve to
    the primary port "http" without naming a Service. Only "http" may be
-   routed to from outside the cluster; "metrics" serves /metrics and the
-   probes. */}}
+   routed to from outside the cluster; "metrics" serves the per-instance
+   /metrics and the probes, and "service-metrics" the service-wide /metrics. */}}
 {{- $services := dict
   "main" (dict "controller" $serverController "ports" (dict
     "http" (dict "port" $httpPort "primary" true)
     "metrics" (dict "port" $metricsPort)
+    "service-metrics" (dict "port" $serviceMetricsPort)
   ))
 -}}
+{{/* The ServiceMonitor scrapes port "metrics"; config.server.metrics.serviceWide.enabled
+   adds a second endpoint for port "service-metrics", with the same interval
+   and timeout. */}}
 {{- $serviceMonitors := dict -}}
 {{- $serviceMonitor := $config.server.metrics.serviceMonitor -}}
+{{- $serviceWideEnabled := $config.server.metrics.serviceWide.enabled -}}
+{{- if and $serviceWideEnabled (not $serviceMonitor.enabled) -}}
+  {{- fail "config.server.metrics.serviceWide.enabled needs config.server.metrics.serviceMonitor.enabled: the service-wide endpoint is part of the ServiceMonitor" -}}
+{{- end -}}
 {{- if $serviceMonitor.enabled -}}
-  {{- $_ := set $serviceMonitors "main" (dict
-    "service" (dict "identifier" "main")
-    "endpoints" (list (dict
-      "port" "metrics"
+  {{- $endpoints := list (dict
+    "port" "metrics"
+    "path" "/metrics"
+    "interval" $serviceMonitor.interval
+    "scrapeTimeout" $serviceMonitor.scrapeTimeout
+  ) -}}
+  {{- if $serviceWideEnabled -}}
+    {{- $endpoints = append $endpoints (dict
+      "port" "service-metrics"
       "path" "/metrics"
       "interval" $serviceMonitor.interval
       "scrapeTimeout" $serviceMonitor.scrapeTimeout
-    ))
+    ) -}}
+  {{- end -}}
+  {{- $_ := set $serviceMonitors "main" (dict
+    "service" (dict "identifier" "main")
+    "endpoints" $endpoints
   ) -}}
 {{- end -}}
 

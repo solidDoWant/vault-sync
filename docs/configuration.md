@@ -226,6 +226,8 @@ These describe the whole deployment rather than one replica, and are served only
 | `vault_sync_service_stale_epoch_revisions` | gauge | | Revisions of encrypted vaults not deleted that are not on their vault's current epoch: the re-encryption backlog (`ListStaleRevisions`), summed over every vault. |
 | `vault_sync_service_encrypted_vaults_by_escrow` | gauge | `escrow` | Encrypted vaults not deleted, by `escrow` (`true` when escrow is on). Both values are always exported. |
 | `vault_sync_service_escrow_rewrap_slots` | gauge | | Escrow key slots of vaults not deleted that still name a retiring escrow key id (`VAULT_SYNC_ESCROW_RETIRING_KEY_IDS`): the re-wrap backlog of an escrow key rotation. 0 without retiring ids. |
+| `vault_sync_service_retention_last_success_timestamp_seconds` | gauge | | Unix time at which a retention run last finished without errors, on any replica; 0 before the first. Each replica runs the job every hour, so alert when it falls well behind. |
+| `vault_sync_service_export_last_success_timestamp_seconds` | gauge | | Unix time at which an export (`vault-sync-server export`, [export.md](export.md)) last finished with status `ok`; 0 before the first. A `partial` or `failed` export does not advance it. |
 | `vault_sync_service_metrics_last_refresh_success_timestamp_seconds` | gauge | | Unix time of the last refresh on this replica in which every service-wide query succeeded; 0 before the first. |
 
 ## Startup and shutdown

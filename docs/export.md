@@ -28,7 +28,12 @@ The export reads the server's database and object-store variables (see [configur
 | `VAULT_SYNC_S3_ENDPOINT`, `VAULT_SYNC_S3_REGION`, `VAULT_SYNC_S3_FORCE_PATH_STYLE`, `VAULT_SYNC_S3_TLS_CA_FILE`, `VAULT_SYNC_S3_IDLE_TIMEOUT` | As for the server. The idle timeout fails the export if the store stops answering; a long but progressing download of a large blob is not cut short. |
 | `VAULT_SYNC_LOG_LEVEL` | Minimum log level (`info` by default). |
 
-The export only reads. Every database session it opens sets `default_transaction_read_only`, so PostgreSQL refuses any write even if the role could make one. It never runs migrations: run it against a database the server has already migrated. It reads objects from S3 and never writes or deletes any. A database role with `SELECT` on `vaults`, `documents`, `revisions` and `blobs`, and S3 credentials with `s3:GetObject` and `s3:ListBucket` (for `HeadBucket`) on the bucket, are enough.
+The export only reads, except for one row of status. Every database session it opens sets `default_transaction_read_only`, so PostgreSQL refuses any write even if the role could make one. The single exception is the end of each run: in one explicit read-write transaction it updates the single row of `export_status` with the time the run finished, its status (`ok`, `partial` or `failed`) and, for `ok`, the time of the last successful export, which every server replica reports as `vault_sync_service_export_last_success_timestamp_seconds` ([configuration.md](configuration.md#service-wide-metrics)). A failure to record it is logged as a warning and does not change the run's status or exit code. It never runs migrations: run it against a database the server has already migrated. It reads objects from S3 and never writes or deletes any. A database role with `SELECT` on `vaults`, `documents`, `revisions` and `blobs`, `INSERT` and `UPDATE` on `export_status` and no other privilege, and S3 credentials with `s3:GetObject` and `s3:ListBucket` (for `HeadBucket`) on the bucket, are enough:
+
+```sql
+GRANT SELECT ON vaults, documents, revisions, blobs TO vault_sync_export;
+GRANT INSERT, UPDATE ON export_status TO vault_sync_export;
+```
 
 ## What an export contains
 

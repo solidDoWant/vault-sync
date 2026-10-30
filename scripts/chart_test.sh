@@ -5,8 +5,9 @@
 # cluster needed) and asserts on the resulting objects with jq (via yq), so the checks
 # hold for whatever the bjw-s common library makes of the chart's values:
 #
-#   - the server Deployment, export CronJob, the one Service (ports http and
-#     metrics), and on request the ServiceMonitor, HTTPRoute and ingress are
+#   - the server Deployment, export CronJob, the one Service (ports http,
+#     metrics and service-metrics), and on request the ServiceMonitor (with
+#     its service-wide endpoint when toggled), HTTPRoute and ingress are
 #     rendered, named after the release, with the Secret references for the
 #     database client certificate and CA, the S3 credentials and CA, and the
 #     escrow key;
@@ -124,8 +125,8 @@ fi
 check "renders the server Deployment" "[$deployment] | length == 1 and .[0].metadata.name == \"vault-sync\""
 check "renders the export CronJob running the export subcommand" \
 	"[$cronjob] | length == 1 and (.[0].spec.jobTemplate.spec.template.spec.containers[0].args == [\"export\", \"-out\", \"/export/vaults\"])"
-check "renders one Service with ports http (8080) and metrics (9090)" \
-	"[\$docs[] | select(.kind == \"Service\")] | length == 1 and (.[0].spec.ports | map({name, port}) | sort_by(.port)) == [{\"name\": \"http\", \"port\": 8080}, {\"name\": \"metrics\", \"port\": 9090}] and .[0].spec.selector[\"app.kubernetes.io/controller\"] == \"main\""
+check "renders one Service with ports http (8080), metrics (9090) and service-metrics (9091)" \
+	"[\$docs[] | select(.kind == \"Service\")] | length == 1 and (.[0].spec.ports | map({name, port, targetPort}) | sort_by(.port)) == [{\"name\": \"http\", \"port\": 8080, \"targetPort\": 8080}, {\"name\": \"metrics\", \"port\": 9090, \"targetPort\": 9090}, {\"name\": \"service-metrics\", \"port\": 9091, \"targetPort\": 9091}] and .[0].spec.selector[\"app.kubernetes.io/controller\"] == \"main\""
 check "creates no Secrets" "[\$docs[] | select(.kind == \"Secret\")] | length == 0"
 
 # --- defaults set no policy -------------------------------------------------
@@ -186,7 +187,7 @@ check "Secret mounts project only the keys the server reads (a CA Secret's priva
 check "server sets the OIDC issuer and audience" \
 	"$(env_value "$server" VAULT_SYNC_OIDC_ISSUER_URL) == \"https://auth.example.com/application/o/vault-sync/\" and $(env_value "$server" VAULT_SYNC_OIDC_AUDIENCE) == \"vault-sync\""
 check "server listens where its ports and probes point" \
-	"$(env_value "$server" VAULT_SYNC_LISTEN_ADDRESS) == \":8080\" and $(env_value "$server" VAULT_SYNC_METRICS_LISTEN_ADDRESS) == \":9090\" and ($server | .containers[0].readinessProbe.httpGet) == {\"path\": \"/readyz\", \"port\": \"metrics\"} and ($server | .containers[0].livenessProbe.httpGet) == {\"path\": \"/healthz\", \"port\": \"metrics\"}"
+	"$(env_value "$server" VAULT_SYNC_LISTEN_ADDRESS) == \":8080\" and $(env_value "$server" VAULT_SYNC_METRICS_LISTEN_ADDRESS) == \":9090\" and $(env_value "$server" VAULT_SYNC_SERVICE_METRICS_LISTEN_ADDRESS) == \":9091\" and ($server | .containers[0].ports | map({name, containerPort}) | sort_by(.containerPort)) == [{\"name\": \"http\", \"containerPort\": 8080}, {\"name\": \"metrics\", \"containerPort\": 9090}, {\"name\": \"service-metrics\", \"containerPort\": 9091}] and ($server | .containers[0].readinessProbe.httpGet) == {\"path\": \"/readyz\", \"port\": \"metrics\"} and ($server | .containers[0].livenessProbe.httpGet) == {\"path\": \"/healthz\", \"port\": \"metrics\"}"
 check "export reads the database and S3 credentials from their Secrets" \
 	"$(env_value "$export_pod" VAULT_SYNC_DATABASE_TLS_CERT_FILE) == \"/etc/vault-sync/export-database-client-cert/tls.crt\" and $(mounted_secret "$export_pod" /etc/vault-sync/export-database-client-cert) == \"vault-sync-database-client\" and $(mounted_secret "$export_pod" /etc/vault-sync/export-s3-credentials) == \"vault-sync-bucket\" and $(mounted_secret "$export_pod" /etc/vault-sync/database-ca) == \"postgres-ca\" and $(env_value "$export_pod" VAULT_SYNC_S3_BUCKET) == \"vault-sync\""
 check "export writes to its volume" \
@@ -309,8 +310,15 @@ check "a caller's spread constraint renders exactly as given" \
 # --- ServiceMonitor, ingress and route --------------------------------------
 
 render --set config.server.metrics.serviceMonitor.enabled=true
-check "an enabled ServiceMonitor scrapes /metrics on port metrics of the Service" \
-	"$service_monitors | length == 1 and .[0].spec.endpoints[0].port == \"metrics\" and .[0].spec.endpoints[0].path == \"/metrics\" and .[0].spec.selector.matchLabels[\"app.kubernetes.io/service\"] == \"vault-sync\""
+check "an enabled ServiceMonitor scrapes only /metrics on port metrics of the Service" \
+	"$service_monitors | length == 1 and (.[0].spec.endpoints | length) == 1 and .[0].spec.endpoints[0].port == \"metrics\" and .[0].spec.endpoints[0].path == \"/metrics\" and .[0].spec.selector.matchLabels[\"app.kubernetes.io/service\"] == \"vault-sync\""
+
+render --set config.server.metrics.serviceMonitor.enabled=true --set config.server.metrics.serviceWide.enabled=true \
+	--set config.server.metrics.serviceMonitor.interval=2m --set config.server.metrics.serviceMonitor.scrapeTimeout=20s
+check "serviceWide.enabled adds a second endpoint scraping /metrics on port service-metrics" \
+	"$service_monitors | length == 1 and (.[0].spec.endpoints | map({port, path, interval, scrapeTimeout}) | sort_by(.port)) == [{\"port\": \"metrics\", \"path\": \"/metrics\", \"interval\": \"2m\", \"scrapeTimeout\": \"20s\"}, {\"port\": \"service-metrics\", \"path\": \"/metrics\", \"interval\": \"2m\", \"scrapeTimeout\": \"20s\"}]"
+rejects "serviceWide.enabled without a ServiceMonitor fails" "config.server.metrics.serviceWide.enabled needs config.server.metrics.serviceMonitor.enabled" \
+	--set config.server.metrics.serviceWide.enabled=true
 
 if render --set resources.ingress.main.hosts[0].host=sync.example.com --set resources.ingress.main.hosts[0].paths[0].path=/; then
 	check "a plain ingress routes to port http without naming a Service" \
@@ -339,6 +347,7 @@ rejects "the schema rejects an unknown config key" "additional properties 'force
 rejects "the schema rejects a wrong type" "/config/server/blob/maxSizeBytes" --set config.server.blob.maxSizeBytes=big
 rejects "the schema rejects a string boolean" "/config/s3/forcePathStyle" --set-string config.s3.forcePathStyle=true
 rejects "the schema rejects a bad duration" "does not match pattern" --set config.server.writeTimeout=soon
+rejects "the schema rejects a string serviceWide.enabled" "/config/server/metrics/serviceWide/enabled" --set-string config.server.metrics.serviceWide.enabled=true
 rejects "the schema rejects an unknown log level" "/config/logLevel" --set config.logLevel=verbose
 if render --set config.server.writeTimeout=1h30m --set config.server.blob.maxSizeBytes=1073741824 --set config.s3.forcePathStyle=false; then
 	pass "the schema accepts typed values"
