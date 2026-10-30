@@ -1,0 +1,124 @@
+{{/* The PrometheusRule (config.alerts.prometheusRule.enabled), rendered from
+   the packaged rule file alerts/vault-sync.rules.yaml (docs/alerts.md). */}}
+{{- $alerts := .Values.config.alerts | default dict -}}
+{{- $prometheusRule := $alerts.prometheusRule | default dict -}}
+{{- $overrides := $alerts.rules | default dict -}}
+{{- $file := .Files.Get "alerts/vault-sync.rules.yaml" | fromYaml -}}
+
+{{/* Every override must name a packaged alert, so a typo fails the render
+   instead of being ignored. */}}
+{{- $known := dict -}}
+{{- range $group := $file.groups -}}
+  {{- range $rule := $group.rules -}}
+    {{- $_ := set $known $rule.alert true -}}
+  {{- end -}}
+{{- end -}}
+{{- range $name, $_ := $overrides -}}
+  {{- if not (hasKey $known $name) -}}
+    {{- fail (printf "config.alerts.rules.%s: no such alert (see docs/alerts.md)" $name) -}}
+  {{- end -}}
+{{- end -}}
+
+{{- if $prometheusRule.enabled -}}
+{{/* The server's resource name, as common.yaml names it: the release name
+   unless global.fullnameOverride or global.nameOverride say otherwise. */}}
+{{- $global := .Values.global | default dict -}}
+{{- $fullname := .Release.Name -}}
+{{- if $global.fullnameOverride -}}
+  {{- $fullname = $global.fullnameOverride -}}
+{{- else if and $global.nameOverride (not (contains $global.nameOverride .Release.Name)) -}}
+  {{- $fullname = printf "%s-%s" .Release.Name $global.nameOverride -}}
+{{- end -}}
+{{- $fullname = $fullname | trunc 63 | trimSuffix "-" -}}
+
+{{/* Matchers: null uses this release's namespace and Service name (the
+   ServiceMonitor's job label); "" leaves the matcher out. */}}
+{{- $selector := $prometheusRule.selector | default dict -}}
+{{- $namespace := $selector.namespace -}}
+{{- if kindIs "invalid" $namespace -}}
+  {{- $namespace = .Release.Namespace -}}
+{{- end -}}
+{{- $job := $selector.job -}}
+{{- if kindIs "invalid" $job -}}
+  {{- $job = $fullname -}}
+{{- end -}}
+{{- $matchers := "" -}}
+{{- $ksmMatchers := printf "deployment=%q, " $fullname -}}
+{{- if $namespace -}}
+  {{- $matchers = printf "%snamespace=%q, " $matchers $namespace -}}
+  {{- $ksmMatchers = printf "%snamespace=%q, " $ksmMatchers $namespace -}}
+{{- end -}}
+{{- if $job -}}
+  {{- $matchers = printf "%sjob=%q, " $matchers $job -}}
+{{- end -}}
+
+{{- $runbookBase := $alerts.runbookUrlBase | default "" -}}
+{{- $groups := list -}}
+{{- range $group := $file.groups -}}
+  {{- $rules := list -}}
+  {{- range $rule := $group.rules -}}
+    {{- $override := index $overrides $rule.alert | default dict -}}
+    {{- $enabled := true -}}
+    {{- if eq ($rule.requires | default "") "kube-state-metrics" -}}
+      {{- $enabled = false -}}
+    {{- else if eq ($rule.requires | default "") "export" -}}
+      {{- $enabled = $.Values.config.export.enabled | default false -}}
+    {{- end -}}
+    {{- if hasKey $override "enabled" -}}
+      {{- $enabled = $override.enabled -}}
+    {{- end -}}
+    {{- if $enabled -}}
+      {{- $threshold := $rule.threshold -}}
+      {{- if hasKey $override "threshold" -}}
+        {{- $threshold = $override.threshold -}}
+      {{- end -}}
+      {{- $expr := $rule.expr | replace "__KSM_SELECTOR__" $ksmMatchers | replace "__SELECTOR__" $matchers -}}
+      {{- if not (kindIs "invalid" $threshold) -}}
+        {{- $expr = $expr | replace "__THRESHOLD__" (toString $threshold) -}}
+      {{- end -}}
+      {{- if contains "__THRESHOLD__" $expr -}}
+        {{- fail (printf "alert %s has no threshold" $rule.alert) -}}
+      {{- end -}}
+      {{- $annotations := mustDeepCopy ($rule.annotations | default dict) -}}
+      {{- if $runbookBase -}}
+        {{- $_ := set $annotations "runbook_url" (printf "%s#%s" $runbookBase (lower $rule.alert)) -}}
+      {{- end -}}
+      {{- $labels := mustDeepCopy ($rule.labels | default dict) -}}
+      {{- with $override.severity -}}
+        {{- $_ := set $labels "severity" . -}}
+      {{- end -}}
+      {{- $rules = append $rules (dict
+        "alert" $rule.alert
+        "expr" $expr
+        "for" ($override.for | default $rule.for)
+        "labels" $labels
+        "annotations" $annotations
+      ) -}}
+    {{- end -}}
+  {{- end -}}
+  {{- if $rules -}}
+    {{- $groups = append $groups (dict "name" $group.name "rules" $rules) -}}
+  {{- end -}}
+{{- end -}}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ $fullname }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- $labels := dict
+      "app.kubernetes.io/name" .Chart.Name
+      "app.kubernetes.io/instance" .Release.Name
+      "app.kubernetes.io/managed-by" .Release.Service
+      "helm.sh/chart" (printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_")
+    }}
+    {{- toYaml (mustMergeOverwrite $labels ($prometheusRule.labels | default dict)) | nindent 4 }}
+  {{- with $prometheusRule.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  groups:
+    {{- toYaml $groups | nindent 4 }}
+{{- end }}

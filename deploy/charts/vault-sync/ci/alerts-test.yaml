@@ -1,0 +1,411 @@
+# promtool unit tests for alerts/vault-sync.rules.yaml (scripts/chart_test.sh,
+# make chart-lint). They run against the PrometheusRule the chart renders
+# with every alert enabled, an empty selector (series need no namespace or
+# job label) and the annotations removed, written to rules.yaml beside this
+# file. Every alert has a test that fires on a synthetic series and one that
+# stays quiet on a healthy one.
+rule_files:
+  - rules.yaml
+evaluation_interval: 1m
+
+tests:
+  # --- availability ---------------------------------------------------------
+  - name: VaultSyncNoReplicaReady fires with no available replica
+    interval: 1m
+    input_series:
+      - series: kube_deployment_status_replicas_available{namespace="sync", deployment="vault-sync"}
+        values: 0x10
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: VaultSyncNoReplicaReady
+        exp_alerts:
+          - exp_labels: {severity: critical}
+  - name: VaultSyncNoReplicaReady stays quiet with a ready replica (another Deployment's outage does not count)
+    interval: 1m
+    input_series:
+      - series: kube_deployment_status_replicas_available{namespace="sync", deployment="vault-sync"}
+        values: 1x10
+      - series: kube_deployment_status_replicas_available{namespace="sync", deployment="other"}
+        values: 0x10
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: VaultSyncNoReplicaReady
+        exp_alerts: []
+
+  - name: VaultSyncReplicasUnavailable fires with fewer available replicas than desired
+    interval: 1m
+    input_series:
+      - series: kube_deployment_spec_replicas{namespace="sync", deployment="vault-sync"}
+        values: 3x20
+      - series: kube_deployment_status_replicas_available{namespace="sync", deployment="vault-sync"}
+        values: 2x20
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: VaultSyncReplicasUnavailable
+        exp_alerts:
+          - exp_labels: {severity: warning}
+  - name: VaultSyncReplicasUnavailable stays quiet with every replica available
+    interval: 1m
+    input_series:
+      - series: kube_deployment_spec_replicas{namespace="sync", deployment="vault-sync"}
+        values: 3x20
+      - series: kube_deployment_status_replicas_available{namespace="sync", deployment="vault-sync"}
+        values: 3x20
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: VaultSyncReplicasUnavailable
+        exp_alerts: []
+
+  - name: VaultSyncRPCErrorRatioHigh fires on 9% server errors
+    interval: 1m
+    input_series:
+      - series: vault_sync_rpc_requests_total{instance="a", procedure="/vaultsync.v1.SyncService/ListChanges", code="ok"}
+        values: 0+100x30
+      - series: vault_sync_rpc_requests_total{instance="a", procedure="/vaultsync.v1.SyncService/ListChanges", code="internal"}
+        values: 0+10x30
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: VaultSyncRPCErrorRatioHigh
+        exp_alerts:
+          - exp_labels: {severity: critical}
+  - name: VaultSyncRPCErrorRatioHigh stays quiet on 1% server errors and many client errors
+    interval: 1m
+    input_series:
+      - series: vault_sync_rpc_requests_total{instance="a", procedure="/vaultsync.v1.SyncService/ListChanges", code="ok"}
+        values: 0+100x30
+      - series: vault_sync_rpc_requests_total{instance="a", procedure="/vaultsync.v1.SyncService/ListChanges", code="internal"}
+        values: 0+1x30
+      - series: vault_sync_rpc_requests_total{instance="a", procedure="/vaultsync.v1.SyncService/GetRevision", code="not_found"}
+        values: 0+50x30
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: VaultSyncRPCErrorRatioHigh
+        exp_alerts: []
+
+  - name: VaultSyncSyncLatencyHigh fires on a slow sync RPC
+    interval: 1m
+    input_series:
+      - series: vault_sync_rpc_request_duration_seconds_bucket{instance="a", procedure="/vaultsync.v1.SyncService/ListChanges", code="ok", le="0.5"}
+        values: 0x30
+      - series: vault_sync_rpc_request_duration_seconds_bucket{instance="a", procedure="/vaultsync.v1.SyncService/ListChanges", code="ok", le="5"}
+        values: 0+10x30
+      - series: vault_sync_rpc_request_duration_seconds_bucket{instance="a", procedure="/vaultsync.v1.SyncService/ListChanges", code="ok", le="+Inf"}
+        values: 0+10x30
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: VaultSyncSyncLatencyHigh
+        exp_alerts:
+          - exp_labels: {severity: warning}
+  - name: VaultSyncSyncLatencyHigh stays quiet on fast sync RPCs and a slow blob commit
+    interval: 1m
+    input_series:
+      - series: vault_sync_rpc_request_duration_seconds_bucket{instance="a", procedure="/vaultsync.v1.SyncService/ListChanges", code="ok", le="0.5"}
+        values: 0+10x30
+      - series: vault_sync_rpc_request_duration_seconds_bucket{instance="a", procedure="/vaultsync.v1.SyncService/ListChanges", code="ok", le="5"}
+        values: 0+10x30
+      - series: vault_sync_rpc_request_duration_seconds_bucket{instance="a", procedure="/vaultsync.v1.SyncService/ListChanges", code="ok", le="+Inf"}
+        values: 0+10x30
+      - series: vault_sync_rpc_request_duration_seconds_bucket{instance="a", procedure="/vaultsync.v1.BlobService/CommitBlob", code="ok", le="0.5"}
+        values: 0x30
+      - series: vault_sync_rpc_request_duration_seconds_bucket{instance="a", procedure="/vaultsync.v1.BlobService/CommitBlob", code="ok", le="5"}
+        values: 0x30
+      - series: vault_sync_rpc_request_duration_seconds_bucket{instance="a", procedure="/vaultsync.v1.BlobService/CommitBlob", code="ok", le="+Inf"}
+        values: 0+100x30
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: VaultSyncSyncLatencyHigh
+        exp_alerts: []
+
+  - name: VaultSyncRealtimeListenerDown fires for the replica whose listener is down
+    interval: 1m
+    input_series:
+      - series: vault_sync_realtime_listener_up{instance="a"}
+        values: 0x10
+      - series: vault_sync_realtime_listener_up{instance="b"}
+        values: 1x10
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: VaultSyncRealtimeListenerDown
+        exp_alerts:
+          - exp_labels: {severity: warning, instance: a}
+  - name: VaultSyncRealtimeListenerDown stays quiet through a short reconnect
+    interval: 1m
+    input_series:
+      - series: vault_sync_realtime_listener_up{instance="a"}
+        values: 1x5 0x3 1x5
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: VaultSyncRealtimeListenerDown
+        exp_alerts: []
+
+  - name: VaultSyncConcurrencyRejections fires on sustained rejections
+    interval: 1m
+    input_series:
+      - series: vault_sync_rpc_concurrency_rejections_total{instance="a", procedure="/vaultsync.v1.SyncService/ListChanges"}
+        values: 0+5x60
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: VaultSyncConcurrencyRejections
+        exp_alerts:
+          - exp_labels: {severity: warning}
+  - name: VaultSyncConcurrencyRejections stays quiet after a short burst
+    interval: 1m
+    input_series:
+      - series: vault_sync_rpc_concurrency_rejections_total{instance="a", procedure="/vaultsync.v1.SyncService/ListChanges"}
+        values: 0x10 5x50
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: VaultSyncConcurrencyRejections
+        exp_alerts: []
+
+  - name: VaultSyncRealtimeRefusals fires on sustained limit refusals
+    interval: 1m
+    input_series:
+      - series: vault_sync_realtime_refused_upgrades_total{instance="a", reason="user_limit"}
+        values: 0+2x60
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: VaultSyncRealtimeRefusals
+        exp_alerts:
+          - exp_labels: {severity: warning}
+  - name: VaultSyncRealtimeRefusals stays quiet on refusals that are not limits
+    interval: 1m
+    input_series:
+      - series: vault_sync_realtime_refused_upgrades_total{instance="a", reason="origin"}
+        values: 0+5x60
+      - series: vault_sync_realtime_refused_upgrades_total{instance="a", reason="unauthenticated"}
+        values: 0+5x60
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: VaultSyncRealtimeRefusals
+        exp_alerts: []
+
+  # --- dependencies ---------------------------------------------------------
+  - name: VaultSyncDatabasePoolExhausted fires with acquires waiting and no idle connection
+    interval: 1m
+    input_series:
+      - series: vault_sync_db_pool_waiting_acquires{instance="a"}
+        values: 3x15
+      - series: vault_sync_db_pool_idle_connections{instance="a"}
+        values: 0x15
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: VaultSyncDatabasePoolExhausted
+        exp_alerts:
+          - exp_labels: {severity: warning, instance: a}
+  - name: VaultSyncDatabasePoolExhausted stays quiet with idle connections
+    interval: 1m
+    input_series:
+      - series: vault_sync_db_pool_waiting_acquires{instance="a"}
+        values: 3x15
+      - series: vault_sync_db_pool_idle_connections{instance="a"}
+        values: 2x15
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: VaultSyncDatabasePoolExhausted
+        exp_alerts: []
+
+  - name: VaultSyncS3ErrorRatioHigh fires on 9% failed S3 operations
+    interval: 1m
+    input_series:
+      - series: vault_sync_s3_requests_total{instance="a", operation="PutObject", outcome="ok"}
+        values: 0+100x30
+      - series: vault_sync_s3_requests_total{instance="a", operation="PutObject", outcome="error"}
+        values: 0+10x30
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: VaultSyncS3ErrorRatioHigh
+        exp_alerts:
+          - exp_labels: {severity: critical}
+  - name: VaultSyncS3ErrorRatioHigh stays quiet on few errors and many not_found
+    interval: 1m
+    input_series:
+      - series: vault_sync_s3_requests_total{instance="a", operation="PutObject", outcome="ok"}
+        values: 0+100x30
+      - series: vault_sync_s3_requests_total{instance="a", operation="PutObject", outcome="error"}
+        values: 0+1x30
+      - series: vault_sync_s3_requests_total{instance="a", operation="DeleteObject", outcome="not_found"}
+        values: 0+50x30
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: VaultSyncS3ErrorRatioHigh
+        exp_alerts: []
+
+  - name: VaultSyncOIDCKeyRefreshFailing fires on failures with old keys
+    interval: 1m
+    input_series:
+      - series: vault_sync_oidc_jwks_refresh_failures_total{instance="a"}
+        values: 0+1x30
+      - series: vault_sync_oidc_jwks_age_seconds{instance="a"}
+        values: 7300+60x30
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: VaultSyncOIDCKeyRefreshFailing
+        exp_alerts:
+          - exp_labels: {severity: warning, instance: a}
+  - name: VaultSyncOIDCKeyRefreshFailing stays quiet on failures with fresh keys, or old keys without failures
+    interval: 1m
+    input_series:
+      - series: vault_sync_oidc_jwks_refresh_failures_total{instance="a"}
+        values: 0+1x30
+      - series: vault_sync_oidc_jwks_age_seconds{instance="a"}
+        values: 300+60x30
+      - series: vault_sync_oidc_jwks_refresh_failures_total{instance="b"}
+        values: 0x30
+      - series: vault_sync_oidc_jwks_age_seconds{instance="b"}
+        values: 7300+60x30
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: VaultSyncOIDCKeyRefreshFailing
+        exp_alerts: []
+
+  # --- data safety and backlog ---------------------------------------------
+  # promtool's clock starts at the Unix epoch, so a timestamp series equal to
+  # the elapsed seconds is "just now" and a constant 0 is "never".
+  - name: VaultSyncRetentionNotSucceeding fires when no run has succeeded for 4 hours
+    interval: 1m
+    input_series:
+      - series: vault_sync_service_retention_last_success_timestamp_seconds{instance="a"}
+        values: 0x240
+      - series: vault_sync_service_retention_last_success_timestamp_seconds{instance="b"}
+        values: 0x240
+    alert_rule_test:
+      - eval_time: 4h
+        alertname: VaultSyncRetentionNotSucceeding
+        exp_alerts:
+          - exp_labels: {severity: warning}
+  - name: VaultSyncRetentionNotSucceeding stays quiet with hourly runs
+    interval: 1m
+    input_series:
+      - series: vault_sync_service_retention_last_success_timestamp_seconds{instance="a"}
+        values: 0x59 3600x59 7200x59 10800x59 14400
+    alert_rule_test:
+      - eval_time: 4h
+        alertname: VaultSyncRetentionNotSucceeding
+        exp_alerts: []
+
+  - name: VaultSyncExportNotSucceeding fires when no export has succeeded for 40 hours
+    interval: 1m
+    input_series:
+      - series: vault_sync_service_export_last_success_timestamp_seconds{instance="a"}
+        values: 0x2400
+    alert_rule_test:
+      - eval_time: 40h
+        alertname: VaultSyncExportNotSucceeding
+        exp_alerts:
+          - exp_labels: {severity: warning}
+  - name: VaultSyncExportNotSucceeding stays quiet with a daily export
+    interval: 1m
+    input_series:
+      - series: vault_sync_service_export_last_success_timestamp_seconds{instance="a"}
+        values: 0x1439 86400x961
+    alert_rule_test:
+      - eval_time: 40h
+        alertname: VaultSyncExportNotSucceeding
+        exp_alerts: []
+
+  - name: VaultSyncUploadSessionsNotExpiring fires on a 50 hour old upload session
+    interval: 1m
+    input_series:
+      - series: vault_sync_service_upload_session_oldest_age_seconds{instance="a"}
+        values: 180000+60x90
+    alert_rule_test:
+      - eval_time: 90m
+        alertname: VaultSyncUploadSessionsNotExpiring
+        exp_alerts:
+          - exp_labels: {severity: warning}
+  - name: VaultSyncUploadSessionsNotExpiring stays quiet on sessions within the TTL
+    interval: 1m
+    input_series:
+      - series: vault_sync_service_upload_session_oldest_age_seconds{instance="a"}
+        values: 3600+60x90
+    alert_rule_test:
+      - eval_time: 90m
+        alertname: VaultSyncUploadSessionsNotExpiring
+        exp_alerts: []
+
+  - name: VaultSyncBlobGCStalled fires when pending blobs are never collected
+    interval: 1m
+    input_series:
+      - series: vault_sync_service_gc_pending_blobs{instance="a"}
+        values: 5x1560
+      - series: vault_sync_retention_blobs_collected_total{instance="a"}
+        values: 0x1560
+    alert_rule_test:
+      - eval_time: 26h
+        alertname: VaultSyncBlobGCStalled
+        exp_alerts:
+          - exp_labels: {severity: warning}
+  - name: VaultSyncBlobGCStalled stays quiet while blobs are collected
+    interval: 1m
+    input_series:
+      - series: vault_sync_service_gc_pending_blobs{instance="a"}
+        values: 5x1560
+      - series: vault_sync_retention_blobs_collected_total{instance="a"}
+        values: 0+1x1560
+    alert_rule_test:
+      - eval_time: 26h
+        alertname: VaultSyncBlobGCStalled
+        exp_alerts: []
+
+  - name: VaultSyncRekeyBacklogNotShrinking fires on a backlog unchanged for a day
+    interval: 1m
+    input_series:
+      - series: vault_sync_service_stale_epoch_revisions{instance="a"}
+        values: 100x1560
+    alert_rule_test:
+      - eval_time: 26h
+        alertname: VaultSyncRekeyBacklogNotShrinking
+        exp_alerts:
+          - exp_labels: {severity: warning}
+  - name: VaultSyncRekeyBacklogNotShrinking stays quiet on a shrinking backlog
+    interval: 1m
+    input_series:
+      - series: vault_sync_service_stale_epoch_revisions{instance="a"}
+        values: 2000-1x1560
+    alert_rule_test:
+      - eval_time: 26h
+        alertname: VaultSyncRekeyBacklogNotShrinking
+        exp_alerts: []
+
+  - name: VaultSyncEscrowRewrapStuck fires on re-wrap slots unchanged for two days
+    interval: 1m
+    input_series:
+      - series: vault_sync_service_escrow_rewrap_slots{instance="a"}
+        values: 7x3000
+    alert_rule_test:
+      - eval_time: 50h
+        alertname: VaultSyncEscrowRewrapStuck
+        exp_alerts:
+          - exp_labels: {severity: warning}
+  - name: VaultSyncEscrowRewrapStuck stays quiet on a shrinking or empty backlog
+    interval: 1m
+    input_series:
+      - series: vault_sync_service_escrow_rewrap_slots{instance="a"}
+        values: 7x1440 3x1560
+    alert_rule_test:
+      - eval_time: 50h
+        alertname: VaultSyncEscrowRewrapStuck
+        exp_alerts: []
+
+  - name: VaultSyncServiceMetricsStale fires when no replica refreshed for 25 minutes
+    interval: 1m
+    input_series:
+      - series: vault_sync_service_metrics_last_refresh_success_timestamp_seconds{instance="a"}
+        values: 0x25
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: VaultSyncServiceMetricsStale
+        exp_alerts:
+          - exp_labels: {severity: warning}
+  - name: VaultSyncServiceMetricsStale stays quiet while one replica refreshes
+    interval: 1m
+    input_series:
+      - series: vault_sync_service_metrics_last_refresh_success_timestamp_seconds{instance="a"}
+        values: 0x25
+      - series: vault_sync_service_metrics_last_refresh_success_timestamp_seconds{instance="b"}
+        values: 0+60x25
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: VaultSyncServiceMetricsStale
+        exp_alerts: []
