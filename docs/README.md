@@ -82,9 +82,33 @@ docs/dev/
 
 docs/design/               Unchanged location. The design of the engine, sharing and encryption.
                            For developers and agents.
+  engine.md                The sync engine: its rules and the decision table.
+  engine-situations.md     The sync situations to test, and the tests that cover them.
+  sharing.md               Vault membership, invitations and roles.
+  encryption.md            End-to-end encryption: keys, epochs, escrow, the membership log.
+  crypto.md                The byte formats of the cipher suite.
+
 docs/testing/              Unchanged location. The test tiers and how to run them. For developers.
+  acceptance.md            How `make acceptance` finds and counts the acceptance tests.
+  integration.md           The integration tests against PostgreSQL and S3.
+  e2e.md                   The plugin e2e tests in a real Obsidian.
+  android.md               The checklist for each release on Android.
+  proto-compatibility.md   The protobuf compatibility check (`buf breaking`).
+
 docs/acceptance/           Unchanged location. The owner's acceptance checklists.
+  phase-2.md
+  phase-3.md
+  phase-4.md
+
 docs/agents/               Unchanged. For agents only.
+
+docs/plugin.md             Stubs for pages that moved (see "Moved pages and redirects" below).
+docs/encryption.md         Each one links to the new page or pages.
+docs/configuration.md
+docs/deployment.md
+docs/export.md
+docs/import.md
+docs/alerts.md
 ```
 
 `docs/design/` and `docs/testing/` stay where they are, unlike the first proposal, which moved them under `docs/dev/`. Code comments, protobuf comments (and so the generated code), `buf.yaml`, CI workflows, scripts, `CLAUDE.md` and the agent playbooks all cite these paths. Moving them would change generated code and many files, and would not help any reader. `docs/dev/README.md` links to them, so a developer finds them from `docs/dev/`.
@@ -117,6 +141,7 @@ A topic that matters to more than one reader appears on more than one page, at a
 - **Link down, don't repeat.** Say what this reader needs, then link "for more detail" to the next reader's page. User pages link to admin pages, admin pages to developer pages, developer pages to `SPEC.md` and `docs/design/`.
 - **Every fact has one home per reader.** A fact may appear on several readers' pages at different depths, but only once for each reader.
 - **Plain English.** Pages for users, admins and the owner follow SimpleEnglish (Plain mode). Developer pages use plain English too, but keep exact terms. Agent files are exempt.
+- **CI checks every page.** It fails when a relative link or anchor is broken, when a page under `docs/` is missing from the tree above, when a generated reference is out of date, or when a page has an em-dash, a "(decision" note with an issue number, or a "Why:" lead-in. It also reports the style of each changed page, but that report never fails the build. Run `make docs-check` to run the same checks.
 - **Reference tables are generated.** The tables of environment variables, metrics and chart values are generated from the code and the chart, and CI fails when they are out of date. Do not edit them by hand. Change the doc comment, the metric help text or the `values.yaml` comment instead. The alert runbooks are written by hand, with one heading per alert. Scripts read those headings, so keep their format.
 
 ## Glossaries
@@ -129,7 +154,7 @@ There is **one glossary per reader**: `docs/user/glossary.md`, `docs/admin/gloss
 - It keeps its section numbers. Code, tests and reviews cite them.
 - User and admin material moves out to the new pages. For example, the operations detail in §12 moves to the admin pages, and SPEC keeps the rules.
 - Server and client details that a test or a test vector already checks move next to the code. They go into the proto comments, the package docs or the test names. SPEC keeps the rule in one line and names the test. The migration map names the test for each section.
-- Decision history is deleted: the "(decision, #NNN)" notes, the issue numbers and the rejected alternatives. Git and the issues keep it. Only decisions that still bind move to `docs/dev/decisions.md`, each with its reason and the SPEC section it belongs to. The migration map lists them.
+- Decision history is deleted: the decision notes that cite an issue number, the other issue numbers and the rejected alternatives. Git and the issues keep it. Only decisions that still bind move to `docs/dev/decisions.md`, each with its reason and the SPEC section it belongs to. The migration map lists them.
 - A separate issue rewrites SPEC in plain English. It must not change any rule.
 
 ## Size

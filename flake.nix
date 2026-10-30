@@ -192,6 +192,9 @@
             pkgs.helm-docs
             pkgs.yq-go
             pkgs.prometheus.cli
+
+            # Link and anchor check for the Markdown docs (make docs-check).
+            pkgs.lychee
           ];
 
           # The loader comes from the same nixpkgs as the libraries, so that

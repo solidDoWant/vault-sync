@@ -35,6 +35,7 @@ jobs:
       code: ${{ steps.filter.outputs.code }}
       chart: ${{ steps.filter.outputs.chart }}
       npm: ${{ steps.filter.outputs.npm }}
+      docs: ${{ steps.filter.outputs.docs }}
       # Windows/macOS e2e on PRs only when plugin-side files change; always on master.
       desktop: ${{ github.event_name != 'pull_request' || steps.filter.outputs.desktop == 'true' }}
     steps:
@@ -63,6 +64,8 @@ jobs:
               - '{plugin/**,.github/**,nix/**,flake.*}'
             npm:
               - '{plugin/package.json,plugin/package-lock.json,scripts/npm-audit.sh}'
+            docs:
+              - '{**/*.md,scripts/docs/**}'
 
   # The test tiers run as parallel jobs (they used to be sequential steps of
   # one ~9 minute job). Everything runs inside the flake's dev shell so CI
@@ -153,6 +156,31 @@ jobs:
       - name: Build the server image (not pushed)
         if: needs.changes.outputs.code == 'true'
         run: nix develop -c make build-images
+
+  # The human-facing Markdown, when any Markdown (or the checks) change:
+  # links and anchors, agent-prose tells, the page index and the generated
+  # reference pages fail the job; the style report is advisory and only goes
+  # to the job summary.
+  docs:
+    needs: changes
+    if: needs.changes.outputs.docs == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The merge base with the PR's base branch, for the style report.
+          fetch-depth: 0
+      - uses: ./.github/actions/nix-dev-shell
+      - name: Links, agent prose and page index
+        run: nix develop -c make docs-check
+      - name: Generated reference pages are current
+        run: nix develop -c make check-generate-docs
+      - name: Style report (advisory)
+        if: always() && github.event_name == 'pull_request'
+        env:
+          BASE: origin/${{ github.base_ref }}
+        run: nix develop -c ./scripts/docs/style_report.sh "$BASE" >> "$GITHUB_STEP_SUMMARY"
 
   # npm advisories, only when the plugin's dependency manifests (or the check
   # itself) change. Fails only on fixable moderate+ advisories in dependencies
@@ -305,7 +333,7 @@ jobs:
   # still produce a passing `checks`; it fails if any tier failed or was
   # cancelled, and passes when they succeeded or were skipped by the filter.
   checks:
-    needs: [changes, test-guard, lint, unit, integration, integration-postgres14, plugin-e2e, release-artifacts, npm-audit]
+    needs: [changes, test-guard, lint, unit, integration, integration-postgres14, plugin-e2e, release-artifacts, npm-audit, docs]
     if: always()
     runs-on: ubuntu-latest
     steps:

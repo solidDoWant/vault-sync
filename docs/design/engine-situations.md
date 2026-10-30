@@ -136,7 +136,7 @@ Two rules decide many rows:
 | S7 | After the restore, the server's change count has grown past the device's old position | `restore-anchor.test.ts` | IN | The restore is still detected. |
 | S8 | After the restore, another device deletes a note whose newer version only this device had | `purged-cursor.test.ts`, `sim/restore-scenarios.ts` | IN | ? The device's version survives, as a conflict copy or a restored note. |
 | S9 | A restore and a history prune that look alike from the device | `purged-cursor.test.ts`, `sim/restore-scenarios.ts` | MOOT | Comes from the old cursor design. S1 and S2 cover what users can see. |
-| S10 | Online restore of the vault to an earlier point | — | OUT | No online restore. |
+| S10 | Online restore of the vault to an earlier point | none | OUT | No online restore. |
 
 ## 8. File names
 
@@ -191,7 +191,7 @@ Two rules decide many rows:
 | X9 | Selective sync scope: files outside it, and notes moved out of scope while edited locally | `deferred.test.ts`, `deferred-holder.test.ts`, `ghost-recreate-wait.test.ts` | IN | ? Not in the requirements. Local edits are never deleted. |
 | X10 | Several Obsidian vaults on one device | `e2e/journal.e2e.ts`, `e2e/smoke.e2e.ts` | IN | Each vault keeps its own sync state. |
 | X11 | Vault sharing: invites, roles, removing members, viewers who may not write or restore | `e2e/sharing.e2e.ts`, `sim/member-scenarios.ts`, `sim/regressions/simfault-viewer-write.md`, `history.test.ts` | OUT | Vault sharing. |
-| X12 | Encrypted (E2EE) vaults | — | OUT | E2EE. |
+| X12 | Encrypted (E2EE) vaults | none | OUT | E2EE. |
 | X13 | Old-engine internals: path claims, aliases, ghosts, deferral lists, stale feed pages, rules the device holds back reads by, forgetting acknowledged operations, journal read counts, bindings rules | `alias-scan.test.ts`, `claims.test.ts`, `decide.test.ts`, `ghost-recreate-order.test.ts`, `deferred-ghost-claim.test.ts`, `held-back-read.test.ts`, `forget-on-acknowledge.test.ts`, `journal-reads.test.ts`, `stale-page-holder.test.ts`, `merge-claim-displaced.test.ts`, `bound-tombstone*.test.ts`, `bound-file-busy-path.test.ts`, `pending-create-rename.test.ts` (id keeping) | MOOT | Old-engine design. |
 | X14 | Test-harness self-checks: harness vault, conformance and journal harnesses, the Dafny bundle, sim lint, shrink, lineage, stalled-engine reports, the `simfault` servers | `harness-vault.test.ts`, `memory-server.test.ts`, `e2e/conformance.e2e.ts`, `e2e/verified.e2e.ts`, `plugin/test/sim-*.test.ts`, `sim/*.test.ts` | MOOT | Old harness, and the proof and simulation bar is out of scope. The one real check here, that the server refuses stale commits, is covered by C3. |
 | X15 | Generated property suites (P1 to P10) | `properties.test.ts` | MOOT | They restate D1, K1, R3, R9 and S1 as properties of the old design. |

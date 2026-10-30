@@ -72,10 +72,10 @@ Grep for the old path (`grep -rn 'docs/<page>.md' --exclude-dir=node_modules .`)
 
 | Section | Class | Destination | Notes |
 |---|---|---|---|
-| [ ] Title and summary ("Self-hosted synchronization…") | keep | `README.md` (front door) | Rewrite as the front door: what it is, status, three links (Use it / Run a server / Work on the code). |
-| [ ] Status note | keep | `README.md` | Update to the real status (released versions exist; see `CHANGELOG.md`). The "nothing here is usable yet" text is out of date, so the old text is a delete. |
+| [x] Title and summary ("Self-hosted synchronization…") | keep | `README.md` (front door) | Rewrite as the front door: what it is, status, three links (Use it / Run a server / Work on the code). |
+| [x] Status note | keep | `README.md` | Update to the real status (released versions exist; see `CHANGELOG.md`). The "nothing here is usable yet" text is out of date, so the old text is a delete. |
 | [x] Development (dev shell, `make help`, git-flake rule) | keep | `dev/building.md` | Front door keeps one link. The git-flake rule also stays in `CLAUDE.md`. |
-| [ ] License | keep | `README.md` | stays |
+| [x] License | keep | `README.md` | stays |
 
 ## SPEC.md (21.4k W → target 7k)
 

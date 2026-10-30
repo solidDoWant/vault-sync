@@ -66,6 +66,14 @@ test-integration: $(PLUGIN_DIR)/node_modules/.package-lock.json ## Run integrati
 test-integration-postgres14: ## Run the store/migration integration tests and the rolling-upgrade test against PostgreSQL 14, the minimum supported version (docker compose; needs Docker).
 	./scripts/test-integration-postgres14.sh
 
+.PHONY: docs-check
+docs-check: ## Check the human-facing Markdown: links and anchors (lychee, offline), agent-prose tells, every docs/ page listed in docs/README.md.
+	./scripts/docs/check.sh
+
+.PHONY: docs-style-report
+docs-style-report: ## Print the advisory style counts (scripts/docs/ste_lint.py) for the human-facing pages changed since origin/master. Never fails.
+	./scripts/docs/style_report.sh
+
 .PHONY: docs-screenshots
 docs-screenshots: plugin-build ## Regenerate the settings-tab screenshots in docs/user/images/ with the plugin e2e harness (docker compose; needs Docker).
 	./scripts/docs-screenshots.sh
