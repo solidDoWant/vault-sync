@@ -4,8 +4,9 @@ import { describe, expect, it } from "vitest";
 import { deriveSubkey, seal } from "../e2ee/e2ee";
 import { contentAad } from "../e2ee/revision";
 import { sha256Hex } from "../hash";
+import { InMemoryServer } from "./memory-server";
 import { RemoteContentError } from "./remote";
-import { Device, containsBytes, encryptedServer } from "./testing";
+import { Device, type TestKeyring, containsBytes, encryptedServer } from "./testing";
 
 const encoder = new TextEncoder();
 
@@ -26,8 +27,39 @@ async function headOf(device: Device, path: string) {
   return head;
 }
 
+/**
+ * Two devices of one user on `server` make edits that merge (AC-11), edits
+ * that conflict (AC-12), a rename and a delete; resolves with both devices'
+ * files once they converged.
+ */
+async function editMergeConflictRenameDelete(server: InMemoryServer, keys: TestKeyring | undefined) {
+  let clock = Date.UTC(2026, 9, 30, 12, 0);
+  const encryption = keys === undefined ? {} : { keys };
+  const a = new Device(server, "device-a", { now: () => clock, userName: "Alice", ...encryption }, { now: () => clock });
+  const b = new Device(server, "device-b", { now: () => clock, userName: "Alice", ...encryption }, { now: () => clock });
+  await a.write("merged.md", "one\ntwo\nthree\n");
+  await a.write("conflicted.md", "one\ntwo\nthree\n");
+  await a.write("renamed.md", "kept content\n");
+  await a.write("deleted.md", "deleted content\n");
+  await a.sync();
+  await b.sync();
+
+  clock += 60_000;
+  await a.write("merged.md", "ONE\ntwo\nthree\n");
+  await a.write("conflicted.md", "ONE\ntwo\nthree\n");
+  await a.vault.rename("renamed.md", "moved.md");
+  await a.vault.delete("deleted.md");
+  await b.write("merged.md", "one\ntwo\nTHREE\n");
+  await b.write("conflicted.md", "uno\ntwo\nthree\n");
+  await a.sync();
+  clock += 60_000;
+  await b.sync();
+  await a.sync();
+  return { a: await a.files(), b: await b.files() };
+}
+
 describe("sync in an end-to-end encrypted vault", () => {
-  it("syncs notes, folders and edits between devices while the server holds only ciphertext", async () => {
+  it("[P4-01] syncs notes, folders and edits between devices while the server holds only ciphertext for contents and paths", async () => {
     const { server, a, b } = setup();
     await a.vault.createFolder("Secret folder");
     await a.write("Secret folder/Plan of the heist.md", "the vault code is 4815\n");
@@ -47,6 +79,29 @@ describe("sync in an end-to-end encrypted vault", () => {
     }
     // The server's copy decrypts to the devices' files.
     expect(server.liveFiles()).toEqual(new Map([["Secret folder/Plan of the heist.md", "the vault code is 1623\n"]]));
+  });
+
+  it("[P4-02] merges, makes conflict copies, renames and deletes between a user's devices exactly as in a plaintext vault", async () => {
+    const plaintext = await editMergeConflictRenameDelete(new InMemoryServer(), undefined);
+    const { server, keys } = encryptedServer();
+    const encrypted = await editMergeConflictRenameDelete(server, keys);
+
+    expect(encrypted.b).toEqual(encrypted.a);
+    expect(encrypted.a).toEqual(plaintext.a);
+    expect(new Map(Object.entries(encrypted.a))).toEqual(server.liveFiles());
+    // AC-11: the edits of different lines merge; AC-12: the edits of one line leave a conflict copy of the device whose commit lost.
+    expect(encrypted.a["merged.md"]).toBe("ONE\ntwo\nTHREE\n");
+    expect(encrypted.a["conflicted.md"]).toBe("ONE\ntwo\nthree\n");
+    const copies = Object.entries(encrypted.a).filter(([path]) => path !== "conflicted.md" && path.startsWith("conflicted"));
+    expect(copies.map(([, content]) => content)).toEqual(["uno\ntwo\nthree\n"]);
+    expect(encrypted.a["moved.md"]).toBe("kept content\n");
+    expect(Object.keys(encrypted.a)).not.toContain("renamed.md");
+    expect(Object.keys(encrypted.a)).not.toContain("deleted.md");
+
+    const stored = server.storedBytes();
+    for (const plaintextBytes of ["conflicted", "moved", "THREE", "uno"]) {
+      expect(containsBytes(stored, encoder.encode(plaintextBytes)), plaintextBytes).toBe(false);
+    }
   });
 
   it("syncs an attachment of a few MB arrives byte for byte through ranged transfers", async () => {

@@ -460,7 +460,7 @@ describe("invitations across an encrypted vault's epochs", () => {
     }
   });
 
-  it("lets a newcomer redeem with no other member online and read every epoch, one rotated after the invitation included", async () => {
+  it("[P4-05] lets a newcomer redeem with no other member online and read every epoch, one rotated after the invitation included", async () => {
     const { server, manager, context, redeemer, keyManager, epochKey } = await aliceVault();
     await rotate(server, manager);
     const created = await createEncryptedInvitation(
@@ -513,7 +513,7 @@ describe("invitations across an encrypted vault's epochs", () => {
     }
   });
 
-  it("yields no keys for a revoked or an expired code", async () => {
+  it("[P4-06] yields no keys for a revoked or an expired code", async () => {
     const { server, context, redeemer, keyManager, epochKey } = await aliceVault();
     const invite = async () => {
       const created = await createEncryptedInvitation(
