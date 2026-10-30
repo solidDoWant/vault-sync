@@ -10,7 +10,7 @@
  * the same @noble/* packages as the rest of this module; the Go
  * implementation (internal/e2ee) uses filippo.io/age.
  */
-import { MLKEM768X25519 } from "@noble/post-quantum/hybrid.js";
+import { ml_kem768_x25519 } from "@noble/post-quantum/hybrid.js";
 import { randomBytes } from "@noble/ciphers/utils.js";
 import { bech32 } from "@scure/base";
 import { Decrypter, Encrypter } from "age-encryption";
@@ -42,7 +42,7 @@ export function generateKeyPair(): { privateKey: Uint8Array; publicKey: Uint8Arr
 /** Returns the hybrid public key of a 32-byte private key. */
 export function publicKey(privateKey: Uint8Array): Uint8Array {
   requireLength("private key", privateKey, PRIVATE_KEY_SIZE);
-  return MLKEM768X25519.keygen(privateKey).publicKey;
+  return ml_kem768_x25519.keygen(privateKey).publicKey;
 }
 
 /** The age recipient string (age1pq1…) of a hybrid public key. */
