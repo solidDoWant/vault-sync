@@ -151,6 +151,25 @@ describe("sync in an end-to-end encrypted vault", () => {
     expect(await a.files()).toEqual({ "Library.base": merged });
   });
 
+  it("merges canvas edits from two devices, with no conflict copy", async () => {
+    const { a, b } = setup();
+    const canvas = '{"nodes":[{"id":"a","type":"text","text":"A","x":0,"y":0,"width":250,"height":60},{"id":"b","type":"text","text":"B","x":0,"y":100,"width":250,"height":60}],"edges":[]}';
+    await a.write("Board.canvas", canvas);
+    await a.sync();
+    await b.sync();
+    await a.write("Board.canvas", canvas.replace('"x":0,"y":0', '"x":40,"y":0'));
+    await a.sync();
+    await b.write("Board.canvas", canvas.replace('"text":"A",', '"text":"A","color":"4",'));
+    for (let round = 0; round < 3; round++) {
+      await a.sync();
+      await b.sync();
+    }
+    const merged = canvas.replace('"text":"A","x":0,"y":0', '"text":"A","x":40,"y":0,"color":"4"');
+    expect(Object.keys(await b.files())).toEqual(["Board.canvas"]);
+    expect(JSON.parse((await b.files())["Board.canvas"] ?? "")).toEqual(JSON.parse(merged));
+    expect(await a.files()).toEqual(await b.files());
+  });
+
   it("syncs an attachment of a few MB arrives byte for byte through ranged transfers", async () => {
     const { a, b } = setup({ maxDownloadBytes: 256 << 10, maxChunkBytes: 256 << 10 });
     const image = new Uint8Array(3 << 20);

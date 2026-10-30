@@ -11,18 +11,10 @@
 
 import { CORE_SCHEMA, dump, load } from "js-yaml";
 import { isMap, isValidBase, type YamlMap, type YamlValue } from "./bases-schema";
-
-/** A conflicting change: the merge falls back to the blob rule. */
-const conflict = Symbol("conflict");
-type Merged = YamlValue | undefined | typeof conflict;
+import { canonical, conflict, decide, equal, mergeMap, mergeMaps, mergeValue, type Merged, undecided, unionKeys } from "./tree-merge";
 
 const strictDecoder = new TextDecoder("utf-8", { fatal: true });
 const encoder = new TextEncoder();
-
-/** Whether `path` names a Bases file, merged by mergeBases. */
-export function isBasesPath(path: string): boolean {
-  return path.toLowerCase().endsWith(".base");
-}
 
 /**
  * Merges `local` and `remote`, two versions of a `.base` file derived from
@@ -66,54 +58,10 @@ function mergeView(base: Merged, local: Merged, remote: Merged): Merged {
   return mergeMaps(base, local, remote, (key, b, l, r) => (key === "filters" ? mergeFilter(b, l, r) : mergeValue(b, l, r)));
 }
 
-/** The merge when at most one side changed `base`, or both made the same change; undefined otherwise. */
-function trivial(base: Merged, local: Merged, remote: Merged): Merged | typeof absent | undefined {
-  if (equal(local, remote)) return local === undefined ? absent : local;
-  if (equal(base, local)) return remote === undefined ? absent : remote;
-  if (equal(base, remote)) return local === undefined ? absent : local;
-  return undefined;
-}
-
-/** A merged key that is absent: distinct from trivial's "not decided". */
-const absent = Symbol("absent");
-
-function settle(value: Merged | typeof absent): Merged {
-  return value === absent ? undefined : value;
-}
-
-function mergeValue(base: Merged, local: Merged, remote: Merged): Merged {
-  const decided = trivial(base, local, remote);
-  if (decided !== undefined) return settle(decided);
-  return mergeMaps(base, local, remote, (_key, b, l, r) => mergeValue(b, l, r));
-}
-
-type KeyMerge = (key: string, base: Merged, local: Merged, remote: Merged) => Merged;
-
-/** Both sides changed: maps on both sides merge per key (a missing base counting as empty); anything else conflicts. */
-function mergeMaps(base: Merged, local: Merged, remote: Merged, mergeKey: KeyMerge): Merged {
-  const decided = trivial(base, local, remote);
-  if (decided !== undefined) return settle(decided);
-  if (!isMap(local) || !isMap(remote)) return conflict;
-  if (base === undefined) return mergeMap({}, local, remote, mergeKey);
-  if (!isMap(base)) return conflict;
-  return mergeMap(base, local, remote, mergeKey);
-}
-
-/** Per key, in the order: the base's keys, then local additions, then remote additions. */
-function mergeMap(base: YamlMap, local: YamlMap, remote: YamlMap, mergeKey: KeyMerge): Merged {
-  const merged: YamlMap = {};
-  for (const key of unionKeys(base, local, remote)) {
-    const value = mergeKey(key, own(base, key), own(local, key), own(remote, key));
-    if (value === conflict) return conflict;
-    if (value !== undefined) merged[key] = value;
-  }
-  return merged;
-}
-
 /** Views match by name; without unique names on every side the list is one value. */
 function mergeViews(base: Merged, local: Merged, remote: Merged): Merged {
-  const decided = trivial(base, local, remote);
-  if (decided !== undefined) return settle(decided);
+  const decided = decide(base, local, remote);
+  if (decided !== undecided) return decided;
   const baseViews = base === undefined ? new Map<string, YamlValue>() : byName(base);
   const localViews = byName(local);
   const remoteViews = byName(remote);
@@ -159,8 +107,8 @@ function mergeOrder(base: string[], local: string[], remote: string[], merged: s
 
 /** `and`/`or` lists merge as sets; any other filter change is one value. */
 function mergeFilter(base: Merged, local: Merged, remote: Merged): Merged {
-  const decided = trivial(base, local, remote);
-  if (decided !== undefined) return settle(decided);
+  const decided = decide(base, local, remote);
+  if (decided !== undecided) return decided;
   const operator = setOperator(base, local, remote);
   if (operator === null) return conflict;
   const baseItems = (base as YamlMap)[operator] as YamlValue[];
@@ -192,39 +140,4 @@ function setOperator(...filters: Merged[]): "and" | "or" | null {
 
 function includes(items: YamlValue[], item: YamlValue): boolean {
   return items.some((candidate) => equal(candidate, item));
-}
-
-function own(map: YamlMap, key: string): YamlValue | undefined {
-  return Object.hasOwn(map, key) ? map[key] : undefined;
-}
-
-function unionKeys(...maps: (YamlMap | Map<string, unknown> | string[])[]): string[] {
-  const keys = new Set<string>();
-  for (const map of maps) {
-    const names = Array.isArray(map) ? map : map instanceof Map ? [...map.keys()] : Object.keys(map);
-    for (const name of names) keys.add(name);
-  }
-  return [...keys];
-}
-
-/** Deep equality: arrays in order, maps regardless of key order. */
-function equal(a: unknown, b: unknown): boolean {
-  if (a === b) return true;
-  if (Array.isArray(a) && Array.isArray(b)) return a.length === b.length && a.every((item, index) => equal(item, b[index]));
-  if (isMap(a) && isMap(b)) {
-    const keys = Object.keys(a);
-    return keys.length === Object.keys(b).length && keys.every((key) => Object.hasOwn(b, key) && equal(a[key], b[key]));
-  }
-  return false;
-}
-
-/** A key equal for equal values, maps regardless of key order. */
-function canonical(value: YamlValue): string {
-  return JSON.stringify(sortKeys(value));
-}
-
-function sortKeys(value: YamlValue): YamlValue {
-  if (Array.isArray(value)) return value.map(sortKeys);
-  if (!isMap(value)) return value;
-  return Object.fromEntries(Object.entries(value).sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)).map(([key, item]) => [key, sortKeys(item)]));
 }

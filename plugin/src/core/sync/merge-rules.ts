@@ -1,4 +1,4 @@
-import { isBasesPath, mergeBases } from "../merge/bases-merge";
+import { blobMergeFor, mergeBlob } from "../merge/file-merge";
 import { mergeText } from "../merge/text-merge";
 import type { SyncKind } from "./journal";
 
@@ -35,7 +35,8 @@ const encoder = new TextEncoder();
  * side unchanged from the base takes the remote content, as does a local
  * side equal to it. `TEXT` is merged three-way, and when that conflicts the
  * remote version stays at the path and the local one is the copy. `BLOB`:
- * a Bases (`.base`) file is first merged three-way (mergeBases); otherwise,
+ * a type with a merge strategy (`.base`, `.canvas`, `.json`, plain text) is
+ * first merged three-way (mergeBlob); otherwise,
  * or when that merge falls back, the newer side stays at the path, the
  * remote one on a tie, and the other is the copy.
  */
@@ -46,9 +47,9 @@ export async function mergeContent(sides: ContentSides): Promise<ContentOutcome>
   if (sides.remoteHash === sides.baseHash) return { content: sides.local, copy: null };
   const keepRemote: ContentOutcome = { content: sides.remote, copy: sides.local };
   if (sides.kind === "blob") {
-    if (isBasesPath(sides.path)) {
+    if (blobMergeFor(sides.path) !== null) {
       const base = await sides.base();
-      const merged = base === null ? null : mergeBases(base, sides.local, sides.remote);
+      const merged = base === null ? null : mergeBlob(sides.path, base, sides.local, sides.remote);
       if (merged !== null) return merged === sides.remote ? takeRemote : { content: merged, copy: null };
     }
     return sides.localTime > sides.remoteTime ? { content: sides.local, copy: sides.remote } : keepRemote;
