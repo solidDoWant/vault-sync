@@ -104,7 +104,7 @@ Your ingress or gateway must meet these needs:
 - **Do not limit request time below what the chart route sets.** The route allows 15 minutes for a request, because a `CommitBlob` response starts only after the server composes the whole blob. That can take up to 10 minutes (SPEC.md §6.2). The route sets no time limit for `/v1/realtime`, because the WebSocket stays open for a long time.
 - **Do not log the `Sec-WebSocket-Protocol` header.** It carries the access token. This applies to the WAF and to any proxy that logs request headers.
 - **Keep the CORS headers.** The server sends the CORS headers for the app origins of Obsidian itself. Do not remove them.
-- **Keep the WAF body limit.** If a WAF inspects request bodies, read [The WAF body limit](../deployment.md#the-waf-body-limit-istio-and-coraza).
+- **Keep the WAF body limit.** If a WAF inspects request bodies, read [Request size and the WAF](security.md#request-size-and-the-waf).
 
 The chart renders one Service. So the backend of an ingress resolves to the port `http` without the name of a Service:
 

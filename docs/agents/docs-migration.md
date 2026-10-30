@@ -118,7 +118,7 @@ SPEC keeps its section numbers and its rules. The SPEC readability issue applies
 | [ ] Signing in | 353 | keep | `user/getting-started.md`; device-grant detail to `dev/architecture.md` (sign-in) | "RFC 8628" is developer depth. User part done in `user/`; device-grant detail to `dev/architecture.md` is left for the developer docs. |
 | [x] When the session ends | 137 | keep | `user/troubleshooting.md` ("sign-in needed"); `user/getting-started.md` | |
 | [x] Connecting a vault | 382 | keep | `user/getting-started.md` | |
-| [ ] Sharing a vault | 1,236 | keep | `user/sharing.md`; member limit and roles also to `admin/security.md` | RPC names and error codes are a delete (pinned by `plugin/src/obsidian/sharing.test.ts`). User part done in `user/`; member limit and roles in `admin/security.md` are left for the admin docs. |
+| [x] Sharing a vault | 1,236 | keep | `user/sharing.md`; member limit and roles also to `admin/security.md` | RPC names and error codes are a delete (pinned by `plugin/src/obsidian/sharing.test.ts`). User part done in `user/`; member limit and roles in `admin/security.md` are left for the admin docs. Member limit and roles are in `admin/security.md`. |
 | [ ] Device registration | 249 | keep | `user/devices.md`; device id in `data.json` to `plugin/src/obsidian` module comment (move) | User part done in `user/`; the `data.json` device-id module comment is left. |
 | [x] Devices | 279 | keep | `user/devices.md` | |
 | [x] End-to-end encryption (setup, unlock, change passphrase) | 646 | keep | `user/encryption.md`; Argon2id parameters to `dev/` via `docs/design/crypto.md` link only | Follow the passphrase row of the depth table. |
@@ -148,10 +148,10 @@ SPEC keeps its section numbers and its rules. The SPEC readability issue applies
 | [x] For operators: the escrow key | 416 | keep | `admin/encryption.md` | Done: `admin/encryption.md`. |
 | [x] Losing your passphrase | 153 | keep | `user/encryption.md`; operator recovery steps to `admin/encryption.md` | User part done in `user/`; operator recovery steps left for `admin/encryption.md`. Done: `admin/encryption.md`. |
 | [x] Recovery with `age` | 272 | keep | `admin/encryption.md` (or `admin/backup-and-restore.md`, linked from both) | Done: `admin/encryption.md`. |
-| [ ] Threat model | 30 | keep | `admin/security.md`; short user version in `user/encryption.md` | User part done in `user/`; admin part left. |
-| [ ] A stolen copy of the database or the bucket | 144 | keep | `admin/security.md`; user version: "choose a long passphrase" | User part done in `user/`; admin part left. |
-| [ ] An actively malicious server | 490 | keep | `admin/security.md` (≈150 W: what it can and can't do) | Mechanism duplicates `docs/design/encryption.md` "Protection against an active server": delete the mechanism here. |
-| [ ] What encryption does not protect | 336 | keep | `admin/security.md`; `user/encryption.md` | Must stay visible to users. User part done in `user/`; admin part left. |
+| [x] Threat model | 30 | keep | `admin/security.md`; short user version in `user/encryption.md` | User part done in `user/`; admin part left. Admin part in `admin/security.md`. |
+| [x] A stolen copy of the database or the bucket | 144 | keep | `admin/security.md`; user version: "choose a long passphrase" | User part done in `user/`; admin part left. Admin part in `admin/security.md`. |
+| [x] An actively malicious server | 490 | keep | `admin/security.md` (≈150 W: what it can and can't do) | Mechanism duplicates `docs/design/encryption.md` "Protection against an active server": delete the mechanism here. Done: `admin/security.md`, mechanism deleted. |
+| [x] What encryption does not protect | 336 | keep | `admin/security.md`; `user/encryption.md` | Must stay visible to users. User part done in `user/`; admin part left. Admin part in `admin/security.md`. |
 
 ## docs/configuration.md → admin (9.9k W)
 
@@ -159,15 +159,15 @@ SPEC keeps its section numbers and its rules. The SPEC readability issue applies
 |---|---|---|---|---|
 | [ ] Intro (env-only config, validation, exit status) | 88 | keep | `admin/configuration.md`; failure messages to `admin/troubleshooting.md` | The intro is in `admin/configuration.md`; the failure messages stay here for `admin/troubleshooting.md`. |
 | [x] Environment variables (table) | 2,884 | generate | `admin/configuration-reference.md` (generated) | See Generators. Descriptions move into the constants' doc comments first; `admin/configuration.md` keeps only the grouped concepts below. |
-| [ ] Authentication | 437 | keep | `admin/identity-provider.md`; token checks to `admin/security.md` | Provider requirements are in `admin/identity-provider.md`; the token checks stay here for `admin/security.md`. |
-| [ ] Authorization | 1,004 | keep | `admin/security.md` (≈300 W) | Per-procedure role lists duplicate SPEC §9.2 and the proto comments: delete. |
-| [ ] Blob storage | 404 | keep | `admin/postgresql-and-s3.md`; size and chunk limits to `admin/security.md` (limits) | The layout, permissions and cleanup are in `admin/postgresql-and-s3.md`; the size and chunk limits stay here for `admin/security.md`. |
+| [x] Authentication | 437 | keep | `admin/identity-provider.md`; token checks to `admin/security.md` | Provider requirements are in `admin/identity-provider.md`; the token checks stay here for `admin/security.md`. Token checks are in `admin/security.md`. |
+| [ ] Authorization | 1,004 | keep | `admin/security.md` (≈300 W) | Per-procedure role lists duplicate SPEC §9.2 and the proto comments: delete. The operator view (no bypass, errors, limits) is in `admin/security.md`; the per-procedure lists and device and key details are left to delete with the stubs. |
+| [x] Blob storage | 404 | keep | `admin/postgresql-and-s3.md`; size and chunk limits to `admin/security.md` (limits) | The layout, permissions and cleanup are in `admin/postgresql-and-s3.md`; the size and chunk limits stay here for `admin/security.md`. Limits are in `admin/security.md`. |
 | [ ] Revisions and the change feed | 539 | keep | `admin/postgresql-and-s3.md` (≈150 W: page size and response limits as settings) | Protocol detail duplicates SPEC §6.1: delete. Page sizes and response limits are in `admin/postgresql-and-s3.md`; the rest is left to delete. |
 | [x] Retention and history | 1,375 | keep | `admin/history-and-retention.md` (≈500 W) | Purge mechanics are developer depth (SPEC §11, `internal/retention`): delete here. Done: `admin/history-and-retention.md`; purge mechanics are in SPEC §11. |
 | [x] Per-vault overrides | — | keep | `admin/history-and-retention.md` | Subsection of the row above. Done: `admin/history-and-retention.md`. |
-| [ ] Realtime channel | 439 | keep | `admin/install.md` (ingress); limits to `admin/security.md` | The ingress needs are in `admin/install.md`; the limits stay here for `admin/security.md`. |
+| [x] Realtime channel | 439 | keep | `admin/install.md` (ingress); limits to `admin/security.md` | The ingress needs are in `admin/install.md`; the limits stay here for `admin/security.md`. Limits are in `admin/security.md`; the replica and `LISTEN/NOTIFY` facts are in `admin/postgresql-and-s3.md`. |
 | [x] PostgreSQL TLS | 125 | keep | `admin/postgresql-and-s3.md` | Done: `admin/postgresql-and-s3.md`. |
-| [ ] Endpoints | 138 | keep | `admin/configuration.md`; CORS and health detail to `admin/security.md`, `admin/monitoring.md` | The listeners are in `admin/configuration.md`; CORS and health detail stay here for `admin/security.md` and `admin/monitoring.md`. |
+| [x] Endpoints | 138 | keep | `admin/configuration.md`; CORS and health detail to `admin/security.md`, `admin/monitoring.md` | The listeners are in `admin/configuration.md`; CORS and health detail stay here for `admin/security.md` and `admin/monitoring.md`. CORS is in `admin/security.md`; health detail in `admin/monitoring.md`. |
 | [x] Metrics | 708 | generate | `admin/metrics-reference.md` (generated) | See Generators. `admin/monitoring.md` keeps the concepts (two ports, what to scrape). |
 | [x] Service-wide metrics | 762 | generate | `admin/metrics-reference.md` (generated) | See Generators. Why service-wide metrics are separate (one exporter, not per replica) stays in `admin/monitoring.md`. The table is generated; the paragraph on how the values are refreshed stays in `configuration.md` until `admin/monitoring.md` is written. |
 | [ ] Startup and shutdown | 471 | keep | `admin/requirements.md` (PostgreSQL 14+); `admin/upgrades.md` (migrations, graceful shutdown); `admin/troubleshooting.md` | Done for `admin/requirements.md` and `admin/upgrades.md`; the failure facts stay here for `admin/troubleshooting.md`. |
@@ -182,7 +182,7 @@ SPEC keeps its section numbers and its rules. The SPEC readability issue applies
 | [x] PostgreSQL (CloudNativePG) | 323 | keep | `admin/postgresql-and-s3.md` | Done: `admin/postgresql-and-s3.md`. |
 | [x] S3 (Ceph RGW) | 204 | keep | `admin/postgresql-and-s3.md` | Done: `admin/postgresql-and-s3.md`. |
 | [x] Authentik (the device-flow application) | 259 | keep | `admin/identity-provider.md` | Merge with `plugin.md` "Identity provider setup". Done: `admin/identity-provider.md`. |
-| [ ] The WAF body limit (Istio and Coraza) | 310 | keep | `admin/install.md`; limit relationship to `admin/security.md` | The ingress part is in `admin/install.md`; the limit relationship stays here for `admin/security.md`. |
+| [x] The WAF body limit (Istio and Coraza) | 310 | keep | `admin/install.md`; limit relationship to `admin/security.md` | The ingress part is in `admin/install.md`; the limit relationship stays here for `admin/security.md`. The limit relationship is in `admin/security.md`. |
 | [x] The export job | 546 | keep | `admin/backup-and-restore.md` | Chart wiring duplicates the chart values: delete. Done: `admin/backup-and-restore.md`. |
 | [x] Installing the chart | 220 | keep | `admin/install.md` | Done: `admin/install.md`. |
 | [x] Upgrading | 681 | keep | `admin/upgrades.md` | Done: `admin/upgrades.md`. |
@@ -190,7 +190,7 @@ SPEC keeps its section numbers and its rules. The SPEC readability issue applies
 | [x] Undeleting a vault | 128 | keep | `admin/backup-and-restore.md`; one line in `user/sharing.md` (ask your admin) | Done: `admin/backup-and-restore.md`. |
 | [ ] Chart values (and Shared settings, PostgreSQL, S3, OIDC, Server, Export, Route, Grafana dashboards, Alerts, Overriding the computed resources) | 2,254 | generate | `admin/chart-values.md` (generated by `helm-docs`) | See Generators. Per-value text moves into `values.yaml` `# --` comments. "Overriding the computed resources" (323 W) explains a concept: keep ≈150 W of it in `admin/install.md` (sizing). |
 | [x] High availability | 117 | delete | — | Duplicate of `configuration.md` "High-availability deployment", which lands in `admin/upgrades.md`. Done: every fact is in `admin/upgrades.md`. |
-| [ ] Monitoring | 440 | keep | `admin/monitoring.md` | |
+| [x] Monitoring | 440 | keep | `admin/monitoring.md` | Done. |
 | [x] Releasing | 707 | keep | `dev/releasing.md` (≈400 W) | Developer content, not admin. Steps that restate `make release` and the release-manager playbook: delete; link them. |
 
 ## docs/export.md → admin (+ user) (3.9k W)
@@ -206,7 +206,7 @@ SPEC keeps its section numbers and its rules. The SPEC readability issue applies
 | [x] Documents that cannot be placed at their path | 168 | keep | `admin/backup-and-restore.md` | Done: `admin/backup-and-restore.md`. |
 | [x] Manifest | 499 | move | `admin/backup-and-restore.md` (≈100 W: that it exists and what it is for) | Field-by-field format moves to the `internal/export` manifest type's doc comments (pinned by `internal/export/export_test.go`). Done: `admin/backup-and-restore.md`; the fields are in the doc comments in `internal/export/manifest.go`. |
 | [x] Atomic replacement | 408 | move | `admin/backup-and-restore.md` (one paragraph: a failed run never leaves a half-written tree) | Mechanism moves to the `internal/export` package doc. Done: `admin/backup-and-restore.md`; the mechanism is in the `internal/export` package doc. |
-| [ ] Path safety | 164 | move | `admin/security.md` (one line) | Mechanism moves to `internal/export` comments (pinned by `internal/export/export_test.go`, `helpers_test.go`). The mechanism is in the `internal/export` package doc; the one line stays in `export.md` for `admin/security.md`. |
+| [x] Path safety | 164 | move | `admin/security.md` (one line) | Mechanism moves to `internal/export` comments (pinned by `internal/export/export_test.go`, `helpers_test.go`). The mechanism is in the `internal/export` package doc; the one line stays in `export.md` for `admin/security.md`. The one line is in `admin/security.md`. |
 | [x] Summary and exit status | 521 | keep | `admin/backup-and-restore.md` (≈250 W) | Log field lists restate code: delete. Done: `admin/backup-and-restore.md`. |
 | [x] Rotating the escrow key | 696 | keep | `admin/encryption.md` | Done: `admin/encryption.md`. |
 | [x] Signals | 26 | keep | `admin/backup-and-restore.md` | Done: `admin/backup-and-restore.md`. |

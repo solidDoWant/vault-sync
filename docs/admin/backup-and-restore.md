@@ -10,7 +10,7 @@ The server keeps all its data in one PostgreSQL database and one S3 bucket ([Wha
 
 Run the export job too. The export is the plaintext disaster-recovery copy of every vault. You can read it with any editor, without vault-sync, PostgreSQL or S3. So it is what you restore from if you lose the database or the bucket. The server does not restore from an export yet. That is planned for Phase 6, and the export is designed so that a later restore can be exact.
 
-Old backups keep the keys and the encrypted data that they held when you made them. [What encryption does not protect](../encryption.md#what-encryption-does-not-protect) tells you what that means for end-to-end encrypted vaults.
+Old backups keep the keys and the encrypted data that they held when you made them. [What encryption does not protect](security.md#what-encryption-does-not-protect) tells you what that means for end-to-end encrypted vaults.
 
 ## Restore a server
 

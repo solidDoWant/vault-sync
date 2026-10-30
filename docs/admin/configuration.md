@@ -69,5 +69,5 @@ Expose only the API listener through the ingress. Do not expose the two metrics 
 
 For more detail:
 
-- The origins that the API accepts cross-origin requests from, and what each health check tests, are in [Endpoints](../configuration.md#endpoints).
-- The metrics are in [metrics-reference.md](metrics-reference.md). How the service-wide metrics are refreshed is in [Service-wide metrics](../configuration.md#service-wide-metrics).
+- The origins that the API accepts cross-origin requests from, and what each health check tests, are in [Cross-origin requests](security.md#cross-origin-requests) and [Health checks and metrics endpoints](monitoring.md#health-checks-and-metrics-endpoints).
+- The metrics are in [metrics-reference.md](metrics-reference.md). How the service-wide metrics are refreshed is in [Service-wide metrics](monitoring.md#service-wide-metrics).

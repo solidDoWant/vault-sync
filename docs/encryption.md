@@ -77,42 +77,16 @@ This section moved to [Encryption for operators](admin/encryption.md#recovery-wi
 
 ## Threat model
 
-This section says which attacks end-to-end encryption holds against and which it does not. It covers encrypted vaults only; a plaintext vault is protected by the server's access control alone.
+This section moved to [Threat model for encrypted vaults](admin/security.md#threat-model-for-encrypted-vaults). [Encryption](user/encryption.md) has the short version for users.
 
 ### A stolen copy of the database or the bucket
 
-Someone who gets a copy of the PostgreSQL database or the S3 bucket, from a backup, a leaked dump or a break-in, gets the ciphertext of every file and path, the wrapped key slots, every user's private key wrapped under their passphrase, and the metadata listed in [What the server can and can't see](#what-the-server-can-and-cant-see). Without a member's passphrase or the escrow identity, they cannot read any file or path. Every guess at a passphrase costs them a full Argon2id computation, with no server to slow them down further, so a weak passphrase can be guessed offline; a long one that you use nowhere else cannot.
-
-Old copies keep what they held when they were made: a backup made before a passphrase change still opens with the old passphrase, and a backup made before a key was retired still holds that key's slots and ciphertext.
+This section moved to [A stolen copy of the database or the bucket](admin/security.md#a-stolen-copy-of-the-database-or-the-bucket).
 
 ### An actively malicious server
 
-End-to-end encryption also holds against a server that is actively malicious while you use it, or an attacker who controls the running server. Such a server cannot obtain a vault key: not by adding its own public key to a vault, not by swapping a member's or the escrow key for its own, not by injecting a vault key of its own choosing, and not by rolling a vault back to an older key.
-
-This holds because devices never take the server's word for who is in a vault or which key is current:
-
-- Each user has a signing key next to their encryption key. Together they form the user's key, whose **fingerprint** the plugin shows in the member list.
-- Each encrypted vault has a **membership log**: an append-only chain of entries, each signed by the member allowed to make that change (an owner for invitations, removals, role and escrow changes; the newcomer and the invitation for joining; the leaving member for leaving). A device replays the whole log, checking every link and signature, and takes the member list and every member's key only from it.
-- Every vault key (epoch) is signed by an owner and names its exact recipients. A device uses a vault key only from an epoch signed this way, wraps keys only to recipients from the verified log, and refuses an older epoch than the newest it has verified, and a shorter or rewritten log than it has already seen.
-- A device knows which log is the real one because it created the vault, because the invitation code vouches for it (the server never sees the code's secret part), or, for your other devices, from your own list of vaults, sealed under your private key and versioned so that the server cannot roll it back.
-- The escrow key is pinned and changes only with a statement signed by the previous escrow key (see [Escrow](#escrow)).
-
-When any of this fails to verify, the plugin stops syncing that vault, keeps your local files, and reports that the server sent key or membership data that doesn't verify. It never falls back to trusting the server.
-
-Two moments still rely on trust, as any first meeting does:
-
-- **Converting a plaintext vault.** The converting owner's device writes the first log entry with every member's key as the server reports it at that moment. The plugin therefore shows every member's fingerprint and asks the owner to compare them with the members, for example in person or over a channel you already trust, before converting.
-- **The first escrow key.** A device pins the escrow key the server shows it first. Operators publish the escrow key's fingerprint so that owners can compare it when creating a vault.
-
-Members can compare their fingerprints in the member list at any time. A fingerprint that differs from what its owner sees on their own device means someone's key was swapped.
+This section moved to [An actively malicious server](admin/security.md#an-actively-malicious-server). `docs/design/encryption.md` explains how the protection works.
 
 ### What encryption does not protect
 
-- **Metadata.** The server sees everything listed in [What the server can and can't see](#what-the-server-can-and-cant-see), including exact file sizes, path lengths, timing and devices.
-- **Withheld, delayed or replayed changes.** A malicious server can hold back changes, deliver them late, show an older state of a file, or stop serving a vault altogether. Devices detect a rollback of the keys and the membership log, not whether the files they receive are the newest ones.
-- **Authorship.** Encryption does not prove which member wrote a revision. Every holder of a vault key can encrypt under it, and the device and member a revision is shown as coming from are what the server reports.
-- **A compromised device.** A device holds your private key and your vaults' keys, and the plaintext files. Anyone who controls it can read them.
-- **A member.** Every member can read the whole vault and keep copies. Removing a member protects only what is committed afterwards, and a member who leaves keeps the current key until an owner's device next syncs and rotates (see [Rotation](#rotation)).
-- **File-name guesses by a removed member.** The secret behind the server's file-name fingerprints comes from the vault's first key and never changes, so a removed member keeps it. With a later copy of the database, they can test whether a file with a name they guess exists, though they cannot read the names that exist.
-- **Old copies.** Database backups and older S3 object versions keep retired keys' slots and ciphertext, and your private key wrapped under any earlier passphrase. Whoever holds both such a copy and an old passphrase, a retired key, or the escrow identity of the time can read what that copy holds.
-- **A lost single device.** There is no way to revoke one device's copy of your private key. An owner can rotate a vault's key instead, but a device that holds your private key can open the new key too as long as it can still sign in to the server.
+This section moved to [What encryption does not protect](admin/security.md#what-encryption-does-not-protect).

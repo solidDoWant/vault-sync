@@ -42,7 +42,7 @@ When the provider rotates its keys, the server accepts a new key at most 30 seco
 
 The server follows a redirect only to the same host and port, and never from `https` to `http`. It follows at most 5 redirects. If your provider redirects the discovery document or the keys to another host, configure the final issuer URL instead.
 
-For more detail on how the server checks tokens, see [Authentication](../configuration.md#authentication).
+For more detail on how the server checks tokens, see [Sign-in tokens](security.md#sign-in-tokens).
 
 ## Example: Authentik
 

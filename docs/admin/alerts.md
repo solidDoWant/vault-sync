@@ -147,11 +147,11 @@ Do: Ask a member to open the vault in Obsidian with the plugin unlocked. The plu
 
 ### VaultSyncEscrowRewrapStuck
 
-`warning`, after an hour. Escrow key slots that still name a retiring escrow key id (`vault_sync_service_escrow_rewrap_slots`) are above 0, and not fewer than 48 hours earlier. During an escrow key rotation, the export job re-wraps these slots ([Rotate the escrow key](encryption.md#rotate-the-escrow-key)). With a daily export, two days with no progress mean that the re-wrap fails. The metric is 0 without `VAULT_SYNC_ESCROW_RETIRING_KEY_IDS`.
+`warning`, after an hour. Escrow key slots that still name a retiring escrow key id (`vault_sync_service_escrow_rewrap_slots`) are above 0, and not fewer than 48 hours earlier. During an escrow key rotation, only the `export rotate-escrow` command re-wraps these slots ([Rotate the escrow key](encryption.md#rotate-the-escrow-key)). The daily export job does not. Two days with no progress mean that no `export rotate-escrow` run finished, or that its runs fail for some slots. The metric is 0 without `VAULT_SYNC_ESCROW_RETIRING_KEY_IDS`.
 
-Check: Read the logs of the export job for re-wrap errors. Make sure that the job has both escrow identities and the job token (`config.escrowJobToken`).
+Check: Read the JSON summary of your last `export rotate-escrow` run ([The rotate-escrow command](encryption.md#the-rotate-escrow-command)). Look at `old_key_slots`, `failed_slots` and the `reason` of each entry in `failures`, and read the logs of that run. Make sure that the identity file holds every old identity whose slots are still to be moved, and that the run has the job token (`config.escrowJobToken`).
 
-Do: Fix the configuration of the export job and run it by hand. Do not remove the retiring key id before the backlog is 0.
+Do: Fix the cause and run `export rotate-escrow` again until it reports `"old_key_slots": 0` and exits `0`. Do not remove the retiring key id before the backlog is 0.
 
 ### VaultSyncServiceMetricsStale
 

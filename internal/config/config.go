@@ -80,7 +80,7 @@ const (
 	MetricsListenAddressEnv = "VAULT_SYNC_METRICS_LISTEN_ADDRESS"
 
 	// `host:port` for the service-wide metrics listener (`/metrics` only, see
-	// [Service-wide metrics](../configuration.md#service-wide-metrics)). Must
+	// [Service-wide metrics](monitoring.md#service-wide-metrics)). Must
 	// differ from `VAULT_SYNC_LISTEN_ADDRESS` and
 	// `VAULT_SYNC_METRICS_LISTEN_ADDRESS`. Do not expose it to the internet.
 	//

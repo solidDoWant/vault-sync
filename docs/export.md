@@ -36,7 +36,7 @@ This section moved to [Backup and restore](admin/backup-and-restore.md#atomic-re
 
 ### Path safety
 
-Document paths are untrusted: the export never writes outside a vault's directory, through a symbolic link or over a file, and a path that fails the vault-relative check goes to the unplaced tree. The mechanism is in the `internal/export` package doc.
+This section moved to [The export and document paths](admin/security.md#the-export-and-document-paths). The mechanism is in the `internal/export` package doc.
 
 ## Summary and exit status
 
