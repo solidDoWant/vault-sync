@@ -639,7 +639,7 @@
             },
             "rules": {
               "type": "object",
-              "description": "Per-alert overrides, keyed by alert name (docs/alerts.md); the chart rejects unknown names.",
+              "description": "Per-alert overrides, keyed by alert name (docs/admin/alerts.md); the chart rejects unknown names.",
               "additionalProperties": {
                 "type": "object",
                 "additionalProperties": false,

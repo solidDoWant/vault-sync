@@ -1,6 +1,6 @@
 # vault-sync alerting rules, packaged into the chart and rendered as a
 # PrometheusRule by templates/prometheus-rule.yaml when
-# config.alerts.prometheusRule.enabled is true. docs/alerts.md is the
+# config.alerts.prometheusRule.enabled is true. docs/admin/alerts.md is the
 # runbook: one section per alert, with the reasoning behind each threshold.
 #
 # This is a Prometheus rule file with three additions the chart resolves:

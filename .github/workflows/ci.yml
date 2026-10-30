@@ -55,6 +55,7 @@ jobs:
               - '!.github/renovate/**'
             chart:
               - 'docs/{configuration,deployment,alerts}.md'
+              - 'docs/admin/alerts.md'
             desktop:
               - '{plugin/**,.github/**,nix/**,flake.*}'
             npm:

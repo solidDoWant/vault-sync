@@ -227,11 +227,11 @@ SPEC keeps its section numbers and its rules. The SPEC readability issue applies
 
 | Section | W | Class | Destination | Notes |
 |---|---|---|---|---|
-| [ ] Intro | 250 | keep | `admin/alerts.md` (≈100 W) | How the rules are wired into the chart duplicates the chart values: delete. |
-| [ ] Availability (VaultSyncNoReplicaReady, VaultSyncReplicasUnavailable, VaultSyncRPCErrorRatioHigh, VaultSyncSyncLatencyHigh, VaultSyncRealtimeListenerDown, VaultSyncConcurrencyRejections, VaultSyncRealtimeRefusals) | 578 | keep | `admin/alerts.md` | Keep every `### AlertName` heading verbatim (machine-read; runbook anchors). Don't repeat the expression; it is in `alerts/vault-sync.rules.yaml`. |
-| [ ] Dependencies (VaultSyncDatabasePoolExhausted, VaultSyncS3ErrorRatioHigh, VaultSyncOIDCKeyRefreshFailing) | 239 | keep | `admin/alerts.md` | same |
-| [ ] Data safety and backlog (VaultSyncRetentionNotSucceeding, VaultSyncExportNotSucceeding, VaultSyncUploadSessionsNotExpiring, VaultSyncBlobGCStalled, VaultSyncRekeyBacklogNotShrinking, VaultSyncEscrowRewrapStuck, VaultSyncServiceMetricsStale) | 618 | keep | `admin/alerts.md` | same |
-| [ ] Stub | — | keep | `alerts.md` keeps one heading per alert linking to `admin/alerts.md#…` for one release | See redirects in `docs/README.md`. |
+| [x] Intro | 250 | keep | `admin/alerts.md` (≈100 W) | How the rules are wired into the chart duplicates the chart values: delete. That every alert is unit-tested with `promtool test rules` (`make chart-lint`) is developer depth: it stays in the `scripts/chart_test.sh` header. |
+| [x] Availability (VaultSyncNoReplicaReady, VaultSyncReplicasUnavailable, VaultSyncRPCErrorRatioHigh, VaultSyncSyncLatencyHigh, VaultSyncRealtimeListenerDown, VaultSyncConcurrencyRejections, VaultSyncRealtimeRefusals) | 578 | keep | `admin/alerts.md` | Keep every `### AlertName` heading verbatim (machine-read; runbook anchors). Don't repeat the expression; it is in `alerts/vault-sync.rules.yaml`. |
+| [x] Dependencies (VaultSyncDatabasePoolExhausted, VaultSyncS3ErrorRatioHigh, VaultSyncOIDCKeyRefreshFailing) | 239 | keep | `admin/alerts.md` | same |
+| [x] Data safety and backlog (VaultSyncRetentionNotSucceeding, VaultSyncExportNotSucceeding, VaultSyncUploadSessionsNotExpiring, VaultSyncBlobGCStalled, VaultSyncRekeyBacklogNotShrinking, VaultSyncEscrowRewrapStuck, VaultSyncServiceMetricsStale) | 618 | keep | `admin/alerts.md` | same |
+| [x] Stub | — | keep | `alerts.md` keeps one heading per alert linking to `admin/alerts.md#…` for one release | See redirects in `docs/README.md`. |
 
 ## docs/design/ (stays; developer and agent reference; 20.8k W → target 19k)
 
