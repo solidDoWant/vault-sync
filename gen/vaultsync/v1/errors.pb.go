@@ -63,8 +63,8 @@ const (
 	// syncing the vault and keeps its local files.
 	ErrorReason_ERROR_REASON_VAULT_DELETED ErrorReason = 7
 	// FAILED_PRECONDITION from SyncService.CommitRevision: the request is a
-	// plaintext commit (epoch 0), but the vault is end-to-end encrypted,
-	// because an owner converted it in place (VaultKeyService.ConvertVault).
+	// plaintext commit (epoch 0), but an owner converted the vault to
+	// end-to-end encryption in place (VaultKeyService.ConvertVault).
 	// The client reloads the vault, unlocks its user key, syncs the vault's
 	// keys, encrypts the pending change under the current epoch and retries
 	// (docs/design/encryption.md, "Converting a plaintext vault in place").

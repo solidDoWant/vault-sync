@@ -59,14 +59,14 @@ service SyncService {
   //   new epoch, re-encrypt and retry). A rotation that is only pending
   //   does not replace it.
   //   Also, with an ErrorDetail of reason ERROR_REASON_VAULT_ENCRYPTED, for
-  //   epoch 0 (a plaintext commit) in an end-to-end encrypted vault: an
-  //   owner converted the vault (VaultKeyService.ConvertVault).
+  //   epoch 0 (a plaintext commit) in a vault an owner converted to
+  //   end-to-end encryption (VaultKeyService.ConvertVault).
   // - ALREADY_EXISTS: path_key collides with another live document in the
   //   vault, or the path names the folder of another live document's path,
   //   or lies under a folder another live document's path names as a file
   //   (SPEC.md §5, §6.3).
   // - INVALID_ARGUMENT: malformed or out-of-bounds fields (including a
-  //   nonzero epoch in a plaintext vault), kind mismatch,
+  //   nonzero epoch in a plaintext vault, or epoch 0 in an E2EE vault created encrypted), kind mismatch,
   //   content_ref.size differing from the stored blob's size, document_id or
   //   revision_id already in use outside this vault, or revision_id reused
   //   with different fields.

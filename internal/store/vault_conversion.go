@@ -15,9 +15,9 @@ import (
 // (docs/design/encryption.md, "Converting a plaintext vault in place").
 
 var (
-	// ErrVaultEncrypted is returned for a plaintext commit (epoch 0) to an
-	// end-to-end encrypted vault, and for converting a vault that already
-	// is one.
+	// ErrVaultEncrypted is returned for a plaintext commit (epoch 0) to a
+	// vault converted to end-to-end encryption, and for converting a vault
+	// that already is end-to-end encrypted.
 	ErrVaultEncrypted = errors.New("the vault is end-to-end encrypted")
 	// ErrConversionStale is returned when a conversion's path keys do not
 	// name exactly the vault's live documents: they changed since the

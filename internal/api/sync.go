@@ -364,14 +364,16 @@ func (service SyncService) CommitRevision(ctx context.Context, request *connect.
 
 	revision.UserID = user.ID
 
-	encryption, err := vault.Encryption(ctx)
+	state, err := vault.KeyState(ctx)
 	if err != nil {
 		return nil, service.internal(ctx, "cannot commit revision", err)
 	}
 
-	// A plaintext commit to an encrypted vault: the device has not seen
-	// the vault's conversion yet.
-	if encryption != store.EncryptionNone && request.Msg.GetEpoch() == 0 {
+	encryption := state.Encryption
+
+	// A plaintext commit to a converted vault: the device has not seen the
+	// vault's conversion yet.
+	if state.Converted && request.Msg.GetEpoch() == 0 {
 		return nil, vaultEncryptedError()
 	}
 
