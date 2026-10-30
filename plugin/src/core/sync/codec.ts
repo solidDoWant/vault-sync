@@ -1,8 +1,8 @@
 /**
  * How the engine reads and writes revisions on the server: as they are in a
  * plaintext vault, or encrypted in an end-to-end encrypted vault
- * (docs/design/encryption.md, "Model" and "Formats and rules settled during
- * implementation"; byte formats in docs/design/crypto.md).
+ * (docs/design/encryption.md, "Model" and "Rules for contents, invitations
+ * and escrow"; byte formats in docs/design/crypto.md).
  *
  * The engine itself is the same for both: it works on plaintext paths, and
  * identifies content by its SHA-256 (`contentHash`) and plaintext size. In an

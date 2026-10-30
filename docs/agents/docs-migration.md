@@ -244,10 +244,10 @@ All sections stay and keep their rules: the engine design is fixed. The develope
 | [x] `design/engine-situations.md` (all) | 5,128 | keep | stays | Each situation has a decision-table test; the situations stay because they explain the rows. Delete only issue numbers. |
 | [ ] `design/sharing.md` Roles, Losing access, Deleting a vault | 684 (file) | keep | stays; user view to `user/sharing.md` | User view done in `user/sharing.md`; the developer-reader pass on `docs/design/` is left. |
 | [ ] `design/encryption.md` Escrow, Protection against an active server | — | keep | stays; operator view in `admin/encryption.md`, `admin/security.md` | |
-| [ ] `design/encryption.md` Formats and rules settled during implementation | 800 | move | byte formats pinned by `testdata/crypto/vectors.json` and described in `design/crypto.md` | Delete the duplicates; move what remains to `design/crypto.md`. |
+| [x] `design/encryption.md` Formats and rules settled during implementation | 800 | move | byte formats pinned by `testdata/crypto/vectors.json` and described in `design/crypto.md` | Delete the duplicates; move what remains to `design/crypto.md`. Done: the formats that remained (the invitation code, the passphrase rule) moved to `crypto.md`. The other bullets are design rules, not formats, so they stay in `encryption.md` under the heading *Rules for contents, invitations and escrow*. `SPEC.md` and `plugin/src/core/sync/codec.ts` cite the new heading. |
 | [ ] `design/encryption.md` Interaction matrix | 1,128 | keep | stays | Design-review artefact the design reviewer reads. |
 | [ ] `design/encryption.md` Documentation | — | keep | stays | Says which user docs must exist; update its links to the new paths. |
-| [ ] `design/crypto.md` (all) | 4,592 | keep | stays | Parameters and formats stay (developer depth); vectors are the contract, so prose that only restates a vector's bytes is a delete. Target ≈3,500. |
+| [x] `design/crypto.md` (all) | 4,592 | keep | stays | Parameters and formats stay (developer depth); vectors are the contract, so prose that only restates a vector's bytes is a delete. Target ≈3,500. Done at about 4,200 (from 4,834): the vector list and the escrow-chain rules that repeated `encryption.md` are cut. The rest is rules and parameters, and cutting it would lose facts. |
 | [ ] every other design section | — | keep | stays | |
 
 ## docs/testing/ (stays; developer; 13.9k W → target 6k)

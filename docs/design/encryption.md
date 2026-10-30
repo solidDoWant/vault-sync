@@ -174,9 +174,9 @@ A vault's log records its escrow bundle, so only the log can move a vault to the
 - If the admin thinks the old identity is stolen, owners adopt the reset or turn escrow off. Both are rotations that the owner signs.
 - A vault that turned escrow off before the reset turns it on again with an escrow reset entry and a `0x08` "on" in one `RotateEpoch` (*With escrow off*, above). This needs an owner device that accepted the new bundle.
 
-## Formats and rules settled during implementation
+## Rules for contents, invitations and escrow
 
-Operator decisions of 2026-10-29, from the questions on this design and the Phase 4 design review. Byte formats are in `crypto.md`.
+The owner decided these rules on 2026-10-29, from the questions on this design and the Phase 4 design review. The byte formats are in `crypto.md`.
 
 **Contents and paths**
 - **Associated data.** A path binds the vault, the document and the epoch. Content binds the vault and the epoch only. Its `blob_id` is the SHA-256 of the sealed bytes, which the server verifies (`crypto.md`). This replaces `SPEC.md` §9.3's "the revision's document id … bound as associated data" for content.
@@ -186,9 +186,8 @@ Operator decisions of 2026-10-29, from the questions on this design and the Phas
 - **Epoch 0.** A vault created encrypted never accepts epoch 0. A converted vault accepts epoch 0 only for revisions committed before the conversion. A device learns both facts only from the verified log, never from the server's word: the *members* entry marks a converted vault, and its signed `converted_at_seq` is the bound. A revision is plaintext history only if its `seq` is at or below that bound. The conversion records its change sequence number, and readers refuse a later epoch-0 revision. The re-key job covers every stored path and content: revisions, tombstones, folders and conflict copies.
 
 **Invitations**
-- **Slot.** `recipient_kind = 0x03` (invitation), `recipient_id` = the 16 bytes of the invitation's UUID. The server accepts invitation slots for pending invitations, and requires one in every new epoch for each pending invitation.
-- **Key pair.** The seed is `HKDF-SHA256(ikm = secret, salt = vault_id, info = "vault-sync/v1/invitation-key" || invitation_id, length = 32)`, turned into an MLKEM768-X25519 key pair by the library's key generation from a seed.
-- **Code.** For encrypted vaults the inviting device generates `<id>` and `<secret>` (128 random bits each, base64url without padding) and sends only `SHA-256(<id>)`. Plaintext vaults keep today's server-generated code.
+- **Slot.** An invitation gets key slots with `recipient_kind = 0x03` (`crypto.md`, *Key slots and key commitments*). The server accepts invitation slots for pending invitations, and requires one in every new epoch for each pending invitation.
+- **Key pair and code.** The invitation's key pair comes from the code's `<secret>`, and for an encrypted vault the inviting device generates the code (`crypto.md`, *Invitation keys*).
 - **Redemption takes two steps,** so a crash never leaves a member without keys: `GetInvitationSlots(id)` returns the invitation's UUID, its slots and the commitments. Then `RedeemInvitation(code, own_slots)` grants membership, stores the newcomer's slots and deletes the invitation's slots in one transaction. The newcomer creates its user key first.
 - **Expiry.** An expired, revoked or used `<id>` gets `NOT_FOUND` at once. Its slots are deleted by the existing prune and purge; no new sweep.
 
@@ -197,7 +196,7 @@ Operator decisions of 2026-10-29, from the questions on this design and the Phas
 - **Rotation endpoint.** The job-only endpoint takes a static bearer token from a Secret mounted only into the export job, compared in constant time.
 - **Re-wrapping replaces an escrow slot:** delete the old-key slot and insert the new one, only if the old one is still there. Member slots are still never replaced.
 
-**Passphrases.** A passphrase may contain only code points assigned in Unicode 15.0, the same rule as names (`engine.md` §6). Others are refused when the passphrase is set or used, in both languages. It is NFC-normalized by the library (`golang.org/x/text`, `String.prototype.normalize`). Unicode's normalization stability policy makes this identical on every runtime for assigned characters. No deployment holds older keys, so nothing migrates.
+**Passphrases.** The Unicode and normalization rules are in `crypto.md`, *Passphrase wrapping*.
 
 **Keys on the device.** The unlocked user private key and the epoch keys live in Obsidian's per-device local storage (`App.saveLocalStorage`), like the refresh token. They are never in `data.json`, which sits inside the vault folder and is copied by any other sync or backup tool.
 
