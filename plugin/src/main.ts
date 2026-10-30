@@ -30,6 +30,7 @@ import {
   leaveVault,
   loadSharing,
   removeMember,
+  reencryptVaultHistory,
   rotateVaultKey,
   revokeInvitation,
   setMemberRole,
@@ -38,6 +39,7 @@ import {
   type Sharing,
 } from "./obsidian/sharing";
 import { VaultKeyManager } from "./core/keys/vault-keys";
+import type { RekeyResult } from "./core/sync/rekey";
 import type { LogTrust } from "./core/keys/verified-log";
 import { SignInCancelledError, SignInModal } from "./obsidian/sign-in-modal";
 import { initialStatus, isStoppedState, statusDescription, statusIcon, statusText, type SyncStatus } from "./obsidian/status";
@@ -468,6 +470,10 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
 
   async rotateVaultKey(): Promise<void> {
     return rotateVaultKey(await this.encryptedSharing());
+  }
+
+  async reencryptHistory(): Promise<RekeyResult> {
+    return reencryptVaultHistory(this.protocolClient(), this.sharedVaultId(), await this.encryptedSharing());
   }
 
   /**

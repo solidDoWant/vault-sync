@@ -3,6 +3,7 @@ import { Modal, Notice, PluginSettingTab, Setting, type App, type ButtonComponen
 import { VaultRole, type Vault } from "../gen/vaultsync/v1/types_pb";
 import type { AuthState } from "../core/auth/tokens";
 import type { EscrowOffer } from "../core/keys/encrypted-vault";
+import type { RekeyResult } from "../core/sync/rekey";
 import { connectProblem } from "./controller";
 import { type ConnectedVault, type PluginData } from "./data";
 import { DeviceListLoads, DeviceRemovals, type DeviceRow } from "./devices";
@@ -47,6 +48,8 @@ export interface SettingsHost extends Plugin {
   removeMember(userId: string): Promise<void>;
   /** Rotates the connected encrypted vault's key (owners only): the next epoch, for every current member. */
   rotateVaultKey(): Promise<void>;
+  /** Re-encrypts the connected encrypted vault's history under its current key and retires the old keys (owners only). */
+  reencryptHistory(): Promise<RekeyResult>;
   /** Leaves the connected vault; sync then stops with "no longer a member" and the files stay. */
   leaveVault(): Promise<void>;
   /** Deletes the connected vault on the server (owners only); sync then stops with "vault deleted" and the files stay. */
@@ -456,6 +459,24 @@ export class VaultSyncSettingTab extends PluginSettingTab {
                   );
                 },
               }).open();
+            });
+          });
+        new Setting(section)
+          .setName("Re-encrypt history")
+          .setDesc("Re-encrypts every earlier version of every note that still uses an older vault key under the current one, then retires the older keys. Run it after removing a member or turning escrow off. Syncing continues meanwhile, and an interrupted run continues where it stopped.")
+          .addButton((button) => {
+            button.setButtonText("Re-encrypt history").onClick(() => {
+              button.setDisabled(true);
+              host.reencryptHistory().then(
+                (result) => {
+                  new Notice(`Vault Sync: history re-encrypted (${String(result.moved)} versions moved to the current key).`);
+                  reload();
+                },
+                (error: unknown) => {
+                  new Notice(`Vault Sync: could not re-encrypt the history: ${errorMessage(error)}`);
+                  reload();
+                },
+              );
             });
           });
       }

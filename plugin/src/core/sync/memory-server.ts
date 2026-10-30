@@ -6,7 +6,8 @@ import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import { BlobService } from "../../gen/vaultsync/v1/blob_pb";
 import { ErrorDetailSchema, ErrorReason } from "../../gen/vaultsync/v1/errors_pb";
 import { SyncService, type CommitRevisionRequest } from "../../gen/vaultsync/v1/sync_pb";
-import { DocumentKind, DocumentSchema, RevisionSchema, type Revision } from "../../gen/vaultsync/v1/types_pb";
+import { ContentRefSchema, DocumentKind, DocumentSchema, RevisionSchema, type Revision } from "../../gen/vaultsync/v1/types_pb";
+import { VaultKeyService, type ReplaceRevisionCiphertextRequest } from "../../gen/vaultsync/v1/vault_key_pb";
 import { sha256Hex } from "../hash";
 import { pathKey } from "../pathkey/pathkey";
 import { fitsPathKeyLimit, isNewVaultPath, isPathText, isVaultRelativePath } from "../vaultpath/vaultpath";
@@ -134,6 +135,8 @@ export class InMemoryServer {
   readonly encrypted: boolean;
   /** The vault's current key epoch in an encrypted vault: commits must carry it (0 in a plaintext vault). */
   currentEpoch = 0;
+  /** Epochs retired with RetireEpoch in an encrypted vault. */
+  readonly retiredEpochs = new Set<number>();
   /** Reads stored revisions in plain form for liveFiles and liveDocuments. */
   reader: RevisionReader = plaintextReader;
   /** The path_key of each revision of an encrypted vault, by revision id. */
@@ -213,6 +216,35 @@ export class InMemoryServer {
               return name === undefined ? [] : [{ userId, name }];
             }),
           };
+        },
+      });
+      // The re-key calls of VaultKeyService (proto/vaultsync/v1/vault_key.proto), which read and rewrite this server's revisions.
+      service(VaultKeyService, {
+        listStaleRevisions: (request) => {
+          this.intercept("ListStaleRevisions", request);
+          this.checkVault(request.vaultId);
+          if (!this.encrypted) return { revisions: [], nextPageToken: "", currentEpoch: 0 };
+          const limit = Math.min(request.pageSize === 0 ? 100 : request.pageSize, 1000);
+          const after = request.pageToken === "" ? 0n : BigInt(request.pageToken);
+          const stale = this.revisions.filter((revision) => revision.seq > after && revision.epoch !== this.currentEpoch);
+          const page = stale.slice(0, limit);
+          const last = page.at(-1);
+          return { revisions: page, nextPageToken: stale.length > limit && last !== undefined ? String(last.seq) : "", currentEpoch: this.currentEpoch };
+        },
+        replaceRevisionCiphertext: (request) => {
+          this.intercept("ReplaceRevisionCiphertext", request);
+          this.checkVault(request.vaultId);
+          return this.respond("ReplaceRevisionCiphertext", request, { replaced: this.replaceCiphertext(request) });
+        },
+        retireEpoch: (request) => {
+          this.intercept("RetireEpoch", request);
+          this.checkVault(request.vaultId);
+          if (!this.encrypted) throw new ConnectError("the vault is not end-to-end encrypted", Code.FailedPrecondition);
+          if (request.epoch === 0 || request.epoch > this.currentEpoch) throw new ConnectError("the vault has no such epoch", Code.InvalidArgument);
+          if (request.epoch === 1 || request.epoch === this.currentEpoch) throw new ConnectError("epoch 1 and the current epoch are never retired", Code.FailedPrecondition);
+          if (this.revisions.some((revision) => revision.epoch === request.epoch)) throw new ConnectError("a revision still uses the epoch", Code.FailedPrecondition);
+          this.retiredEpochs.add(request.epoch);
+          return this.respond("RetireEpoch", request, {});
         },
       });
       service(BlobService, {
@@ -569,6 +601,40 @@ export class InMemoryServer {
     this.revisions.push(revision);
     if (this.encrypted) this.pathKeys.set(revision.id, bytesToHex(request.pathKey));
     return revision;
+  }
+
+  /** ReplaceRevisionCiphertext's checks and conditional rewrite, also for tests to call directly: whether it was applied. */
+  replaceCiphertext(request: ReplaceRevisionCiphertextRequest): boolean {
+    if (!this.encrypted) throw new ConnectError("the vault is not end-to-end encrypted", Code.FailedPrecondition);
+    if (request.fromEpoch >= request.toEpoch) throw new ConnectError("from_epoch must be below to_epoch", Code.InvalidArgument);
+    if (request.path.length === 0) throw new ConnectError("path is empty", Code.InvalidArgument);
+    const revision = this.revisions.find((candidate) => candidate.id === request.revisionId);
+    if (revision === undefined) throw new ConnectError("revision not found", Code.NotFound);
+    if ((revision.contentRef === undefined) !== (request.contentRef === undefined)) throw new ConnectError("content_ref must be given exactly for a revision with content", Code.InvalidArgument);
+    let blob: Uint8Array | undefined;
+    if (request.contentRef !== undefined) {
+      blob = this.blobs.get(bytesToHex(request.contentRef.blobId));
+      if (blob === undefined) throw new ConnectError("content_ref is not a complete blob", Code.FailedPrecondition);
+      if (BigInt(blob.length) !== request.contentRef.size) throw new ConnectError("size mismatch", Code.InvalidArgument);
+    }
+    if (revision.epoch !== request.fromEpoch || request.toEpoch !== this.currentEpoch) return false;
+    revision.path = request.path.slice();
+    revision.epoch = request.toEpoch;
+    if (request.contentRef !== undefined && blob !== undefined) revision.contentRef = create(ContentRefSchema, { blobId: request.contentRef.blobId.slice(), size: BigInt(blob.length) });
+    return true;
+  }
+
+  /** Blobs no revision references any more: what the server's unreferenced-blob cleanup deletes. */
+  unreferencedBlobs(): string[] {
+    const referenced = new Set(this.revisions.flatMap((revision) => (revision.contentRef === undefined ? [] : [bytesToHex(revision.contentRef.blobId)])));
+    return [...this.blobs.keys()].filter((blobId) => !referenced.has(blobId));
+  }
+
+  /** Deletes every blob no revision references, as the server's cleanup does; returns how many. */
+  collectUnreferencedBlobs(): number {
+    const unreferenced = this.unreferencedBlobs();
+    for (const blobId of unreferenced) this.blobs.delete(blobId);
+    return unreferenced.length;
   }
 
   /** An encrypted vault's commit rules: the current epoch, a sealed path, a 32-byte path_key unique among live documents. */
