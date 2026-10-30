@@ -19,7 +19,7 @@ In an encrypted vault, the server cannot read your files, their older versions, 
 
 The server can still see the vault's name, its members, their roles and devices, and whether the vault uses encryption and escrow. It also sees how many files there are, the exact size of each version, about how long each path is, and when and from which device each file changes. It can tell when two versions belong to the same file, or when two attachments have the same content, but not their names or content.
 
-For the full list, see [How encryption works](../encryption.md#what-the-server-can-and-cant-see).
+For the full list, see [Encryption for operators](../admin/encryption.md#what-the-server-can-and-cannot-see).
 
 ## Set up encryption
 
@@ -98,7 +98,7 @@ If you accept, the keys of the vaults that you own are also encrypted to the new
 
 If you decline, or close the window, escrow keeps the previous key. Your notes keep syncing. Your vaults with escrow show "Escrow uses the previous key: the server's escrow key changed", with a **Review the change** button that opens the window again. You cannot create or convert a vault with escrow until you accept. The plugin does not ask again by itself, unless the server offers another new key.
 
-For more detail, see [How encryption works](../encryption.md#escrow).
+For more detail, see [Encryption for operators](../admin/encryption.md#escrow).
 
 ## If you forget your passphrase
 

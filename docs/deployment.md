@@ -30,15 +30,7 @@ The rest of the ingress moved to [Install](admin/install.md#the-ingress).
 
 ## The export job
 
-The export job is off by default. Turn it on with `config.export.enabled: true` and an output volume (`config.export.output.persistence`): it is the plaintext disaster-recovery copy of every vault, readable without vault-sync, so running it is recommended ([export.md](export.md)).
-
-The CronJob runs `vault-sync-server export -out /export/<directory>` on `config.export.schedule` (a cron expression, daily at 03:00 by default; `config.export.timeZone` sets an IANA time zone, otherwise the cluster's default applies). It writes every plaintext vault as a browsable tree with a manifest, replacing the previous export atomically ([export.md](export.md) describes the layout and how to verify it). Runs never overlap (`concurrencyPolicy: Forbid`), each run is stopped after `config.export.activeDeadlineSeconds` (6 hours by default, so a hung run, for example on a stalled NFS volume, cannot block every later one), a failed run is retried twice, and the job exits non-zero when anything failed or was missing, so alert on failed Jobs.
-
-- **Output volume.** `config.export.output.persistence` is the volume it writes to, as a bjw-s persistence item, for example `{type: persistentVolumeClaim, existingClaim: vault-sync-export}` or an `nfs` volume shared with your tape tooling. It is required while `config.export.enabled` is true and mounted at `/export` in the export job only. `config.export.output.directory` is the directory inside it (`vaults` by default); the export also keeps a lock file and a staging directory next to it, so the volume's top level must be writable. Files are created `0640` and directories `0750`, owned by user and group `65532` (the pod's `fsGroup`), so give your tape tooling that group.
-- **Own credentials.** By default the export uses the server's database and S3 settings. Give it its own database role (`SELECT` on `vaults`, `documents`, `revisions` and `blobs`, plus `INSERT` and `UPDATE` on `export_status`, where it records each run's outcome; see [export.md](export.md)) with `config.export.database.url` (`value` or `secretKeyRef`) and `config.export.database.tls.clientCertificate.secretName` (`config.export.database.tls.clientCertificate.certKey` and `config.export.database.tls.clientCertificate.keyKey` name the keys), and read-only S3 credentials as above. Empty fields fall back to the server's; the CA certificates are shared. Its sessions are read-only in any case, except the one transaction that records the run in `export_status`.
-- **Escrow.** `config.export.escrow.secretName` names the Secret holding the escrow private key (SPEC.md §9.4; generating it and recovering a vault with `age` are in [encryption.md](encryption.md#escrow)). Its key `config.export.escrow.key` (default `escrow.key`) holds the identity file (`age-keygen -pq` output). It is mounted read-only at `/etc/vault-sync/escrow` in the export job, which reads it as `VAULT_SYNC_ESCROW_IDENTITY_FILE` to decrypt escrowed vaults, and never into the server: the chart refuses to render if any value (a persistence entry, an env var, `envFrom`, default pod options) would put it into the server, and `make chart-lint` checks that the rendered server Deployment never names it. The escrow signing keys never go into the cluster. They stay offline, and you bring them out only for a manual escrow key rotation, which you run from your own machine or as a one-off pod ([export.md](export.md#rotating-the-escrow-key)). The chart has no value for them, and it refuses to render if any controller gets `VAULT_SYNC_ESCROW_SIGNING_KEY_FILE` or runs `export rotate-escrow`.
-- **Escrow job token.** `config.escrowJobToken.secretName` names the Secret holding the static bearer token of the export job's escrow rotation endpoint (`VAULT_SYNC_ESCROW_JOB_TOKEN_FILE`, [configuration.md](configuration.md)); its key `config.escrowJobToken.key` (default `token`) holds one line of at least 32 characters, for example `openssl rand -base64 32`. It is mounted read-only at `/etc/vault-sync/escrow-job-token` into the server, which checks it, and the export job, which presents it, and into nothing else. Empty leaves the endpoint off.
-- `config.export.enabled: false` (the default) drops the CronJob and all of its mounts.
+This section moved to [Backup and restore](admin/backup-and-restore.md#the-export-job).
 
 ## Installing the chart
 
@@ -50,25 +42,11 @@ This section moved to [Upgrades and high availability](admin/upgrades.md#upgrade
 
 ## Per-vault retention
 
-To give one vault its own retention policy (configuration.md, Per-vault overrides), run the server binary's `retention` subcommand with the server's database settings, for example in a running server pod (here the Deployment of a release named `vault-sync`; the image has no shell, so call the binary directly):
-
-```sh
-kubectl exec deploy/vault-sync -- /bin/vault-sync-server retention set -vault 0192f2c4-7a1e-7c3d-9f0a-2b4c6d8e0f12 -keep-all 4320h -keep-daily 17520h
-kubectl exec deploy/vault-sync -- /bin/vault-sync-server retention list
-kubectl exec deploy/vault-sync -- /bin/vault-sync-server retention unset -vault 0192f2c4-7a1e-7c3d-9f0a-2b4c6d8e0f12
-```
-
-Every replica applies the change from its next hourly run. The chart has no values for overrides: they live in PostgreSQL. To refuse overrides shorter than a floor, set `config.server.retention.overrideMinKeepAll` (and `config.server.retention.overrideMinKeepDaily`): they put `VAULT_SYNC_RETENTION_OVERRIDE_MIN_KEEP_ALL` and `VAULT_SYNC_RETENTION_OVERRIDE_MIN_KEEP_DAILY` into the server's environment, which the subcommand run in its pod reads (the server itself ignores them). The export's read-only role cannot set overrides.
+This section moved to [History and retention](admin/history-and-retention.md#per-vault-overrides).
 
 ## Undeleting a vault
 
-An owner's deleted vault is kept for 30 days and then purged by the retention job (`docs/design/sharing.md`, Deleting a vault). Before then, the operator can restore it with the server binary's `vault` subcommand, run with the server's database settings like `retention`:
-
-```sh
-kubectl exec deploy/vault-sync -- /bin/vault-sync-server vault undelete 0192f2c4-7a1e-7c3d-9f0a-2b4c6d8e0f12
-```
-
-Its members can use the vault again at once, on every replica, with all its documents, history and attachments. It is allowed even if an owner already owns 100 vaults. The command exits 1 with `no vault ID: it does not exist or has been purged` for an unknown vault or one whose purge has started, and with `vault ID is not deleted` for a vault that is not deleted; it exits 2 on a usage error.
+This section moved to [Backup and restore](admin/backup-and-restore.md#undelete-a-vault).
 
 ## Chart values
 
@@ -174,6 +152,9 @@ The listen addresses are fixed by the chart: `VAULT_SYNC_LISTEN_ADDRESS` is `:80
 | `config.export.s3.credentials.accessKeyIdKey` | `AWS_ACCESS_KEY_ID` | Key of the access key id. |
 | `config.export.s3.credentials.secretAccessKeyKey` | `AWS_SECRET_ACCESS_KEY` | Key of the secret access key. |
 | `config.export.escrow.secretName` | empty | Secret holding the escrow private key, mounted read-only at `/etc/vault-sync/escrow` in the export job only, never in the server. Not read until Phase 4. |
+| `config.export.escrow.key` | `escrow.key` | Key of that Secret; it holds the identity file (`age-keygen -pq` output), which the export job reads as `VAULT_SYNC_ESCROW_IDENTITY_FILE`. The chart refuses to render if any value would put it into the server. |
+| `config.escrowJobToken.secretName` | empty | Secret holding the static bearer token of the escrow rotation endpoint (`VAULT_SYNC_ESCROW_JOB_TOKEN_FILE`), mounted read-only at `/etc/vault-sync/escrow-job-token` into the server, which checks it, and the export job, which presents it, and into nothing else. Empty leaves the endpoint off. |
+| `config.escrowJobToken.key` | `token` | Key of that Secret; it holds one line of at least 32 characters, for example `openssl rand -base64 32`. |
 
 ### Route
 

@@ -53,7 +53,7 @@ Set per-vault retention overrides only when every replica runs a release that ha
 
 During a rollout, retention runs of the previous release can also record their scans as complete under the overrides of the new release. The only effect is that a newly shortened override can purge less than it allows until the next full scan. It never purges anything that the policy keeps.
 
-Do not roll back to a release before migration 0010 after you set overrides, unless you prepare the release first. The old release purges every vault with an override under the deployment-wide policy again. It purges the history that a longer override kept. To keep that history, give the release that you roll back to a `VAULT_SYNC_RETENTION_KEEP_ALL` and a `VAULT_SYNC_RETENTION_KEEP_DAILY` that are at least as long as the longest override. See [Retention and history](../configuration.md#retention-and-history).
+Do not roll back to a release before migration 0010 after you set overrides, unless you prepare the release first. The old release purges every vault with an override under the deployment-wide policy again. It purges the history that a longer override kept. To keep that history, give the release that you roll back to a `VAULT_SYNC_RETENTION_KEEP_ALL` and a `VAULT_SYNC_RETENTION_KEEP_DAILY` that are at least as long as the longest override. See [Retention and history](history-and-retention.md#the-retention-policy).
 
 ### Removing devices
 

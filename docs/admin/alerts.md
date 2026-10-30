@@ -115,7 +115,7 @@ Do: Fix the error that the log names.
 
 ### VaultSyncExportNotSucceeding
 
-`warning`, after an hour. The last export with the status `ok` was more than 36 hours ago (threshold `129600` seconds). The alert is on while `config.export.enabled` is set. With the default daily schedule, 36 hours means that a run was missed or failed, so the plaintext copy for disaster recovery ([export.md](../export.md)) is out of date. The alert also fires on a new install until the first export finishes, because the timestamp is 0 until then.
+`warning`, after an hour. The last export with the status `ok` was more than 36 hours ago (threshold `129600` seconds). The alert is on while `config.export.enabled` is set. With the default daily schedule, 36 hours means that a run was missed or failed, so the plaintext copy for disaster recovery ([export.md](backup-and-restore.md#the-export-job)) is out of date. The alert also fires on a new install until the first export finishes, because the timestamp is 0 until then.
 
 Check: Find the last Jobs of the export CronJob (`kubectl get jobs`). Read their logs and their summary (`partial` or `failed`). Look at the export volume: it can be full or not mounted.
 
@@ -139,7 +139,7 @@ Do: Fix the error that the log names.
 
 ### VaultSyncRekeyBacklogNotShrinking
 
-`warning`, after an hour. Revisions in a stale epoch (`vault_sync_service_stale_epoch_revisions`) are above 0, and not fewer than 24 hours earlier. After a key rotation, the clients of the vault members re-encrypt the old revisions. A backlog that did not move for a day means that no member's client re-encrypts, so the key of the old epoch cannot be retired.
+`warning`, after an hour. Revisions in a stale epoch (`vault_sync_service_stale_epoch_revisions`) are above 0, and not fewer than 24 hours earlier. After a key rotation, the clients of the vault members re-encrypt the old revisions. A backlog that did not move for a day means that no member's client re-encrypts, so the key of the old epoch cannot be retired. [Re-encrypting history](encryption.md#re-encrypting-history) explains the job.
 
 Check: `vault_sync_service_rekey_vaults` shows how many vaults are affected. Find out if the devices of the members synced recently.
 
@@ -147,7 +147,7 @@ Do: Ask a member to open the vault in Obsidian with the plugin unlocked. The plu
 
 ### VaultSyncEscrowRewrapStuck
 
-`warning`, after an hour. Escrow key slots that still name a retiring escrow key id (`vault_sync_service_escrow_rewrap_slots`) are above 0, and not fewer than 48 hours earlier. During an escrow key rotation, the export job re-wraps these slots ([export.md](../export.md)). With a daily export, two days with no progress mean that the re-wrap fails. The metric is 0 without `VAULT_SYNC_ESCROW_RETIRING_KEY_IDS`.
+`warning`, after an hour. Escrow key slots that still name a retiring escrow key id (`vault_sync_service_escrow_rewrap_slots`) are above 0, and not fewer than 48 hours earlier. During an escrow key rotation, the export job re-wraps these slots ([Rotate the escrow key](encryption.md#rotate-the-escrow-key)). With a daily export, two days with no progress mean that the re-wrap fails. The metric is 0 without `VAULT_SYNC_ESCROW_RETIRING_KEY_IDS`.
 
 Check: Read the logs of the export job for re-wrap errors. Make sure that the job has both escrow identities and the job token (`config.escrowJobToken`).
 

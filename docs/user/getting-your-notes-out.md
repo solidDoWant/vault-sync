@@ -24,8 +24,8 @@ It does not hold:
 - the members and their roles
 - an encrypted vault without [escrow](encryption.md#escrow). Nobody but its members can decrypt it.
 
-If you lost every device, or you forgot your passphrase, ask your admin for a copy from the export. For how the export works, see [Plaintext export](../export.md).
+If you lost every device, or you forgot your passphrase, ask your admin for a copy from the export. For how the export works, see [Plaintext export](../admin/backup-and-restore.md#the-export-job).
 
 ## Bring notes in
 
-To start a vault from an existing folder of notes, connect it in the plugin: the plugin uploads the files (see [Getting started](getting-started.md#connect-a-vault)). Your admin can also load a folder of Markdown notes into a new, empty vault with the server's import tool (see [Markdown import](../import.md)).
+To start a vault from an existing folder of notes, connect it in the plugin: the plugin uploads the files (see [Getting started](getting-started.md#connect-a-vault)). Your admin can also load a folder of Markdown notes into a new, empty vault with the server's import tool (see [Markdown import](../admin/backup-and-restore.md#import-markdown)).

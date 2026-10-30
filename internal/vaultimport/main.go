@@ -173,7 +173,7 @@ func run(ctx context.Context, serverURL string, vaultID uuid.UUID, source string
 
 	cfg, err := config.LoadImport(lookup)
 	if err != nil {
-		return empty, fmt.Errorf("invalid configuration; see docs/import.md: %s", strings.ReplaceAll(err.Error(), "\n", "; "))
+		return empty, fmt.Errorf("invalid configuration; see docs/admin/backup-and-restore.md: %s", strings.ReplaceAll(err.Error(), "\n", "; "))
 	}
 
 	logger := slog.New(slog.NewJSONHandler(stderr, &slog.HandlerOptions{Level: cfg.LogLevel}))
