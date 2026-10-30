@@ -895,7 +895,8 @@ def select_jobs(plan: Plan, state: dict, cfg: dict, free: int, locks_held: dict,
     claimed = set()
     for run in state.get("running", {}).values():
         claimed |= set(run.get("claims", []))
-    running_keys = set(state.get("running", {}))
+    # state["running"] is keyed by job id; a job is identified by its key.
+    running_keys = {run["key"] for run in state.get("running", {}).values()}
     locks = dict(locks_held)
     new_cap = cfg.get("max_new_work_slots", cfg["slots"])
     new_work = sum(1 for r in state.get("running", {}).values() if r.get("tier") == 5)

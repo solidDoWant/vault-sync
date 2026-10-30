@@ -252,6 +252,14 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(keys(plan), ["reviewer:pr-10"])
         self.assertEqual(plan.arms, [])
 
+    def test_a_running_special_job_is_not_launched_again(self):
+        job = s.Job("special:audit", "security-auditor", 4, (0,), "r", "t", None, None, (), ())
+        plan = s.Plan([job], [], [], [], [])
+        state = {"running": {"20261030T0000Z-special-audit": {"key": "special:audit", "claims": []}}}
+        chosen, queue = s.select_jobs(plan, state, CFG, 3, {}, NOW)
+        self.assertEqual(chosen, [])
+        self.assertEqual(queue[0][1], "running")
+
     def test_later_phase_work_off_starts_only_current_phase(self):
         cfg = s.deep_merge(CFG, {"later_phase_work": False})
         sessions = {"worker:4": {"role": "issue-worker", "issue": 4, "handoff": {"state": "question"}}}
