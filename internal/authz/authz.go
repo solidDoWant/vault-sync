@@ -9,6 +9,10 @@
 //     ErrorDetail of reason ERROR_REASON_VAULT_DELETED;
 //   - a viewer calling a write procedure, and an editor or viewer calling a
 //     manage procedure, get PERMISSION_DENIED;
+//   - for a ReadOrInvitation procedure, a caller who is not a member but
+//     whose request carries the invitation_id of a pending invitation to the
+//     vault is authorized as an invitation holder, and any other
+//     invitation_id gets the NOT_FOUND of an unknown invitation;
 //   - a request whose message carries a vault_id but whose procedure is not
 //     classified as read or write is rejected, so a new vault-scoped
 //     procedure cannot run unauthorized.
@@ -20,6 +24,8 @@ package authz
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -44,6 +50,11 @@ const (
 	// Manage procedures (membership management) are allowed for owners
 	// only.
 	Manage
+	// ReadOrInvitation procedures are allowed for every member and for the
+	// holder of a pending invitation's id to the vault, carried in the
+	// request's invitation_id (docs/design/encryption.md, "Redemption takes
+	// two steps").
+	ReadOrInvitation
 )
 
 func (access Access) String() string {
@@ -54,6 +65,8 @@ func (access Access) String() string {
 		return "write"
 	case Manage:
 		return "manage"
+	case ReadOrInvitation:
+		return "read-or-invitation"
 	default:
 		return fmt.Sprintf("Access(%d)", int(access))
 	}
@@ -65,12 +78,18 @@ type MembershipStore interface {
 	// when the vault does not exist or the user is not a member, or
 	// store.ErrVaultDeleted when the user is a member of a deleted vault.
 	VaultRole(ctx context.Context, vaultID, userID uuid.UUID) (store.Role, error)
+	// InvitationVault returns the vault of the pending E2EE invitation
+	// whose id hashes to idHash, or store.ErrInvitationNotFound.
+	InvitationVault(ctx context.Context, idHash []byte) (uuid.UUID, error)
 }
 
 // Membership is the caller's authorized membership in the request's vault.
+// An invitation holder authorized for a ReadOrInvitation procedure has no
+// role: Invited is set and Role is empty.
 type Membership struct {
 	VaultID uuid.UUID
 	Role    store.Role
+	Invited bool
 }
 
 type membershipKey struct{}
@@ -111,6 +130,37 @@ func VaultDeletedError() *connect.Error {
 	return connectErr
 }
 
+// ErrInvitationNotFound is the error returned for an invitation id that is
+// malformed, unknown, expired, revoked, used or for another vault. Its
+// message is safe to return to the caller.
+var ErrInvitationNotFound = errors.New("invitation not found or no longer valid")
+
+const (
+	// invitationIDBytes is the size of the `<id>` of an E2EE invite code
+	// `<id>.<secret>`: 128 random bits.
+	invitationIDBytes = 16
+)
+
+// invitationIDEncoding encodes the parts of an E2EE invite code.
+var invitationIDEncoding = base64.RawURLEncoding
+
+// HashInvitationID returns the stored hash of an E2EE invite code's <id>:
+// SHA-256 of its 16 bytes, or false for an id that cannot have been issued.
+func HashInvitationID(id string) ([]byte, bool) {
+	if len(id) != invitationIDEncoding.EncodedLen(invitationIDBytes) {
+		return nil, false
+	}
+
+	raw, err := invitationIDEncoding.DecodeString(id)
+	if err != nil || len(raw) != invitationIDBytes {
+		return nil, false
+	}
+
+	sum := sha256.Sum256(raw)
+
+	return sum[:], true
+}
+
 // ParseID parses an identifier in canonical form: a lowercase, hyphenated
 // UUID (SPEC.md §5). Other spellings uuid.Parse accepts (braces, URNs,
 // upper case, no hyphens) are rejected so every id has one representation.
@@ -127,6 +177,12 @@ func ParseID(value string) (uuid.UUID, error) {
 // vault_id field.
 type vaultScoped interface {
 	GetVaultId() string
+}
+
+// invitationScoped is implemented by every generated request message with
+// an invitation_id field.
+type invitationScoped interface {
+	GetInvitationId() string
 }
 
 // Interceptor authorizes vault-scoped RPCs.
@@ -164,7 +220,7 @@ func (interceptor *Interceptor) authorize(ctx context.Context, procedure string,
 		return ctx, nil
 	}
 
-	if !carriesVault || (access != Read && access != Write && access != Manage) {
+	if !carriesVault || (access != Read && access != Write && access != Manage && access != ReadOrInvitation) {
 		interceptor.logger.ErrorContext(ctx, "invalid authorization classification", "procedure", procedure, "access", access.String())
 
 		return nil, connect.NewError(connect.CodeInternal, errors.New("cannot authorize request"))
@@ -182,6 +238,10 @@ func (interceptor *Interceptor) authorize(ctx context.Context, procedure string,
 
 	role, err := interceptor.role(ctx, vaultID, user.ID)
 	if errors.Is(err, store.ErrVaultNotFound) {
+		if invitation, ok := message.(invitationScoped); ok && access == ReadOrInvitation && invitation.GetInvitationId() != "" {
+			return interceptor.authorizeInvitation(ctx, procedure, vaultID, invitation.GetInvitationId())
+		}
+
 		return nil, connect.NewError(connect.CodeNotFound, ErrVaultNotFound)
 	}
 
@@ -200,7 +260,7 @@ func (interceptor *Interceptor) authorize(ctx context.Context, procedure string,
 	case (role == store.RoleEditor || role == store.RoleViewer) && access == Manage:
 		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("only owners can manage this vault"))
 	case role == store.RoleEditor:
-	case role == store.RoleViewer && access == Read:
+	case role == store.RoleViewer && (access == Read || access == ReadOrInvitation):
 	case role == store.RoleViewer:
 		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("viewers cannot write to this vault"))
 	default:
@@ -210,6 +270,29 @@ func (interceptor *Interceptor) authorize(ctx context.Context, procedure string,
 	}
 
 	return WithMembership(ctx, Membership{VaultID: vaultID, Role: role}), nil
+}
+
+// authorizeInvitation authorizes a non-member holding invitationID for
+// vaultID: SHA-256 of the id's bytes must name a pending invitation to that
+// vault. Every other id gets the same NOT_FOUND.
+func (interceptor *Interceptor) authorizeInvitation(ctx context.Context, procedure string, vaultID uuid.UUID, invitationID string) (context.Context, error) {
+	hash, ok := HashInvitationID(invitationID)
+	if !ok || interceptor.memberships == nil {
+		return nil, connect.NewError(connect.CodeNotFound, ErrInvitationNotFound)
+	}
+
+	invited, err := interceptor.memberships.InvitationVault(ctx, hash)
+	if errors.Is(err, store.ErrInvitationNotFound) || (err == nil && invited != vaultID) {
+		return nil, connect.NewError(connect.CodeNotFound, ErrInvitationNotFound)
+	}
+
+	if err != nil {
+		interceptor.logger.ErrorContext(ctx, "cannot resolve invitation", "procedure", procedure, "error", err)
+
+		return nil, connect.NewError(connect.CodeInternal, errors.New("cannot authorize request"))
+	}
+
+	return WithMembership(ctx, Membership{VaultID: vaultID, Invited: true}), nil
 }
 
 func (interceptor *Interceptor) role(ctx context.Context, vaultID, userID uuid.UUID) (store.Role, error) {

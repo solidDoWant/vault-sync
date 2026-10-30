@@ -102,7 +102,16 @@ type VaultKeyServiceClient interface {
 	// in ascending seq order, from the genesis entry. A plaintext vault has
 	// no log, so its list is empty.
 	//
-	// Errors: INVALID_ARGUMENT for a malformed page_token.
+	// A caller who is not a member reads the log with invitation_id, the
+	// `<id>` of a pending invitation to the vault, so that a newcomer can
+	// verify the log from the invite anchor's genesis hash and sign its
+	// redeem entry over the head (docs/design/encryption.md, "Redemption
+	// takes two steps"). Members need no invitation_id.
+	//
+	// Errors: INVALID_ARGUMENT for a malformed page_token; NOT_FOUND, the
+	// same as GetInvitationSlots returns, for a non-member's invitation_id
+	// that is malformed, unknown, expired, revoked, redeemed or for another
+	// vault.
 	ListLogEntries(context.Context, *connect.Request[v1.ListLogEntriesRequest]) (*connect.Response[v1.ListLogEntriesResponse], error)
 }
 
@@ -245,7 +254,16 @@ type VaultKeyServiceHandler interface {
 	// in ascending seq order, from the genesis entry. A plaintext vault has
 	// no log, so its list is empty.
 	//
-	// Errors: INVALID_ARGUMENT for a malformed page_token.
+	// A caller who is not a member reads the log with invitation_id, the
+	// `<id>` of a pending invitation to the vault, so that a newcomer can
+	// verify the log from the invite anchor's genesis hash and sign its
+	// redeem entry over the head (docs/design/encryption.md, "Redemption
+	// takes two steps"). Members need no invitation_id.
+	//
+	// Errors: INVALID_ARGUMENT for a malformed page_token; NOT_FOUND, the
+	// same as GetInvitationSlots returns, for a non-member's invitation_id
+	// that is malformed, unknown, expired, revoked, redeemed or for another
+	// vault.
 	ListLogEntries(context.Context, *connect.Request[v1.ListLogEntriesRequest]) (*connect.Response[v1.ListLogEntriesResponse], error)
 }
 

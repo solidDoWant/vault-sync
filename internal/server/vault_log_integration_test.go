@@ -3,6 +3,7 @@
 package server_test
 
 import (
+	"encoding/base64"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -13,6 +14,7 @@ import (
 
 	vaultsyncv1 "github.com/solidDoWant/vault-sync/gen/vaultsync/v1"
 	"github.com/solidDoWant/vault-sync/internal/api"
+	"github.com/solidDoWant/vault-sync/internal/e2ee"
 )
 
 func (fixture *syncFixture) logEntries(t *testing.T, caller *keyedMember, pageSize uint32, token string) (*vaultsyncv1.ListLogEntriesResponse, error) {
@@ -180,4 +182,130 @@ func TestCreateVaultRefusesATakenVaultIDAgainstPostgres(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, page.GetEntries(), 1)
 	assert.True(t, proto.Equal(first.GetGenesis(), page.GetEntries()[0]))
+}
+
+// invitedLogEntries lists vaultID's log as caller, holding invitationID.
+func (fixture *syncFixture) invitedLogEntries(t *testing.T, caller *keyedMember, vaultID, invitationID string, pageSize uint32, token string) (*vaultsyncv1.ListLogEntriesResponse, error) {
+	t.Helper()
+
+	response, err := fixture.vaultKeys(1).ListLogEntries(t.Context(), authorized(&vaultsyncv1.ListLogEntriesRequest{
+		VaultId: vaultID, InvitationId: invitationID, PageSize: pageSize, PageToken: token,
+	}, caller.token))
+	if err != nil {
+		return nil, err
+	}
+
+	return response.Msg, nil
+}
+
+// A non-member holding the <id> of a pending invitation reads the vault's
+// log, in the members' pages; every id that is not pending for that vault
+// gets GetInvitationSlots's NOT_FOUND.
+func TestTheHolderOfAnInvitationIDReadsTheLogAgainstPostgres(t *testing.T) {
+	fixture := newSyncFixture(t, api.SyncLimits{})
+	alice := fixture.keyedMember(t, "alice")
+	bob := fixture.keyedMember(t, "bob")
+	vaultID := fixture.encryptedVaultWithEpochs(t, alice, 1)
+	otherVaultID := fixture.encryptedVaultWithEpochs(t, alice, 1)
+	members := fixture.members(0)
+
+	invite := func(t *testing.T) signedInvitation {
+		t.Helper()
+
+		invitation := fixture.signedInvitation(t, alice, vaultsyncv1.VaultRole_VAULT_ROLE_EDITOR)
+		_, err := members.CreateInvitation(t.Context(), authorized(fixture.inviteRequest(t, alice, vaultsyncv1.VaultRole_VAULT_ROLE_EDITOR, invitation), alice.token))
+		require.NoError(t, err)
+
+		return invitation
+	}
+
+	alice.vaultID = vaultID
+	invitation := invite(t)
+	anotherInvitation := invite(t)
+
+	memberLog, err := fixture.logEntries(t, alice, 0, "")
+	require.NoError(t, err)
+	require.Len(t, memberLog.GetEntries(), 3, "genesis and two invites")
+
+	invited, err := fixture.invitedLogEntries(t, bob, vaultID, invitation.codeID, 0, "")
+	require.NoError(t, err)
+	assert.True(t, proto.Equal(memberLog, invited), "the holder reads what a member reads")
+
+	// The members' pagination: a page of one, then the rest.
+	first, err := fixture.invitedLogEntries(t, bob, vaultID, invitation.codeID, 1, "")
+	require.NoError(t, err)
+	require.Len(t, first.GetEntries(), 1)
+	require.NotEmpty(t, first.GetNextPageToken())
+	rest, err := fixture.invitedLogEntries(t, bob, vaultID, invitation.codeID, 1000, first.GetNextPageToken())
+	require.NoError(t, err)
+	require.Len(t, rest.GetEntries(), 2)
+	assert.Empty(t, rest.GetNextPageToken())
+	assert.Equal(t, uint64(2), rest.GetEntries()[0].GetSeq())
+
+	// Anonymous callers are refused, the id notwithstanding.
+	_, err = fixture.vaultKeys(1).ListLogEntries(t.Context(), connect.NewRequest(&vaultsyncv1.ListLogEntriesRequest{
+		VaultId: vaultID, InvitationId: invitation.codeID,
+	}))
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err), err)
+
+	// Without an id a non-member is refused as before.
+	_, err = fixture.invitedLogEntries(t, bob, vaultID, "", 0, "")
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err), err)
+
+	notFound := func(t *testing.T, vaultID, id string) {
+		t.Helper()
+
+		_, err := fixture.invitedLogEntries(t, bob, vaultID, id, 0, "")
+		require.Error(t, err)
+		assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err), err)
+
+		var connectErr *connect.Error
+		require.ErrorAs(t, err, &connectErr)
+		assert.Equal(t, "invitation not found or no longer valid", connectErr.Message())
+
+		// GetInvitationSlots refuses the same ids with the same error.
+		if vaultID == otherVaultID {
+			return
+		}
+
+		_, slotsErr := members.GetInvitationSlots(t.Context(), authorized(&vaultsyncv1.GetInvitationSlotsRequest{Id: id}, bob.token))
+
+		var slotsConnectErr *connect.Error
+		require.ErrorAs(t, slotsErr, &slotsConnectErr)
+		assert.Equal(t, slotsConnectErr.Code(), connectErr.Code())
+		assert.Equal(t, slotsConnectErr.Message(), connectErr.Message())
+	}
+
+	notFound(t, vaultID, base64.RawURLEncoding.EncodeToString(make([]byte, 16)))
+	notFound(t, vaultID, "not-an-id")
+	notFound(t, vaultID, invitation.code)
+	notFound(t, otherVaultID, invitation.codeID)
+
+	revoked := invite(t)
+	_, err = members.RevokeInvitation(t.Context(), authorized(&vaultsyncv1.RevokeInvitationRequest{
+		VaultId: vaultID, InvitationId: revoked.id.String(), LogEntry: fixture.idEntry(t, alice, e2ee.EntryRevokeInvitation, revoked.id, alice),
+	}, alice.token))
+	require.NoError(t, err)
+	notFound(t, vaultID, revoked.codeID)
+
+	expired := invite(t)
+	_, err = fixture.pool.Exec(t.Context(), `UPDATE vault_invitations SET expires_at = now() - interval '1 second' WHERE id = $1`, expired.id)
+	require.NoError(t, err)
+	notFound(t, vaultID, expired.codeID)
+
+	_, err = members.RedeemInvitation(t.Context(), authorized(&vaultsyncv1.RedeemInvitationRequest{
+		Code: invitation.code, LogEntry: fixture.redeemEntry(t, alice, bob, invitation), Slots: fixture.redeemSlots(t, bob, invitation),
+	}, bob.token))
+	require.NoError(t, err)
+
+	// Bob is a member now: the redeemed id is ignored, not refused.
+	bob.vaultID = vaultID
+	_, err = fixture.invitedLogEntries(t, bob, vaultID, invitation.codeID, 0, "")
+	require.NoError(t, err)
+
+	carol := fixture.keyedMember(t, "carol")
+	_, err = fixture.invitedLogEntries(t, carol, vaultID, invitation.codeID, 0, "")
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err), err, "a redeemed id")
+	_, err = fixture.invitedLogEntries(t, carol, vaultID, anotherInvitation.codeID, 0, "")
+	require.NoError(t, err, "the other pending invitation still reads")
 }

@@ -1155,13 +1155,19 @@ func (x *AddKeySlotsResponse) GetAdded() uint32 {
 // ListLogEntriesRequest pages through the vault's membership log.
 type ListLogEntriesRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The vault. The caller must be a member.
+	// The vault. The caller must be a member or hold invitation_id.
 	VaultId string `protobuf:"bytes,1,opt,name=vault_id,json=vaultId,proto3" json:"vault_id,omitempty"`
 	// Maximum number of entries to return. Zero selects the server default
 	// (100); larger values are capped at 1000.
 	PageSize uint32 `protobuf:"varint,2,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`
 	// Opaque token from a previous response. Empty for the first page.
-	PageToken     string `protobuf:"bytes,3,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`
+	PageToken string `protobuf:"bytes,3,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`
+	// Optional. For a caller who is not a member: the `<id>` of the E2EE
+	// invite code `<id>.<secret>` (22 characters of base64url without
+	// padding) of a pending, unexpired invitation to vault_id. The server
+	// matches SHA-256 of its 16 bytes against the invitation's id_hash.
+	// Ignored for members.
+	InvitationId  string `protobuf:"bytes,4,opt,name=invitation_id,json=invitationId,proto3" json:"invitation_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1213,6 +1219,13 @@ func (x *ListLogEntriesRequest) GetPageSize() uint32 {
 func (x *ListLogEntriesRequest) GetPageToken() string {
 	if x != nil {
 		return x.PageToken
+	}
+	return ""
+}
+
+func (x *ListLogEntriesRequest) GetInvitationId() string {
+	if x != nil {
+		return x.InvitationId
 	}
 	return ""
 }
@@ -1356,12 +1369,13 @@ const file_vaultsync_v1_vault_key_proto_rawDesc = "" +
 	"\bvault_id\x18\x01 \x01(\tR\avaultId\x12+\n" +
 	"\x05slots\x18\x02 \x03(\v2\x15.vaultsync.v1.KeySlotR\x05slots\"+\n" +
 	"\x13AddKeySlotsResponse\x12\x14\n" +
-	"\x05added\x18\x01 \x01(\rR\x05added\"n\n" +
+	"\x05added\x18\x01 \x01(\rR\x05added\"\x93\x01\n" +
 	"\x15ListLogEntriesRequest\x12\x19\n" +
 	"\bvault_id\x18\x01 \x01(\tR\avaultId\x12\x1b\n" +
 	"\tpage_size\x18\x02 \x01(\rR\bpageSize\x12\x1d\n" +
 	"\n" +
-	"page_token\x18\x03 \x01(\tR\tpageToken\"r\n" +
+	"page_token\x18\x03 \x01(\tR\tpageToken\x12#\n" +
+	"\rinvitation_id\x18\x04 \x01(\tR\finvitationId\"r\n" +
 	"\x16ListLogEntriesResponse\x120\n" +
 	"\aentries\x18\x01 \x03(\v2\x16.vaultsync.v1.LogEntryR\aentries\x12&\n" +
 	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken*\x95\x01\n" +

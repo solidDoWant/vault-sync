@@ -32,6 +32,12 @@ func (memberships *countingMemberships) VaultRole(context.Context, uuid.UUID, uu
 	return "", store.ErrVaultNotFound
 }
 
+func (memberships *countingMemberships) InvitationVault(context.Context, []byte) (uuid.UUID, error) {
+	memberships.lookups.Add(1)
+
+	return uuid.Nil, store.ErrInvitationNotFound
+}
+
 // panickingVaults is a vault store whose ListVaults panics, standing in for
 // any handler that panics.
 type panickingVaults struct{}
