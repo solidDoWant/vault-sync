@@ -539,9 +539,6 @@
                 },
                 "key": {
                   "type": "string"
-                },
-                "signingKeysKey": {
-                  "type": "string"
                 }
               }
             }
