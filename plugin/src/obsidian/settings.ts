@@ -45,6 +45,8 @@ export interface SettingsHost extends Plugin {
   revokeInvitation(invitationId: string): Promise<void>;
   setMemberRole(userId: string, role: VaultRole): Promise<void>;
   removeMember(userId: string): Promise<void>;
+  /** Rotates the connected encrypted vault's key (owners only): the next epoch, for every current member. */
+  rotateVaultKey(): Promise<void>;
   /** Leaves the connected vault; sync then stops with "no longer a member" and the files stay. */
   leaveVault(): Promise<void>;
   /** Deletes the connected vault on the server (owners only); sync then stops with "vault deleted" and the files stay. */
@@ -424,6 +426,34 @@ export class VaultSyncSettingTab extends PluginSettingTab {
                 warning: true,
                 onConfirm: () => {
                   change("remove the member", () => host.removeMember(member.userId));
+                },
+              }).open();
+            });
+          });
+      }
+
+      if (sharing.encrypted) {
+        new Setting(section)
+          .setName("Rotate key")
+          .setDesc("Starts a new vault key for every current member and pending invitation. New changes are encrypted with it, and the other devices pick it up on their next sync. Removing a member rotates the key automatically.")
+          .addButton((button) => {
+            button.setButtonText("Rotate key").onClick(() => {
+              new ConfirmModal(this.app, {
+                title: "Rotate the vault key?",
+                text: "Every current member and pending invitation gets the new key. Notes already synced stay encrypted with the keys they were written with.",
+                confirm: "Rotate key",
+                onConfirm: () => {
+                  button.setDisabled(true);
+                  host.rotateVaultKey().then(
+                    () => {
+                      new Notice("Vault Sync: the vault key was rotated.");
+                      reload();
+                    },
+                    (error: unknown) => {
+                      new Notice(`Vault Sync: could not rotate the vault key: ${membershipErrorMessage(error)}`);
+                      reload();
+                    },
+                  );
                 },
               }).open();
             });

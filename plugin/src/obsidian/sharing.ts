@@ -89,7 +89,7 @@ export interface InvitationRow {
  * server no longer lists the vault (the user was removed or left).
  */
 export type Sharing =
-  | { kind: "owner"; members: MemberRow[]; invitations: InvitationRow[]; keys?: VaultKeys }
+  | { kind: "owner"; members: MemberRow[]; invitations: InvitationRow[]; encrypted: boolean; keys?: VaultKeys }
   | { kind: "member"; role: VaultRole; keys?: VaultKeys }
   | { kind: "not-member" };
 
@@ -119,6 +119,7 @@ export async function loadSharing(client: ProtocolClient, vaultId: string, forma
       return shown === undefined ? row : { ...row, fingerprint: shown };
     }),
     invitations: invitations.invitations.map((invitation) => invitationRow(invitation, formatDate)),
+    encrypted: vault.encryption === VaultEncryption.E2EE,
     ...keys,
   };
 }
@@ -260,6 +261,12 @@ export async function setMemberRole(client: ProtocolClient, vaultId: string, use
 export async function removeMember(client: ProtocolClient, vaultId: string, userId: string, encrypted?: EncryptedSharing): Promise<void> {
   if (encrypted !== undefined) return encrypted.manager.removeMember(userId);
   await client.membership.removeMember({ vaultId, userId });
+}
+
+/** An owner's manual rotation of an encrypted vault's key: the next epoch, which every current member gets a key of, and other devices pick up at their next sync. */
+export async function rotateVaultKey(encrypted: EncryptedSharing | undefined): Promise<void> {
+  if (encrypted === undefined) throw new Error("only an end-to-end encrypted vault has a key to rotate");
+  await encrypted.manager.rotate();
 }
 
 export async function leaveVault(client: ProtocolClient, vaultId: string, encrypted?: EncryptedSharing): Promise<void> {

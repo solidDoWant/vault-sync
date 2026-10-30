@@ -1,8 +1,10 @@
 import { sha256 } from "@noble/hashes/sha2.js";
 import { base64urlnopad } from "@scure/base";
+import { Code } from "@connectrpc/connect";
 import { describe, expect, it } from "vitest";
 
 import { VaultRole } from "../../gen/vaultsync/v1/types_pb";
+import { KeyRecipientKind } from "../../gen/vaultsync/v1/vault_key_pb";
 import { generateKeyPair } from "../e2ee/hybrid";
 import {
   bundleOf,
@@ -26,6 +28,7 @@ import {
   type RedeemContext,
   setEncryptedMemberRole,
   type EncryptedMembershipContext,
+  type InviteLink,
 } from "./encrypted-membership";
 import { MemoryVaultKeyServer } from "./memory-vault-keys";
 import type { UserKeyPair } from "./user-key";
@@ -405,5 +408,137 @@ describe("membership changes of an encrypted vault", () => {
     await expect(
       client.membership.leaveVault({ vaultId: vault.id }),
     ).rejects.toThrow(/log_entry is required/);
+  });
+});
+
+/** Opens `wrappedKey` with the invitation key of `link` and checks it against the epoch's commitment on the server. */
+async function openInvitationSlot(
+  server: MemoryVaultKeyServer,
+  link: InviteLink,
+  invitationId: string,
+  epoch: number,
+  wrappedKey: Uint8Array,
+): Promise<Uint8Array> {
+  const key = await openKeySlot(
+    invitationKeyPair(link.secret, server.vaultId, invitationId).privateKey,
+    wrappedKey,
+    { vaultId: server.vaultId, epoch, recipientKind: "invitation", recipientId: invitationId },
+  );
+  const commitment = server.epochs.find((stored) => stored.epoch === epoch)?.commitment;
+  if (commitment === undefined) throw new Error(`no epoch ${String(epoch)}`);
+  verifyKeyCommitment(key, commitment, server.vaultId, epoch);
+  return key;
+}
+
+describe("invitations across an encrypted vault's epochs", () => {
+  /** Rotates alice's vault once, as after a member left. */
+  async function rotate(server: MemoryVaultKeyServer, manager: VaultKeyManager): Promise<number> {
+    server.rotationPending = true;
+    const state = await manager.sync();
+    expect(state.rotated).toBe(true);
+    return state.currentEpoch;
+  }
+
+  it("wraps the full history to the invitation's key when it is created", async () => {
+    const { server, manager, context, epochKey } = await aliceVault();
+    await rotate(server, manager);
+    const currentEpoch = await rotate(server, manager);
+    expect(currentEpoch).toBe(3);
+
+    const created = await createEncryptedInvitation(
+      { ...context(alice), currentEpoch, epochKey },
+      VaultRole.EDITOR,
+      0,
+    );
+    const link = parseInviteLink(created.link);
+    if (link === undefined) throw new Error("malformed link");
+
+    const slots = server.invitations.get(created.invitation.id)?.slots ?? [];
+    expect(slots.map((slot) => slot.epoch).sort()).toEqual([1, 2, 3]);
+    for (const slot of slots) {
+      expect(await openInvitationSlot(server, link, created.invitation.id, slot.epoch, slot.wrappedKey)).toEqual(epochKey(slot.epoch));
+    }
+  });
+
+  it("lets a newcomer redeem with no other member online and read every epoch, one rotated after the invitation included", async () => {
+    const { server, manager, context, redeemer, keyManager, epochKey } = await aliceVault();
+    await rotate(server, manager);
+    const created = await createEncryptedInvitation(
+      { ...context(alice), currentEpoch: 2, epochKey },
+      VaultRole.VIEWER,
+      0,
+    );
+    const link = parseInviteLink(created.link);
+    if (link === undefined) throw new Error("malformed link");
+    await rotate(server, manager);
+    const requestsBefore = server.requests.length;
+
+    // alice's devices make no request from here on: bob redeems alone.
+    await redeemEncryptedInvitation(redeemer(bob), link);
+    const bobs = keyManager(bob);
+    const state = await bobs.sync();
+
+    expect(state.currentEpoch).toBe(3);
+    for (const epoch of [1, 2, 3]) expect(bobs.epochKey(epoch)).toEqual(epochKey(epoch));
+    for (const epoch of [1, 2, 3]) {
+      expect(server.slotsOf(epoch).filter((slot) => slot.recipientId === bob.userId).map((slot) => slot.creator)).toEqual([bob.userId]);
+    }
+    expect(server.requests.slice(requestsBefore).every((request) => request.caller === bob.userId)).toBe(true);
+    expect(server.invitations.has(created.invitation.id)).toBe(false);
+  });
+
+  it("wraps each new epoch to every pending invitation", async () => {
+    const { server, manager, context, epochKey } = await aliceVault();
+    const invite = async () => {
+      const created = await createEncryptedInvitation(
+        { ...context(alice), currentEpoch: 1, epochKey },
+        VaultRole.EDITOR,
+        0,
+      );
+      const link = parseInviteLink(created.link);
+      if (link === undefined) throw new Error("malformed link");
+      return { id: created.invitation.id, link };
+    };
+    const first = await invite();
+    const second = await invite();
+
+    const epoch = await rotate(server, manager);
+
+    for (const { id, link } of [first, second]) {
+      const slots = (server.invitations.get(id)?.slots ?? []).filter((slot) => slot.epoch === epoch && slot.recipientKind === KeyRecipientKind.INVITATION && slot.recipientId === id);
+      expect(slots).toHaveLength(1);
+      const [slot] = slots;
+      if (slot === undefined) throw new Error("no slot");
+      expect(await openInvitationSlot(server, link, id, epoch, slot.wrappedKey)).toEqual(epochKey(epoch));
+    }
+  });
+
+  it("yields no keys for a revoked or an expired code", async () => {
+    const { server, context, redeemer, keyManager, epochKey } = await aliceVault();
+    const invite = async () => {
+      const created = await createEncryptedInvitation(
+        { ...context(alice), currentEpoch: 1, epochKey },
+        VaultRole.EDITOR,
+        0,
+      );
+      const link = parseInviteLink(created.link);
+      if (link === undefined) throw new Error("malformed link");
+      return { id: created.invitation.id, link };
+    };
+    const revoked = await invite();
+    await revokeEncryptedInvitation(context(alice), revoked.id);
+    const expired = await invite();
+    // The server enforces expiry: past its expiry it no longer holds the invitation.
+    server.invitations.delete(expired.id);
+
+    for (const [key, { link }] of [[bob, revoked], [carol, expired]] as const) {
+      const own = redeemer(key);
+      await expect(own.membership.getInvitationSlots({ id: link.id })).rejects.toMatchObject({ code: Code.NotFound });
+      await expect(redeemEncryptedInvitation(own, link)).rejects.toMatchObject({ code: Code.NotFound });
+      expect(server.members.has(key.userId)).toBe(false);
+      expect(server.slots.filter((slot) => slot.recipientId === key.userId)).toEqual([]);
+      const state = await keyManager(key).sync().catch(() => undefined);
+      expect(state).toBeUndefined();
+    }
   });
 });
