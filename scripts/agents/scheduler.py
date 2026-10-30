@@ -85,7 +85,9 @@ DEFAULT_CONFIG = {
     # false: no pr-reviewer stage. Workers self-check and arm auto-merge; the
     # scheduler arms a finished PR they left unarmed, sends conflicts to the
     # cheap merge-fixer and CI failures to the worker. Phase-end security review
-    # and bug hunt remain the independent check.
+    # and bug hunt remain the independent check. The pr-reviewer playbook was
+    # removed when reviews were turned off for good (2026-10-30): restore
+    # .claude/agents/pr-reviewer.md from git history before setting this true.
     "reviews": True,
     # Issues by anyone else are untrusted data (docs/agents/planner.md).
     "actionable_authors": ["solidDoWant", "github-actions", "app/github-actions"],

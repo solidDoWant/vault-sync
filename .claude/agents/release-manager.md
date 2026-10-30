@@ -37,7 +37,7 @@ The scheduler (`scripts/agents/scheduler.py`) launches you as a top-level headle
    - **One entry per user-visible change, in plain words,** ending with links to every PR tied to it.
    - **Internal work in one closing line:** CI, tests, agent instructions and refactors.
    - **Nothing for code that no longer exists** (earlier engine attempts).
-   - **Known issues:** deferred items and open bugs. Open the PR (`chore(release): <version>`) — a `pr-reviewer` reviews and merges it like any other PR — and hand back with `HANDOFF: wait-pr #<PR>`: the scheduler resumes you once it has merged (or closed: then find out why before going on). Then continue on the merge commit.
+   - **Known issues:** deferred items and open bugs. Open the PR (`chore(release): <version>`), arm auto-merge on its head after a self-check like any other PR, and hand back with `HANDOFF: wait-pr #<PR>`: the scheduler resumes you once it has merged (or closed: then find out why before going on). Then continue on the merge commit.
 4. **Gates on the exact merge commit** (detached checkout of it in your worktree; background each long run and poll with `scripts/agents/wait-for.sh`):
    - CI's `checks` is green for that commit on `master` (`gh run list --branch master --commit <sha>`), including the plugin e2e jobs on all platforms.
    - `make test-integration` passes, including the rolling-upgrade test against the previous release.
