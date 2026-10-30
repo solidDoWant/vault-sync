@@ -1,4 +1,4 @@
-import { Modal, Notice, PluginSettingTab, Setting, type App, type ButtonComponent, type Plugin, type ToggleComponent } from "obsidian";
+import { Modal, Notice, PluginSettingTab, Setting, type App, type ButtonComponent, type Plugin, type TextComponent, type ToggleComponent } from "obsidian";
 
 import { VaultRole, type Vault } from "../gen/vaultsync/v1/types_pb";
 import type { AuthState } from "../core/auth/tokens";
@@ -38,6 +38,8 @@ export interface SettingsHost extends Plugin {
   listDevices(): Promise<DeviceRow[]>;
   /** Removes another of the user's devices. */
   removeDevice(deviceId: string): Promise<void>;
+  /** The Device name setting was edited (and saved); `before` is its value before the edit. Renames this device once the edits settle. */
+  deviceNameChanged(before: string): void;
   /** Registers this installation again after its device was removed, and starts sync. */
   registerAgain(): Promise<void>;
   /** The connected vault's Sharing section (#34). */
@@ -85,6 +87,7 @@ const accountDescriptions: Record<AuthState, string> = {
  */
 export class VaultSyncSettingTab extends PluginSettingTab {
   private statusSetting: Setting | undefined;
+  private deviceNameText: TextComponent | undefined;
   /** Kept across renders, so a list rebuilt while a removal runs cannot send it again. */
   private readonly removals: DeviceRemovals;
   /**
@@ -192,13 +195,16 @@ export class VaultSyncSettingTab extends PluginSettingTab {
     }
     new Setting(containerEl)
       .setName("Device name")
-      .setDesc("How this device is named on the server and in conflict copies. Empty uses the platform's name. Invisible characters are left out and the name is cut at 256 bytes. The server keeps the name the device was first registered with.")
-      .addText((text) =>
+      .setDesc("How this device is named on the server and in conflict copies. Empty uses the platform's name. Invisible characters are left out and the name is cut at 256 bytes. While signed in, a change renames this device on the server once you stop typing.")
+      .addText((text) => {
+        this.deviceNameText = text;
         text.setValue(host.data.deviceName).onChange(async (value) => {
+          const before = host.data.deviceName;
           host.data.deviceName = value;
           await host.saveSettings();
-        }),
-      );
+          host.deviceNameChanged(before);
+        });
+      });
 
 
     if (host.authState === "signed-in") {
@@ -229,6 +235,16 @@ export class VaultSyncSettingTab extends PluginSettingTab {
             }),
         );
     }
+  }
+
+  /** Shows the Device name setting as it is now, e.g. after a refused rename put it back. */
+  showDeviceName(): void {
+    this.deviceNameText?.setValue(this.host.data.deviceName);
+  }
+
+  /** Lists the devices again, if the list is shown: after this device was renamed. */
+  reloadDevices(): void {
+    this.shownDevices?.loads.load();
   }
 
   /** The user's devices (#590): each with its last activity, and Remove for every one but this device. */

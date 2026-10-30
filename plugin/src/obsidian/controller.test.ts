@@ -14,10 +14,10 @@ import { MemorySyncJournal } from "../core/sync/journal";
 import { InMemoryRealtimeServer } from "../core/realtime/memory";
 import { createProtocolClient, type ProtocolClient } from "../core/protocol/client";
 import { InMemoryVault } from "../core/vault/memory";
-import { connectNeedsConfirmation, connectProblem, DeviceLimitError, ensureDevice, listRemoteVaults, SyncController, type ClosableJournal } from "./controller";
+import { connectNeedsConfirmation, connectProblem, DeviceLimitError, ensureDevice, listRemoteVaults, renameDevice, SyncController, type ClosableJournal } from "./controller";
 import { currentDeviceId, DeviceListLoads, DeviceRemovals, deviceRows, type DeviceRow, listDevices, removeOtherDevice } from "./devices";
 import { parsePluginData, type PluginData } from "./data";
-import { DeviceNameError } from "./device-name";
+import { DeviceNameEdits, DeviceNameError } from "./device-name";
 import { SyncSession, type SyncSessionOptions } from "./session";
 import { statusText, type SyncStatus } from "./status";
 
@@ -31,10 +31,22 @@ afterEach(() => {
 });
 
 /** The device and vault services, faked; sync and blobs from an in-memory server. */
-function fakeServer(options: { registerDevice?: (name: string, registrationId: string) => string; role?: VaultRole; listVaults?: () => void } = {}) {
+function fakeServer(
+  options: {
+    registerDevice?: (name: string, registrationId: string) => string;
+    /** The name a registration answers with: a retry gets the device's current name, which a rename may have changed. */
+    registeredName?: string;
+    /** Called before every RenameDevice; throwing refuses it. */
+    renameDevice?: (name: string) => void;
+    role?: VaultRole;
+    listVaults?: () => void;
+  } = {},
+) {
   const sync = new InMemoryServer();
   const registered: string[] = [];
   const registrationIds: string[] = [];
+  /** The names RenameDevice was called with. */
+  const renames: string[] = [];
   const vaults = [
     create(VaultSchema, {
       id: sync.vaultId,
@@ -75,8 +87,16 @@ function fakeServer(options: { registerDevice?: (name: string, registrationId: s
         registrationIds.push(request.registrationId);
         const id = options.registerDevice?.(request.name, request.registrationId) ?? `device-${String(registered.length + 1)}`;
         registered.push(request.name);
-        const device = create(DeviceSchema, { id, name: request.name });
+        const device = create(DeviceSchema, { id, name: options.registeredName ?? request.name });
         devices.push(device);
+        return { device };
+      },
+      renameDevice: (request) => {
+        renames.push(request.name);
+        options.renameDevice?.(request.name);
+        const device = devices.find((candidate) => candidate.id === request.deviceId && !removed.has(candidate.id));
+        if (device === undefined) throw new ConnectError("device not found", Code.NotFound);
+        device.name = request.name;
         return { device };
       },
       listDevices: () => ({ devices: devices.filter((device) => !removed.has(device.id)) }),
@@ -103,7 +123,7 @@ function fakeServer(options: { registerDevice?: (name: string, registrationId: s
     devices: createClient(DeviceService, transport),
     vaults: createClient(VaultService, transport),
   };
-  return { sync, client, registered, registrationIds, devices, removed, vaults };
+  return { sync, client, registered, registrationIds, renames, devices, removed, vaults };
 }
 
 function revisionById(server: InMemoryServer, revisionId: string): Revision | undefined {
@@ -523,6 +543,194 @@ describe("ensureDevice", () => {
     expect(server.registrationIds).toHaveLength(2);
     expect(server.registrationIds[1]).not.toBe(server.registrationIds[0]);
     expect(server.registered).toEqual(["Work laptop"]);
+  });
+});
+
+describe("renaming this device from the Device name setting", () => {
+  const alice = () => Promise.resolve(tokenFor("alice"));
+
+  /** A device registered as "Laptop" for alice, and the options to rename it. */
+  async function registered(server: ReturnType<typeof fakeServer>) {
+    const data: PluginData = { ...settings, deviceName: "Laptop" };
+    const options = { data, save: () => Promise.resolve(), client: server.client, accessToken: alice, defaultDeviceName: "desktop" };
+    await ensureDevice(options);
+    return options;
+  }
+
+  it("renames the device to the edited setting, and the device list shows the new name", async () => {
+    const server = fakeServer();
+    const options = await registered(server);
+    options.data.deviceName = "Work laptop";
+
+    expect(await renameDevice(options, "Laptop")).toBe(true);
+
+    expect(server.renames).toEqual(["Work laptop"]);
+    expect((await listDevices(server.client)).map((device) => device.name)).toEqual(["Work laptop"]);
+    expect(options.data.device?.name).toBe("Work laptop");
+    expect(options.data.device?.id).toBe("device-1");
+    // Stored, so a restart does not rename again.
+    const reloaded = parsePluginData(JSON.parse(JSON.stringify(options.data)));
+    expect(await renameDevice({ ...options, data: reloaded })).toBe(false);
+    expect(server.renames).toEqual(["Work laptop"]);
+  });
+
+  it("does not call RenameDevice when the setting still names the device as the server accepted it", async () => {
+    const server = fakeServer();
+    const options = await registered(server);
+    options.data.deviceName = "  Laptop\u200b ";
+
+    expect(await renameDevice(options, "Laptop")).toBe(false);
+    expect(server.renames).toEqual([]);
+  });
+
+  it("does nothing without a registered device, for another account's device or a removed one", async () => {
+    const server = fakeServer();
+    const unregistered = { data: { ...settings, deviceName: "Phone" }, save: () => Promise.resolve(), client: server.client, accessToken: alice, defaultDeviceName: "desktop" };
+    expect(await renameDevice(unregistered)).toBe(false);
+
+    const options = await registered(server);
+    options.data.deviceName = "Phone";
+    expect(await renameDevice({ ...options, accessToken: () => Promise.resolve(tokenFor("bob")) })).toBe(false);
+    const device = options.data.device;
+    if (device === undefined) throw new Error("not registered");
+    options.data.device = { ...device, removed: true };
+    expect(await renameDevice(options)).toBe(false);
+    expect(server.renames).toEqual([]);
+  });
+
+  it("puts the setting back to the last name the server accepted when the rename fails", async () => {
+    const server = fakeServer({
+      renameDevice: () => {
+        throw new ConnectError("name is not a valid device name", Code.InvalidArgument);
+      },
+    });
+    const options = await registered(server);
+    let saves = 0;
+    options.save = () => {
+      saves++;
+      return Promise.resolve();
+    };
+    options.data.deviceName = "Phone\u0890";
+
+    await expect(renameDevice(options, "Something else")).rejects.toThrow(/name is not a valid device name/);
+
+    expect(options.data.deviceName).toBe("Laptop");
+    expect(options.data.device?.name).toBe("Laptop");
+    expect(saves).toBe(1);
+    expect((await listDevices(server.client)).map((device) => device.name)).toEqual(["Laptop"]);
+  });
+
+  it("puts the setting back to its value before the edit for a device stored without the server's name", async () => {
+    const server = fakeServer({
+      renameDevice: () => {
+        throw new ConnectError("unavailable", Code.Unavailable);
+      },
+    });
+    const options = await registered(server);
+    const device = options.data.device;
+    if (device === undefined) throw new Error("not registered");
+    options.data.device = { id: device.id, serverUrl: device.serverUrl, issuer: device.issuer, subject: device.subject };
+    options.data.deviceName = "Phone";
+
+    await expect(renameDevice(options, "")).rejects.toThrow();
+    expect(options.data.deviceName).toBe("");
+  });
+
+  it("renames the device to the setting once a registration completes that was pending when the setting changed", async () => {
+    const server = fakeServer();
+    // A registration as "Laptop" was saved, and its response lost.
+    const data: PluginData = { ...settings, deviceName: "Laptop" };
+    const options = { data, save: () => Promise.resolve(), client: server.client, accessToken: alice, defaultDeviceName: "desktop" };
+    const lost = fakeServer({
+      registerDevice: () => {
+        throw new ConnectError("unavailable", Code.Unavailable);
+      },
+    });
+    await expect(ensureDevice({ ...options, client: lost.client })).rejects.toThrow();
+    expect(data.pendingDevice?.name).toBe("Laptop");
+    data.deviceName = "Work laptop";
+
+    expect(await ensureDevice(options)).toBe("device-1");
+
+    expect(server.registered).toEqual(["Laptop"]);
+    expect(server.renames).toEqual(["Work laptop"]);
+    expect(data.device?.name).toBe("Work laptop");
+    expect(data.deviceName).toBe("Work laptop");
+  });
+
+  it("keeps the name the server returns when the setting did not change while the registration was pending", async () => {
+    // The device was renamed from another installation before this retry.
+    const server = fakeServer({ registeredName: "Renamed elsewhere" });
+    const data: PluginData = { ...settings, deviceName: "Laptop" };
+
+    expect(await ensureDevice({ data, save: () => Promise.resolve(), client: server.client, accessToken: alice, defaultDeviceName: "desktop" })).toBe("device-1");
+
+    expect(server.renames).toEqual([]);
+    expect(data.device?.name).toBe("Renamed elsewhere");
+    expect(data.deviceName).toBe("Renamed elsewhere");
+  });
+
+  it("registers the device even when the rename after the pending registration fails, and reports the failure", async () => {
+    const server = fakeServer({
+      renameDevice: () => {
+        throw new ConnectError("unavailable", Code.Unavailable);
+      },
+    });
+    const data: PluginData = { ...settings, deviceName: "Laptop" };
+    const failures: unknown[] = [];
+    const options = { data, save: () => Promise.resolve(), client: server.client, accessToken: alice, defaultDeviceName: "desktop", onRenameFailed: (error: unknown) => failures.push(error) };
+    const lost = fakeServer({
+      registerDevice: () => {
+        throw new ConnectError("unavailable", Code.Unavailable);
+      },
+    });
+    await expect(ensureDevice({ ...options, client: lost.client })).rejects.toThrow();
+    data.deviceName = "Work laptop";
+
+    expect(await ensureDevice(options)).toBe("device-1");
+
+    expect(server.renames).toEqual(["Work laptop"]);
+    expect(failures).toHaveLength(1);
+    expect(data.deviceName).toBe("Laptop");
+    expect(data.device?.name).toBe("Laptop");
+  });
+});
+
+describe("DeviceNameEdits", () => {
+  it("renames once the edits have settled, not on every keystroke, with the setting from before the first edit", async () => {
+    vi.useFakeTimers();
+    const renames: string[] = [];
+    const edits = new DeviceNameEdits(1000, (before) => {
+      renames.push(before);
+      return Promise.resolve();
+    });
+
+    edits.edited("Laptop");
+    await vi.advanceTimersByTimeAsync(999);
+    edits.edited("Laptop W");
+    await vi.advanceTimersByTimeAsync(999);
+    edits.edited("Laptop Wo");
+    await vi.advanceTimersByTimeAsync(999);
+    expect(renames).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(renames).toEqual(["Laptop"]);
+
+    edits.edited("Laptop Work");
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(renames).toEqual(["Laptop", "Laptop Work"]);
+  });
+
+  it("drops an edit that has not settled when cancelled", async () => {
+    vi.useFakeTimers();
+    const renames: string[] = [];
+    const edits = new DeviceNameEdits(1000, (before) => {
+      renames.push(before);
+      return Promise.resolve();
+    });
+    edits.edited("Laptop");
+    edits.cancel();
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(renames).toEqual([]);
   });
 });
 
@@ -1026,7 +1234,7 @@ describe("a device removed from another device (#590)", () => {
     await f.controller.registerAgain();
     await statusBecomes(f.statuses, "idle");
     expect(server.registered).toEqual(["desktop", "desktop"]);
-    expect(f.data.device).toEqual({ id: "device-2", serverUrl: "https://sync.example", issuer: "https://auth.example/", subject: "alice" });
+    expect(f.data.device).toEqual({ id: "device-2", serverUrl: "https://sync.example", issuer: "https://auth.example/", subject: "alice", name: "desktop" });
     expect(server.sync.liveFiles()).toEqual(new Map([["unsynced.md", "written after the removal"]]));
     expect(server.sync.revisionAt(1n).deviceId).toBe("device-2");
     expect((await f.controller.session?.listProblems())?.refused).toEqual([]);

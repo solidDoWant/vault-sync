@@ -8,7 +8,8 @@ import type { PathRules } from "./core/vaultpath/platform";
 import type { VaultAdapter } from "./core/vault/adapter";
 import { PROTOCOL_VERSION } from "./core/version";
 import { ConflictView, conflictViewType } from "./obsidian/conflict-view";
-import { connectedVault, connectNeedsConfirmation, connectProblem, currentAccount, listRemoteVaults, SyncController } from "./obsidian/controller";
+import { connectedVault, connectNeedsConfirmation, connectProblem, currentAccount, listRemoteVaults, renameDevice, SyncController } from "./obsidian/controller";
+import { DeviceNameEdits, deviceNameSettleMs } from "./obsidian/device-name";
 import { deviceVerifiedLogStore, loadDeviceSecrets, refreshTokenLost, savePluginData } from "./obsidian/device-storage";
 import { oidcConfig, parsePluginData, persistRefreshToken, serialized, serverBaseUrl, signInProblem, type ConnectedVault, type IdentityProvider, type PluginData } from "./obsidian/data";
 import { currentDeviceId, deviceRows, listDevices, removeOtherDevice, type DeviceRow } from "./obsidian/devices";
@@ -44,7 +45,7 @@ import { VaultKeyManager } from "./core/keys/vault-keys";
 import type { RekeyResult } from "./core/sync/rekey";
 import type { LogTrust } from "./core/keys/verified-log";
 import { SignInCancelledError, SignInModal } from "./obsidian/sign-in-modal";
-import { initialStatus, isStoppedState, statusDescription, statusIcon, statusText, type SyncStatus } from "./obsidian/status";
+import { errorMessage, initialStatus, isStoppedState, statusDescription, statusIcon, statusText, type SyncStatus } from "./obsidian/status";
 import { ObsidianVaultAdapter } from "./obsidian/vault-adapter";
 import { keepLocalCopy } from "./obsidian/local-copies";
 import { ViewerMode } from "./obsidian/viewer-mode";
@@ -76,6 +77,8 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
   private signingIn = false;
   private status: SyncStatus = initialStatus;
   private readonly skipNotices = new SkipNotices();
+  /** Edits of the Device name setting, which rename this device once they settle. */
+  private readonly deviceNameEdits = new DeviceNameEdits(deviceNameSettleMs, (before) => this.renameDevice(before));
 
   override async onload(): Promise<void> {
     console.debug(`vault-sync loaded (protocol v${String(PROTOCOL_VERSION)})`);
@@ -96,6 +99,9 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
       client: () => this.protocolClient(),
       accessToken: () => (this.tokens === undefined ? Promise.reject(new Error("vault-sync is not loaded")) : this.tokens.accessToken()),
       defaultDeviceName: platformName(),
+      onRenameFailed: (error) => {
+        this.renameFailed(error);
+      },
       openJournal: (key) => openVaultJournal(this.app, key),
       vault: () => this.syncedVault(),
       ready: () => this.layoutReady(),
@@ -188,6 +194,7 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
 
   override onunload(): void {
     this.signInModal?.close();
+    this.deviceNameEdits.cancel();
     // Not awaited (Obsidian does not wait for onunload): the sessions refuse
     // every vault, journal and server call from here on, so the next load
     // does not race them.
@@ -336,6 +343,37 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
   /** Removes another of the user's devices; it can no longer sync until it registers again. */
   removeDevice(deviceId: string): Promise<void> {
     return removeOtherDevice(this.protocolClient(), this.data, deviceId);
+  }
+
+  /** The Device name setting was edited: while signed in, this device is renamed to it once the edits settle. */
+  deviceNameChanged(before: string): void {
+    if (this.authState === "signed-in") this.deviceNameEdits.edited(before);
+  }
+
+  /** Renames this device to the Device name setting (renameDevice); a failure shows a notice and the setting the server's name. */
+  private async renameDevice(before: string): Promise<void> {
+    if (this.authState !== "signed-in" || this.tokens === undefined) return;
+    const tokens = this.tokens;
+    try {
+      const renamed = await renameDevice(
+        {
+          data: this.data,
+          save: () => this.saveSettings(),
+          client: this.protocolClient(),
+          accessToken: () => tokens.accessToken(),
+          defaultDeviceName: platformName(),
+        },
+        before,
+      );
+      if (renamed) this.settingTab?.reloadDevices();
+    } catch (error) {
+      this.renameFailed(error);
+    }
+  }
+
+  private renameFailed(error: unknown): void {
+    new Notice(`Vault Sync: could not rename this device: ${errorMessage(error)}. The Device name setting is back to "${this.data.deviceName}".`);
+    this.settingTab?.showDeviceName();
   }
 
   /** Registers this installation again after its device was removed, and pushes the changes kept meanwhile. */

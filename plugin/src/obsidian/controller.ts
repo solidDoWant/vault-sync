@@ -113,6 +113,12 @@ export interface DeviceRegistrationOptions {
   accessToken: () => Promise<string>;
   /** The name to register when the user set none (data.deviceName). */
   defaultDeviceName: string;
+  /**
+   * Hears that renaming the device to the Device name setting after its
+   * pending registration completed failed (renameDevice): the setting is back
+   * to the server's name then, and sync goes on.
+   */
+  onRenameFailed?: (error: unknown) => void;
 }
 
 /**
@@ -129,6 +135,12 @@ export interface DeviceRegistrationOptions {
  * response between the server registering the device and the plugin saving
  * it does not use a second place (#428): the server returns the device the
  * first call registered.
+ *
+ * The server's answer names the device as it is now: a retry gets the name
+ * the device has, which a rename may have changed since the first call. If
+ * the Device name setting changed while the registration was pending
+ * (setting ≠ pending name), the device is renamed to the setting once it is
+ * registered; otherwise the setting takes the server's name.
  */
 export async function ensureDevice(options: DeviceRegistrationOptions): Promise<string> {
   const { data } = options;
@@ -147,8 +159,11 @@ export async function ensureDevice(options: DeviceRegistrationOptions): Promise<
     await options.save();
   }
   let id: string | undefined;
+  let name: string | undefined;
   try {
-    id = (await options.client.devices.registerDevice({ name: pending.name, registrationId: pending.registrationId })).device?.id;
+    const device = (await options.client.devices.registerDevice({ name: pending.name, registrationId: pending.registrationId })).device;
+    id = device?.id;
+    name = device?.name;
   } catch (error) {
     if (isDeviceLimit(error)) throw new DeviceLimitError(errorMessage(error));
     if (isRefusal(error)) {
@@ -162,10 +177,60 @@ export async function ensureDevice(options: DeviceRegistrationOptions): Promise<
     throw error;
   }
   if (id === undefined || id === "") throw new Error("the server registered the device but returned no id");
-  data.device = { id, ...account };
+  data.device = { id, ...(name === undefined || name === "" ? {} : { name }), ...account };
   delete data.pendingDevice;
+  const accepted = data.device.name ?? pending.name;
+  const renamedMeanwhile = deviceNameOf(data.deviceName, options.defaultDeviceName) !== pending.name;
+  if (!renamedMeanwhile && accepted !== pending.name) data.deviceName = accepted;
   await options.save();
+  if (renamedMeanwhile) {
+    try {
+      await renameDevice(options);
+    } catch (error) {
+      options.onRenameFailed?.(error);
+    }
+  }
   return id;
+}
+
+/**
+ * Renames this installation's device to the Device name setting
+ * (RenameDevice, SPEC.md §6.2) when the setting names it otherwise than the
+ * server last accepted, and stores the name the server returns. Resolves
+ * whether it called RenameDevice. Without a registered device of the
+ * signed-in account that is not removed it does nothing: a registration
+ * still pending is renamed once it completes (ensureDevice).
+ *
+ * When the server refuses the rename, or it cannot be sent, the setting goes
+ * back to the last name the server accepted, unless it was edited again
+ * meanwhile, and the error is rethrown. `before` is the setting before the
+ * edit: what the setting goes back to for a device registered before the
+ * plugin stored the server's name, or when it names the accepted name.
+ */
+export async function renameDevice(options: DeviceRegistrationOptions, before?: string): Promise<boolean> {
+  const { data } = options;
+  const account = await currentAccount(data, options.accessToken);
+  const device = data.device;
+  if (device === undefined || device.removed === true || !sameAccount(device, account)) return false;
+  const setting = data.deviceName;
+  const name = deviceNameOf(setting, options.defaultDeviceName);
+  if (name === device.name) return false;
+  let renamed: string | undefined;
+  try {
+    renamed = (await options.client.devices.renameDevice({ deviceId: device.id, name })).device?.name;
+  } catch (error) {
+    if (data.deviceName === setting) {
+      const accepted = device.name;
+      data.deviceName = before !== undefined && (accepted === undefined || deviceNameOf(before, options.defaultDeviceName) === accepted) ? before : (accepted ?? setting);
+      await options.save();
+    }
+    throw error;
+  }
+  if (data.device === device) {
+    data.device = { ...device, name: renamed === undefined || renamed === "" ? name : renamed };
+    await options.save();
+  }
+  return true;
 }
 
 /**
@@ -260,6 +325,8 @@ export interface SyncControllerOptions {
   client: () => ProtocolClient;
   accessToken: () => Promise<string>;
   defaultDeviceName: string;
+  /** Hears that the rename after a pending registration failed (DeviceRegistrationOptions.onRenameFailed). */
+  onRenameFailed?: (error: unknown) => void;
   /** Opens the journal for `key`; `onBlocked` hears that it waits for another connection. */
   openJournal: (key: JournalKey, onBlocked: () => void) => Promise<ClosableJournal>;
   vault: () => VaultAdapter;
@@ -453,6 +520,7 @@ export class SyncController {
         client,
         accessToken: this.options.accessToken,
         defaultDeviceName: this.options.defaultDeviceName,
+        ...(this.options.onRenameFailed === undefined ? {} : { onRenameFailed: this.options.onRenameFailed }),
       });
       if (!live()) return;
       journal = await this.options.openJournal({ serverUrl: serverBaseUrl(data), vaultId: wanted.vault.id }, () => {

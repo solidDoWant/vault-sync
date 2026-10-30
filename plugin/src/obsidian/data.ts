@@ -136,6 +136,11 @@ export interface RegisteredDevice {
   issuer: string;
   subject: string;
   /**
+   * The device's name as the server last accepted it (RegisterDevice or
+   * RenameDevice). Absent for a device registered before the plugin stored it.
+   */
+  name?: string;
+  /**
    * The server refused a commit because the device was removed (from
    * another device, in the device list): sync waits until the user registers
    * this installation again (#590). Never cleared by the plugin on its own.
@@ -200,11 +205,14 @@ export function parsePluginData(raw: unknown): PluginData {
     "issuer",
     "subject",
   ]);
-  if (device !== undefined)
-    data.device =
-      (stored.device as Record<string, unknown>).removed === true
-        ? { ...device, removed: true }
-        : device;
+  if (device !== undefined) {
+    const storedDevice = stored.device as Record<string, unknown>;
+    data.device = {
+      ...device,
+      ...(typeof storedDevice.name === "string" ? { name: storedDevice.name } : {}),
+      ...(storedDevice.removed === true ? { removed: true as const } : {}),
+    };
+  }
   const pendingDevice = record(stored.pendingDevice, [
     "registrationId",
     "name",

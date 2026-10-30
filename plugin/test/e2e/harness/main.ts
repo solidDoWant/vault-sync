@@ -196,6 +196,8 @@ interface RemoveDeviceIntercept {
   release: ((fail: boolean) => void) | undefined;
   /** vault-sync's ListDevices calls since then (#634): how many, and the next one held until released. */
   listDevices: { calls: number; next: "pass" | "hold"; release: (() => void) | undefined };
+  /** vault-sync's RenameDevice calls since then: the names asked for, and whether the next one fails without reaching the server. */
+  renameDevice: { names: string[]; failNext: boolean };
 }
 
 const encoder = new TextEncoder();
@@ -972,12 +974,14 @@ export default class VaultSyncE2EHarness extends Plugin {
    * or held until `releaseRemoveDevice` (`holdNextRemoveDevice`). Its
    * ListDevices calls are counted (`listDevicesCalls`), and the next one can
    * be held, already answered by the server, until `releaseListDevices`
-   * (`holdNextListDevices`). Every other RPC goes to the server unchanged.
+   * (`holdNextListDevices`). Its RenameDevice calls are recorded
+   * (`renameDeviceCalls`), and the next one can be failed
+   * (`failNextRenameDevice`). Every other RPC goes to the server unchanged.
    */
   interceptRemoveDevice(): void {
     const plugin = this.vaultSync();
     if (this.removeDeviceIntercept !== undefined) return;
-    const intercept: RemoveDeviceIntercept = { calls: [], next: "pass", release: undefined, listDevices: { calls: 0, next: "pass", release: undefined } };
+    const intercept: RemoveDeviceIntercept = { calls: [], next: "pass", release: undefined, listDevices: { calls: 0, next: "pass", release: undefined }, renameDevice: { names: [], failNext: false } };
     this.removeDeviceIntercept = intercept;
     const original = plugin.protocolClient.bind(plugin);
     this.uninterceptedClient = original;
@@ -1007,6 +1011,15 @@ export default class VaultSyncE2EHarness extends Plugin {
             const response = await devices.listDevices(request, options);
             if (mode === "hold") await new Promise<void>((resolve) => (listing.release = resolve));
             return response;
+          },
+          renameDevice: async (request, options) => {
+            const renames = intercept.renameDevice;
+            renames.names.push(request.name ?? "");
+            if (renames.failNext) {
+              renames.failNext = false;
+              throw new Error("the e2e harness failed this RenameDevice");
+            }
+            return devices.renameDevice(request, options);
           },
         },
       };
@@ -1051,6 +1064,22 @@ export default class VaultSyncE2EHarness extends Plugin {
   /** How many ListDevices calls vault-sync made since `interceptRemoveDevice`. */
   listDevicesCalls(): number {
     return this.requireRemoveDeviceIntercept().listDevices.calls;
+  }
+
+  /** Fails vault-sync's next RenameDevice without sending it. */
+  failNextRenameDevice(): void {
+    this.requireRemoveDeviceIntercept().renameDevice.failNext = true;
+  }
+
+  /** The names of vault-sync's RenameDevice calls since `interceptRemoveDevice`. */
+  renameDeviceCalls(): string[] {
+    return [...this.requireRemoveDeviceIntercept().renameDevice.names];
+  }
+
+  /** The names of the signed-in user's devices on the server. */
+  async serverDeviceNames(): Promise<string[]> {
+    const client = this.uninterceptedClient?.() ?? this.vaultSync().protocolClient();
+    return (await client.devices.listDevices({})).devices.map((device) => device.name);
   }
 
   /** Every RemoveDevice call since `interceptRemoveDevice`, and whether it was sent to the server. */
