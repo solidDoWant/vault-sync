@@ -78,7 +78,7 @@ func TestJSONUploadOfFullChunk(t *testing.T) {
 		VaultId: vault.GetId(), BlobId: blobID, Size: uint64(len(content)),
 	}, token))
 	require.NoError(t, err)
-	// The size docs/configuration.md documents for the defaults.
+	// The size docs/admin/configuration-reference.md documents for the defaults.
 	require.EqualValues(t, 784878, begun.Msg.GetMaxChunkSize())
 
 	chunk := content[:min(len(content), int(begun.Msg.GetMaxChunkSize()))]

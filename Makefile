@@ -98,10 +98,12 @@ check-generate: generate ## Fail if committed generated protobuf code differs fr
 .PHONY: generate-docs
 generate-docs: ## Regenerate the reference pages in docs/admin/ (go test fails while one is stale).
 	go test ./internal/server/ -run '^TestMetricsReferenceIsCurrent$$' -count=1 -update
+	go test ./internal/config/ -run '^TestConfigurationReferenceIsCurrent$$' -count=1 -update
 
 .PHONY: check-generate-docs
 check-generate-docs: ## Fail if a generated reference page in docs/admin/ is stale (also part of make test).
 	go test ./internal/server/ -run '^TestMetricsReferenceIsCurrent$$' -count=1
+	go test ./internal/config/ -run '^TestConfigurationReferenceIsCurrent$$' -count=1
 
 ##@ Plugin
 

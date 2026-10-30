@@ -57,6 +57,7 @@ jobs:
               - 'docs/{configuration,deployment,alerts}.md'
               - 'docs/admin/alerts.md'
               - 'docs/admin/metrics-reference.md'
+              - 'docs/admin/configuration-reference.md'
             desktop:
               - '{plugin/**,.github/**,nix/**,flake.*}'
             npm:
