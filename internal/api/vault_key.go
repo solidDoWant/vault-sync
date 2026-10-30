@@ -68,6 +68,7 @@ type VaultKeyStore interface {
 	RotateEpoch(ctx context.Context, creatorID uuid.UUID, next store.NextEpoch) (store.Epoch, error)
 	AddKeySlots(ctx context.Context, creatorID uuid.UUID, slots []store.KeySlot) (int, error)
 	ListLogEntries(ctx context.Context, after int64, limit int) ([]store.LogEntry, error)
+	ListStaleRevisions(ctx context.Context, after int64, limit int) (store.StaleRevisions, error)
 	ReplaceRevisionCiphertext(ctx context.Context, replacement store.RevisionCiphertext) (bool, error)
 	RetireEpoch(ctx context.Context, epoch int32) error
 }
@@ -357,6 +358,49 @@ func (service VaultKeyService) AddKeySlots(ctx context.Context, request *connect
 	}
 
 	return connect.NewResponse(&vaultsyncv1.AddKeySlotsResponse{Added: uint32(max(added, 0))}), nil //nolint:gosec // bounded by MaxAddKeySlots.
+}
+
+// ListStaleRevisions lists the vault's revisions not on the current epoch,
+// for an owner's re-key job.
+func (service VaultKeyService) ListStaleRevisions(ctx context.Context, request *connect.Request[vaultsyncv1.ListStaleRevisionsRequest]) (*connect.Response[vaultsyncv1.ListStaleRevisionsResponse], error) {
+	vault, _, err := service.vault(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Tokens are the seq of the last revision returned, as for
+	// GetDocumentHistory.
+	after, err := decodeHistoryToken(request.Msg.GetPageToken())
+	if err != nil {
+		return nil, invalidArgument("page_token is malformed")
+	}
+
+	limit := pageSize(request.Msg.GetPageSize(), DefaultKeyPageSize, MaxKeyPageSize)
+
+	page, err := vault.ListStaleRevisions(ctx, after, limit)
+	if err != nil {
+		return nil, service.internal(ctx, "cannot list stale revisions", err)
+	}
+
+	response := &vaultsyncv1.ListStaleRevisionsResponse{CurrentEpoch: uint32(max(page.CurrentEpoch, 0))}
+	budget := newPageBudget(request.Header(), service.Limits.MaxResponseBytes)
+
+	for index, revision := range page.Revisions {
+		message := revisionMessage(revision)
+		if !budget.admit(message) {
+			response.NextPageToken = encodeHistoryToken(page.Revisions[index-1].Seq)
+
+			break
+		}
+
+		response.Revisions = append(response.Revisions, message)
+
+		if index == limit-1 {
+			response.NextPageToken = encodeHistoryToken(revision.Seq)
+		}
+	}
+
+	return connect.NewResponse(response), nil
 }
 
 // ReplaceRevisionCiphertext moves one stored revision's path and content

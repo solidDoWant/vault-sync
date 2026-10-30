@@ -117,6 +117,47 @@ func (vault *VaultStore) ReplaceRevisionCiphertext(ctx context.Context, replacem
 	return replaced, nil
 }
 
+// StaleRevisions is one page of a vault's revisions not on its current
+// epoch, read from one snapshot.
+type StaleRevisions struct {
+	// CurrentEpoch is the vault's current epoch in the snapshot.
+	CurrentEpoch int32
+	// Revisions are in ascending seq order.
+	Revisions []Revision
+}
+
+// ListStaleRevisions returns up to limit of the vault's retained revisions
+// with seq above after whose epoch is not the current epoch, in ascending
+// seq order: tombstones, folders and conflict copies included. A plaintext
+// vault has none. It returns ErrVaultNotFound for a vault that does not
+// exist.
+func (vault *VaultStore) ListStaleRevisions(ctx context.Context, after int64, limit int) (StaleRevisions, error) {
+	var page StaleRevisions
+
+	err := pgx.BeginTxFunc(ctx, vault.store.pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		state, err := keyState(ctx, tx, vault.vaultID, "")
+		if err != nil {
+			return err
+		}
+
+		page.CurrentEpoch = state.CurrentEpoch
+
+		if state.Encryption != EncryptionE2EE {
+			return nil
+		}
+
+		page.Revisions, err = vault.revisions(ctx, tx, `r.epoch <> $2 AND r.seq > $3 ORDER BY r.seq LIMIT $4`,
+			state.CurrentEpoch, after, limit)
+
+		return err
+	})
+	if err != nil {
+		return StaleRevisions{}, err
+	}
+
+	return page, nil
+}
+
 // checkCompleteBlob returns ErrBlobNotComplete unless blobID is a complete
 // blob of the vault, and ErrBlobSizeMismatch unless it has size. Like a
 // commit's content check it holds a KEY SHARE lock on the blob row until tx
