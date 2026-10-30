@@ -69,6 +69,7 @@ func TestPluginProtocolClient(t *testing.T) {
 			config.DatabaseURLEnv + "=" + database.DSN,
 			config.ListenAddressEnv + "=" + addresses.API,
 			config.MetricsListenAddressEnv + "=" + addresses.Metrics,
+			config.ServiceMetricsListenAddressEnv + "=127.0.0.1:0",
 			config.OIDCIssuerURLEnv + "=" + issuer.URL,
 			config.OIDCAudienceEnv + "=" + authtest.DefaultAudience,
 		}

@@ -115,6 +115,7 @@ func (cluster *deployment) start(t *testing.T, name, binary string, extra ...str
 			config.DatabaseURLEnv + "=" + attempt.databaseDSN,
 			config.ListenAddressEnv + "=" + addresses.API,
 			config.MetricsListenAddressEnv + "=" + addresses.Metrics,
+			config.ServiceMetricsListenAddressEnv + "=127.0.0.1:0",
 			config.OIDCIssuerURLEnv + "=" + cluster.issuer.URL,
 			config.OIDCAudienceEnv + "=" + authtest.DefaultAudience,
 			config.S3EndpointEnv + "=" + cluster.objects.Endpoint,

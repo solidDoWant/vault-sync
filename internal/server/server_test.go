@@ -81,7 +81,9 @@ func testOptions(options server.Options) server.Options {
 type runningServer struct {
 	apiAddress     string
 	metricsAddress string
-	stop           context.CancelFunc
+	// serviceMetricsAddress serves the service-wide /metrics.
+	serviceMetricsAddress string
+	stop                  context.CancelFunc
 	// done is closed when Serve returns; err is then its result.
 	done chan struct{}
 	err  error
@@ -90,6 +92,10 @@ type runningServer struct {
 func (running *runningServer) apiURL() string { return "http://" + running.apiAddress }
 
 func (running *runningServer) metricsURL() string { return "http://" + running.metricsAddress }
+
+func (running *runningServer) serviceMetricsURL() string {
+	return "http://" + running.serviceMetricsAddress
+}
 
 // startServer serves on loopback listeners until the test ends or stop is
 // called.
@@ -102,18 +108,22 @@ func startServer(t *testing.T, options server.Options) *runningServer {
 	metricsListener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 
+	serviceMetricsListener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+
 	ctx, stop := context.WithCancel(t.Context())
 	running := &runningServer{
-		apiAddress:     apiListener.Addr().String(),
-		metricsAddress: metricsListener.Addr().String(),
-		stop:           stop,
-		done:           make(chan struct{}),
+		apiAddress:            apiListener.Addr().String(),
+		metricsAddress:        metricsListener.Addr().String(),
+		serviceMetricsAddress: serviceMetricsListener.Addr().String(),
+		stop:                  stop,
+		done:                  make(chan struct{}),
 	}
 
 	srv := server.New(testOptions(options))
 
 	go func() {
-		running.err = srv.Serve(ctx, apiListener, metricsListener)
+		running.err = srv.Serve(ctx, apiListener, metricsListener, serviceMetricsListener)
 		close(running.done)
 	}()
 
@@ -299,6 +309,36 @@ func TestMetricsAreServedOnTheSeparateMetricsPort(t *testing.T) {
 		status, _ := get(t, running.apiURL()+path)
 		assert.Equal(t, http.StatusNotFound, status, "API port must not serve %s", path)
 	}
+}
+
+func TestServiceWideMetricsAreServedOnlyOnTheirOwnPort(t *testing.T) {
+	running := startServer(t, server.Options{})
+
+	status, perInstance := get(t, running.metricsURL()+"/metrics")
+	require.Equal(t, http.StatusOK, status)
+
+	status, serviceWide := get(t, running.serviceMetricsURL()+"/metrics")
+	require.Equal(t, http.StatusOK, status)
+
+	assert.Contains(t, perInstance, "vault_sync_rpc_in_flight ")
+	assert.NotContains(t, perInstance, "vault_sync_service_")
+
+	assert.Contains(t, serviceWide, "vault_sync_service_metrics_last_refresh_success_timestamp_seconds ")
+	assert.Contains(t, serviceWide, `vault_sync_service_vaults{encryption="e2ee",shared="true"} `)
+
+	for line := range strings.Lines(serviceWide) {
+		if !strings.HasPrefix(line, "#") {
+			assert.True(t, strings.HasPrefix(line, "vault_sync_service_"), "per-instance metric on the service-wide port: %q", line)
+		}
+	}
+
+	for _, path := range []string{"/healthz", "/readyz"} {
+		status, _ := get(t, running.serviceMetricsURL()+path)
+		assert.Equal(t, http.StatusNotFound, status, "service-wide metrics port must not serve %s", path)
+	}
+
+	status, _ = get(t, running.apiURL()+"/metrics")
+	assert.Equal(t, http.StatusNotFound, status)
 }
 
 func TestCORSPreflight(t *testing.T) {

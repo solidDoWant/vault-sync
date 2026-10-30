@@ -29,28 +29,30 @@ import (
 
 // Environment variable names.
 const (
-	ListenAddressEnv            = "VAULT_SYNC_LISTEN_ADDRESS"
-	MetricsListenAddressEnv     = "VAULT_SYNC_METRICS_LISTEN_ADDRESS"
-	DatabaseURLEnv              = "VAULT_SYNC_DATABASE_URL"
-	DatabaseTLSCertFileEnv      = "VAULT_SYNC_DATABASE_TLS_CERT_FILE"
-	DatabaseTLSKeyFileEnv       = "VAULT_SYNC_DATABASE_TLS_KEY_FILE"
-	DatabaseTLSCAFileEnv        = "VAULT_SYNC_DATABASE_TLS_CA_FILE"
-	MaxRequestBytesEnv          = "VAULT_SYNC_MAX_REQUEST_BYTES"
-	WriteTimeoutEnv             = "VAULT_SYNC_WRITE_TIMEOUT"
-	MaxConcurrentRPCsPerUserEnv = "VAULT_SYNC_MAX_CONCURRENT_RPCS_PER_USER"
-	ShutdownDelayEnv            = "VAULT_SYNC_SHUTDOWN_DELAY"
-	ShutdownTimeoutEnv          = "VAULT_SYNC_SHUTDOWN_TIMEOUT"
-	LogLevelEnv                 = "VAULT_SYNC_LOG_LEVEL"
-	OIDCIssuerURLEnv            = "VAULT_SYNC_OIDC_ISSUER_URL"
-	OIDCAudienceEnv             = "VAULT_SYNC_OIDC_AUDIENCE"
-	OIDCClientIDEnv             = "VAULT_SYNC_OIDC_CLIENT_ID"
-	EscrowRecipientEnv          = "VAULT_SYNC_ESCROW_RECIPIENT"
-	EscrowDefaultEnv            = "VAULT_SYNC_ESCROW_DEFAULT"
-	EscrowSigningKeyEnv         = "VAULT_SYNC_ESCROW_SIGNING_KEY"
-	EscrowIdentityFileEnv       = "VAULT_SYNC_ESCROW_IDENTITY_FILE"
-	EscrowJobTokenFileEnv       = "VAULT_SYNC_ESCROW_JOB_TOKEN_FILE"
-	EscrowRetiringKeyIDsEnv     = "VAULT_SYNC_ESCROW_RETIRING_KEY_IDS"
-	EscrowSigningKeyFileEnv     = "VAULT_SYNC_ESCROW_SIGNING_KEY_FILE"
+	ListenAddressEnv               = "VAULT_SYNC_LISTEN_ADDRESS"
+	MetricsListenAddressEnv        = "VAULT_SYNC_METRICS_LISTEN_ADDRESS"
+	ServiceMetricsListenAddressEnv = "VAULT_SYNC_SERVICE_METRICS_LISTEN_ADDRESS"
+	ServiceMetricsIntervalEnv      = "VAULT_SYNC_SERVICE_METRICS_INTERVAL"
+	DatabaseURLEnv                 = "VAULT_SYNC_DATABASE_URL"
+	DatabaseTLSCertFileEnv         = "VAULT_SYNC_DATABASE_TLS_CERT_FILE"
+	DatabaseTLSKeyFileEnv          = "VAULT_SYNC_DATABASE_TLS_KEY_FILE"
+	DatabaseTLSCAFileEnv           = "VAULT_SYNC_DATABASE_TLS_CA_FILE"
+	MaxRequestBytesEnv             = "VAULT_SYNC_MAX_REQUEST_BYTES"
+	WriteTimeoutEnv                = "VAULT_SYNC_WRITE_TIMEOUT"
+	MaxConcurrentRPCsPerUserEnv    = "VAULT_SYNC_MAX_CONCURRENT_RPCS_PER_USER"
+	ShutdownDelayEnv               = "VAULT_SYNC_SHUTDOWN_DELAY"
+	ShutdownTimeoutEnv             = "VAULT_SYNC_SHUTDOWN_TIMEOUT"
+	LogLevelEnv                    = "VAULT_SYNC_LOG_LEVEL"
+	OIDCIssuerURLEnv               = "VAULT_SYNC_OIDC_ISSUER_URL"
+	OIDCAudienceEnv                = "VAULT_SYNC_OIDC_AUDIENCE"
+	OIDCClientIDEnv                = "VAULT_SYNC_OIDC_CLIENT_ID"
+	EscrowRecipientEnv             = "VAULT_SYNC_ESCROW_RECIPIENT"
+	EscrowDefaultEnv               = "VAULT_SYNC_ESCROW_DEFAULT"
+	EscrowSigningKeyEnv            = "VAULT_SYNC_ESCROW_SIGNING_KEY"
+	EscrowIdentityFileEnv          = "VAULT_SYNC_ESCROW_IDENTITY_FILE"
+	EscrowJobTokenFileEnv          = "VAULT_SYNC_ESCROW_JOB_TOKEN_FILE"
+	EscrowRetiringKeyIDsEnv        = "VAULT_SYNC_ESCROW_RETIRING_KEY_IDS"
+	EscrowSigningKeyFileEnv        = "VAULT_SYNC_ESCROW_SIGNING_KEY_FILE"
 
 	S3EndpointEnv            = "VAULT_SYNC_S3_ENDPOINT"
 	S3RegionEnv              = "VAULT_SYNC_S3_REGION"
@@ -177,8 +179,15 @@ type BlobConfig struct {
 
 // Defaults and bounds.
 const (
-	DefaultListenAddress        = ":8080"
-	DefaultMetricsListenAddress = ":9090"
+	DefaultListenAddress               = ":8080"
+	DefaultMetricsListenAddress        = ":9090"
+	DefaultServiceMetricsListenAddress = ":9091"
+	// DefaultServiceMetricsInterval is how often each replica refreshes
+	// the service-wide metrics from the database; MinServiceMetricsInterval
+	// and MaxServiceMetricsInterval bound it.
+	DefaultServiceMetricsInterval = time.Minute
+	MinServiceMetricsInterval     = time.Second
+	MaxServiceMetricsInterval     = time.Hour
 	// DefaultMaxRequestBytes matches the 1 MiB inspected-body limit of the
 	// WAF in front of the server (SPEC.md §3).
 	//
@@ -225,6 +234,12 @@ type Config struct {
 	// MetricsListenAddress is the host:port of the listener serving
 	// /metrics, /healthz and /readyz. It is never the API listener.
 	MetricsListenAddress string
+	// ServiceMetricsListenAddress is the host:port of the listener serving
+	// the service-wide /metrics. It is neither of the other listeners.
+	ServiceMetricsListenAddress string
+	// ServiceMetricsInterval is how often the service-wide metrics are
+	// refreshed from the database.
+	ServiceMetricsInterval time.Duration
 	// Database is the PostgreSQL connection configuration.
 	Database store.Config
 	// OIDC configures access-token validation (SPEC.md §9.1).
@@ -300,8 +315,10 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 	var problems []error
 
 	cfg := Config{
-		ListenAddress:        stringOr(get(ListenAddressEnv), DefaultListenAddress),
-		MetricsListenAddress: stringOr(get(MetricsListenAddressEnv), DefaultMetricsListenAddress),
+		ListenAddress:               stringOr(get(ListenAddressEnv), DefaultListenAddress),
+		MetricsListenAddress:        stringOr(get(MetricsListenAddressEnv), DefaultMetricsListenAddress),
+		ServiceMetricsListenAddress: stringOr(get(ServiceMetricsListenAddressEnv), DefaultServiceMetricsListenAddress),
+		ServiceMetricsInterval:      DefaultServiceMetricsInterval,
 		Database: store.Config{
 			DSN:         get(DatabaseURLEnv),
 			TLSCertFile: get(DatabaseTLSCertFileEnv),
@@ -371,6 +388,27 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 
 	if cfg.ListenAddress == cfg.MetricsListenAddress {
 		problems = append(problems, fmt.Errorf("%s must differ from %s: metrics are served on a separate port", MetricsListenAddressEnv, ListenAddressEnv))
+	}
+
+	problems = append(problems, checkListenAddress(ServiceMetricsListenAddressEnv, cfg.ServiceMetricsListenAddress))
+
+	if cfg.ServiceMetricsListenAddress == cfg.ListenAddress || cfg.ServiceMetricsListenAddress == cfg.MetricsListenAddress {
+		problems = append(problems, fmt.Errorf("%s must differ from %s and %s: service-wide metrics are served on their own port",
+			ServiceMetricsListenAddressEnv, ListenAddressEnv, MetricsListenAddressEnv))
+	}
+
+	if raw := get(ServiceMetricsIntervalEnv); raw != "" {
+		value, err := time.ParseDuration(raw)
+
+		switch {
+		case err != nil:
+			problems = append(problems, fmt.Errorf("%s: %q is not a duration (for example 1m)", ServiceMetricsIntervalEnv, raw))
+		case value < MinServiceMetricsInterval || value > MaxServiceMetricsInterval:
+			problems = append(problems, fmt.Errorf("%s: %s is outside the allowed range %s to %s",
+				ServiceMetricsIntervalEnv, raw, MinServiceMetricsInterval, MaxServiceMetricsInterval))
+		default:
+			cfg.ServiceMetricsInterval = value
+		}
 	}
 
 	problems = append(problems, checkDatabase(cfg.Database))
