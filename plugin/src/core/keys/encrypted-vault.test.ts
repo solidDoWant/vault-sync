@@ -63,7 +63,7 @@ function contains(haystack: Uint8Array, needle: Uint8Array): boolean {
 }
 
 describe("createEncryptedVault", () => {
-  it("creates an encrypted vault with escrow whose epoch 1 opens for the owner and for the escrow key", async () => {
+  it("[P4-01] creates an encrypted vault with escrow whose epoch 1 opens for the owner and for the escrow key", async () => {
     const escrow = escrowKey();
     const { server, owner, store, vault } = await create(escrow.recipient);
 
@@ -122,7 +122,7 @@ describe("createEncryptedVault", () => {
     expect(store.keys.get(1)).toEqual(ownerKey);
   });
 
-  it("creates an encrypted vault without escrow when escrow is turned off", async () => {
+  it("[P4-01] creates an encrypted vault without escrow when escrow is turned off", async () => {
     const { server, owner, vault } = await create(undefined);
 
     expect(vault.encryption).toBe(VaultEncryption.E2EE);
@@ -203,7 +203,7 @@ function serverInfo(current: ReturnType<typeof escrowKey>, root: Uint8Array = cu
 }
 
 describe("escrowOffer", () => {
-  it("offers the server's escrow key, on by default when the server says so", async () => {
+  it("[P4-01] offers the server's escrow key, on by default when the server says so", async () => {
     const key = escrowKey();
     expect(await escrowOffer(serverInfo(key), new MemoryEscrowPin())).toEqual({ recipient: key.recipient, byDefault: true });
     expect(await escrowOffer(serverInfo(key, key.encodedBundle, [], false), new MemoryEscrowPin())).toEqual({ recipient: key.recipient, byDefault: false });
