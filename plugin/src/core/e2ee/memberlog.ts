@@ -38,6 +38,10 @@ const encoder = new TextEncoder();
 
 /** The largest log entry payload: a genesis with an escrow bundle. */
 export const MAX_ENTRY_PAYLOAD_SIZE = BUNDLE_SIZE + 1 + "vault-sync/v1/escrow".length + SIGN_PUBLIC_KEY_SIZE + 4 + MAX_ESCROW_RECIPIENT_SIZE;
+/** The most members of a vault (SPEC.md §9.2). */
+export const MAX_VAULT_MEMBERS = 100;
+/** The largest members entry payload: every member of a converted vault except its creator. */
+export const MAX_MEMBERS_PAYLOAD_SIZE = 2 + (MAX_VAULT_MEMBERS - 1) * (BUNDLE_SIZE + 1);
 /** The most recipients of one epoch record (count is a u16). */
 export const MAX_EPOCH_RECIPIENTS = 0xffff;
 
@@ -67,7 +71,11 @@ export const EntryType = Object.freeze({
   leave: 0x06,
   setRole: 0x07,
   escrow: 0x08,
+  members: 0x09,
 });
+
+/** The only position of a members entry: directly after genesis. */
+const MEMBERS_ENTRY_SEQ = 2;
 
 /** The roles. */
 export const Role = Object.freeze({ owner: 0x01, editor: 0x02, viewer: 0x03 });
@@ -87,7 +95,7 @@ export interface Entry {
 /** "vault-sync/v1/log-entry" || uuid(vault_id) || seq (u64) || prev_hash (32) || type (u8) || lp(payload). */
 export function entryBody(entry: Omit<Entry, "signatures">): Uint8Array {
   if (entry.prevHash.length !== HASH_SIZE) throw new Error("e2ee: prev hash of the wrong size");
-  if (entry.payload.length > MAX_ENTRY_PAYLOAD_SIZE) throw new Error("e2ee: log entry payload too large");
+  if (entry.payload.length > (entry.type === EntryType.members ? MAX_MEMBERS_PAYLOAD_SIZE : MAX_ENTRY_PAYLOAD_SIZE)) throw new Error("e2ee: log entry payload too large");
   return concat(encoder.encode(LOG_ENTRY_LABEL), uuidBytes("vault id", entry.vaultId), u64(entry.seq), entry.prevHash, Uint8Array.of(entry.type), lengthPrefixed(entry.payload));
 }
 
@@ -132,6 +140,34 @@ export function redeemPayload(invitationId: string, newcomer: Bundle): Uint8Arra
 export function setRolePayload(userId: string, role: number): Uint8Array {
   if (!validRole(role)) throw new Error("e2ee: unknown role");
   return concat(uuidBytes("user id", userId), Uint8Array.of(role));
+}
+
+/** count (u16) || (bundle || role)*: every member of a converted vault except its creator. */
+export function membersPayload(members: readonly Member[]): Uint8Array {
+  if (members.length > MAX_VAULT_MEMBERS - 1) throw new Error("e2ee: too many members");
+  const count = new Uint8Array(2);
+  new DataView(count.buffer).setUint16(0, members.length);
+  return concat(
+    count,
+    ...members.map((member) => {
+      if (!validRole(member.role)) throw new Error("e2ee: unknown role");
+      return concat(encodeBundle(member.bundle), Uint8Array.of(member.role));
+    }),
+  );
+}
+
+function parseMembersPayload(payload: Uint8Array): Member[] {
+  if (payload.length < 2) throw new Error("malformed members");
+  const count = new DataView(payload.buffer, payload.byteOffset, 2).getUint16(0);
+  if (payload.length !== 2 + count * (BUNDLE_SIZE + 1)) throw new Error("malformed members");
+  const members: Member[] = [];
+  for (let offset = 2; offset < payload.length; offset += BUNDLE_SIZE + 1) {
+    const bundle = parseBundle(payload.subarray(offset, offset + BUNDLE_SIZE));
+    const role = payload[offset + BUNDLE_SIZE] ?? 0;
+    if (!validRole(role)) throw new Error("unknown role");
+    members.push({ bundle, role });
+  }
+  return members;
 }
 
 function parseEscrowPayload(payload: Uint8Array): { escrow: EscrowBundle | undefined } | undefined {
@@ -308,6 +344,18 @@ function applyEntry(vaultId: string, state: LogState, used: Set<string>, entry: 
       }
       escrow = parsed.escrow;
       if (parsed.escrow !== undefined) lastEscrow = parsed.escrow;
+      break;
+    }
+    case EntryType.members: {
+      if (entry.seq !== MEMBERS_ENTRY_SEQ) throw new Error("members entry not directly after genesis");
+      const listed = parseMembersPayload(payload);
+      // At seq 2 the genesis creator is the only member.
+      const creator = state.seq === 1 && state.members.size === 1 ? [...state.members.values()][0] : undefined;
+      if (creator === undefined || !verifySignature(creator.bundle.signPub, body, signature)) throw new Error("wrong signer");
+      for (const member of listed) {
+        if (members.has(member.bundle.userId)) throw new Error("members entry lists the creator or a user twice");
+        members.set(member.bundle.userId, member);
+      }
       break;
     }
     default:

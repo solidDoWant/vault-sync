@@ -185,6 +185,7 @@ type identityVectors struct {
 	EscrowChains          []escrowChainVector        `json:"escrow_chains"`
 	RejectedEscrowChains  []escrowChainVector        `json:"rejected_escrow_chains"`
 	MembershipLog         membershipLogVector        `json:"membership_log"`
+	ConvertedLog          membershipLogVector        `json:"converted_log"`
 	RejectedLogs          []rejectedLogVector        `json:"rejected_logs"`
 	RejectedEpochRecords  []epochRecordJSON          `json:"rejected_epoch_records"`
 }
@@ -450,7 +451,7 @@ func generateIdentityVectors(t *testing.T) identityVectors {
 		{Name: "rotations out of order", Pinned: encodedOne, Rotations: []escrowRotationJSON{rotationJSON(twoToThree), rotationJSON(oneToTwo)}},
 	}
 
-	// The membership log, with every entry type.
+	// The membership log, with every entry type but members (see the converted log below).
 	builder := &logBuilder{vaultID: vectorVaultID}
 	aliceSeed, bobSeed, carolSeed := alice.secret.SignSeed, bob.secret.SignSeed, carol.secret.SignSeed
 
@@ -620,6 +621,66 @@ func generateIdentityVectors(t *testing.T) identityVectors {
 	vectors.RejectedLogs = append(vectors.RejectedLogs, unsignedRotationLog, rejectedLogVector{
 		Name: "genesis that is not the trust anchor", VaultID: vectorVaultID, GenesisHash: hex.EncodeToString(fixed("other genesis", HashSize)),
 		EscrowRotations: rotations, Entries: slices.Clone(builder.entries[:2]),
+	})
+
+	// The log of a converted vault: genesis, then a members entry naming
+	// the members the vault already had.
+	converted := &logBuilder{vaultID: vectorVaultID}
+	convertedMembers := []Member{{Bundle: bob.bundle, Role: RoleEditor}, {Bundle: carol.bundle, Role: RoleViewer}}
+	converted.add(EntryGenesis, must(GenesisPayload(alice.bundle, nil)), aliceSeed)
+	converted.add(EntryMembers, must(MembersPayload(convertedMembers)), aliceSeed)
+	converted.add(EntrySetRole, must(SetRolePayload(vectorBobID, RoleOwner)), aliceSeed)
+
+	convertedStates, err := ReplayLog(vectorVaultID, decodeEntries(t, vectorVaultID, converted.entries), ReplayOptions{})
+	require.NoError(t, err)
+
+	convertedVector := membershipLogVector{VaultID: vectorVaultID, EscrowRotations: []escrowRotationJSON{}, Entries: converted.entries}
+	for _, state := range convertedStates {
+		convertedVector.States = append(convertedVector.States, stateJSON(state))
+	}
+
+	convertedEpoch := EpochRecord{
+		VaultID: vectorVaultID, Epoch: 1, Commitment: must(KeyCommitment(fixed("converted epoch key", KeySize), vectorVaultID, 1)),
+		PrevCommitment: make([]byte, MACSize), LogSeq: 2, LogHash: convertedStates[1].Hash, Recipients: must(EpochRecipients(convertedStates[1])),
+	}
+	convertedVector.EpochRecords = []epochRecordJSON{signedEpochRecordJSON("epoch 1 of a converted vault at its members entry", convertedEpoch, aliceSeed)}
+	vectors.ConvertedLog = convertedVector
+
+	rejectConverted := func(name string, build func(log *logBuilder)) {
+		log := &logBuilder{vaultID: vectorVaultID, entries: slices.Clone(converted.entries[:1])}
+		build(log)
+		vectors.RejectedLogs = append(vectors.RejectedLogs, rejectedLogVector{
+			Name: name, VaultID: vectorVaultID, EscrowRotations: []escrowRotationJSON{}, Entries: log.entries,
+		})
+	}
+	membersOf := func(members ...Member) []byte { return must(MembersPayload(members)) }
+
+	rejectConverted("members entry after another entry", func(log *logBuilder) {
+		log.add(EntryInvite, must(InvitePayload(vectorInvitationOne, RoleEditor, invitePubs[vectorInvitationOne], invitationKeys[vectorInvitationOne])), aliceSeed)
+		log.add(EntryMembers, membersOf(convertedMembers...), aliceSeed)
+	})
+	rejectConverted("members entry twice", func(log *logBuilder) {
+		log.add(EntryMembers, membersOf(convertedMembers[0]), aliceSeed)
+		log.add(EntryMembers, membersOf(convertedMembers[1]), aliceSeed)
+	})
+	rejectConverted("wrong signer: members entry signed by a listed member", func(log *logBuilder) {
+		log.add(EntryMembers, membersOf(Member{Bundle: bob.bundle, Role: RoleOwner}), bobSeed)
+	})
+	rejectConverted("members entry listing the creator", func(log *logBuilder) {
+		log.add(EntryMembers, membersOf(Member{Bundle: alice.bundle, Role: RoleOwner}, convertedMembers[0]), aliceSeed)
+	})
+	rejectConverted("members entry listing a user twice", func(log *logBuilder) {
+		log.add(EntryMembers, membersOf(convertedMembers[0], Member{Bundle: bob.bundle, Role: RoleViewer}), aliceSeed)
+	})
+	rejectConverted("members entry with a count larger than its list", func(log *logBuilder) {
+		payload := membersOf(convertedMembers...)
+		payload[1]++
+		log.add(EntryMembers, payload, aliceSeed)
+	})
+	rejectConverted("members entry with an unknown role", func(log *logBuilder) {
+		payload := membersOf(convertedMembers...)
+		payload[len(payload)-1] = 0x04
+		log.add(EntryMembers, payload, aliceSeed)
 	})
 
 	// Invite anchor and anchor lists.
@@ -807,9 +868,9 @@ func TestIdentityVectors(t *testing.T) {
 		}
 	})
 
-	logVector := vectors.MembershipLog
+	replayVector := func(t *testing.T, logVector membershipLogVector) []LogState {
+		t.Helper()
 
-	t.Run("membership log", func(t *testing.T) {
 		entries := decodeEntries(t, logVector.VaultID, logVector.Entries)
 		for index, entry := range entries {
 			seeds := logVector.Entries[index].SignerSeeds
@@ -846,10 +907,21 @@ func TestIdentityVectors(t *testing.T) {
 			require.NoError(t, VerifyEpochRecord(logVector.VaultID, states, record), vector.Name)
 		}
 
+		return states
+	}
+
+	t.Run("membership log", func(t *testing.T) {
+		logVector := vectors.MembershipLog
+		states := replayVector(t, logVector)
+
 		for _, vector := range vectors.RejectedEpochRecords {
 			record := decodeEpochRecord(t, logVector.VaultID, vector)
 			require.ErrorIs(t, VerifyEpochRecord(logVector.VaultID, states, record), ErrEpochRecord, vector.Name)
 		}
+	})
+
+	t.Run("converted log", func(t *testing.T) {
+		replayVector(t, vectors.ConvertedLog)
 	})
 
 	t.Run("rejected logs", func(t *testing.T) {
@@ -921,4 +993,40 @@ func TestMembershipLogVectorStates(t *testing.T) {
 		assert.Equal(t, want.pending, pending(state), "seq %d", index+1)
 		assert.Equal(t, bundles[want.escrow], state.Escrow, "seq %d", index+1)
 	}
+}
+
+// TestConvertedLogVectorStates pins the replayed states of the converted
+// vault's log and the users its epoch-1 record lists, by hand.
+func TestConvertedLogVectorStates(t *testing.T) {
+	log := loadVectorFile(t).IdentityKeys.ConvertedLog
+	require.Len(t, log.States, 3)
+
+	owner, editor, viewer := uint8(RoleOwner), uint8(RoleEditor), uint8(RoleViewer)
+	expected := []map[string]uint8{
+		{vectorAliceID: owner},
+		{vectorAliceID: owner, vectorBobID: editor, vectorCarolID: viewer},
+		{vectorAliceID: owner, vectorBobID: owner, vectorCarolID: viewer},
+	}
+
+	for index, want := range expected {
+		roles := map[string]uint8{}
+		for _, member := range log.States[index].Members {
+			roles[member.UserID] = member.Role
+		}
+
+		assert.Equal(t, want, roles, "seq %d", index+1)
+	}
+
+	require.Len(t, log.EpochRecords, 1)
+	record := log.EpochRecords[0]
+	assert.Equal(t, uint64(2), record.LogSeq)
+
+	listed := []string{}
+
+	for _, recipient := range record.Recipients {
+		assert.Equal(t, uint8(0x01), recipient.Kind)
+		listed = append(listed, must(uuidString(unhex(t, recipient.ID))))
+	}
+
+	assert.ElementsMatch(t, []string{vectorAliceID, vectorBobID, vectorCarolID}, listed)
 }
