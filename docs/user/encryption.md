@@ -83,6 +83,21 @@ Your admin can publish the fingerprint, for example on an internal web page. Com
 2. Compare it, group by group, with the fingerprint that the plugin shows.
 3. If they are different, do not turn on escrow, and tell your admin. A different fingerprint can mean that someone swapped the escrow key.
 
+### When the escrow key changes
+
+Your admin can replace the escrow key. Usually the old key signs the change, and your device accepts the new key without asking you. If the old key did not sign the change, your device cannot prove that the new key comes from your admin. Then the plugin asks you. This also happens when someone who controls the server swaps the key.
+
+The plugin opens the **The server's escrow key changed** window when you open the settings to create a vault, or when you look at the **Sharing** section of a vault with escrow that you own. The window shows the fingerprint of the previous key and the fingerprint of the new key. To answer it:
+
+1. Get the escrow fingerprint from your admin over a channel that you trust.
+2. Compare it, group by group, with the new fingerprint in the window.
+3. If they are the same, type the last group of the new fingerprint (four characters) and select **Accept the new escrow key**.
+4. If they are different, select **Decline**, and tell your admin.
+
+If you accept, the keys of the vaults that you own are also encrypted to the new escrow key from now on, and new vaults use it. Each of your devices asks you on its own.
+
+If you decline, or close the window, escrow keeps the previous key. Your notes keep syncing. Your vaults with escrow show "Escrow uses the previous key: the server's escrow key changed", with a **Review the change** button that opens the window again. You cannot create or convert a vault with escrow until you accept. The plugin does not ask again by itself, unless the server offers another new key.
+
 For more detail, see [How encryption works](../encryption.md#escrow).
 
 ## If you forget your passphrase

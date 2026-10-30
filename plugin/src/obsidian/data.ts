@@ -96,6 +96,8 @@ export interface PinnedEscrowBundle {
   serverUrl: string;
   /** The encoded escrow bundle (docs/design/crypto.md), in lowercase hex. */
   bundle: string;
+  /** The encoded unchained escrow bundle the user declined on this device, in lowercase hex. */
+  declined?: string;
 }
 
 /** A vault's epoch keys as cached on the device, hex-encoded by epoch, with the account and vault they belong to. */
@@ -259,8 +261,13 @@ function parsePassphraseParams(raw: unknown): RememberedPassphraseParams | undef
 /** A pinned escrow bundle; dropped unless it is lowercase hex. */
 function parseEscrowPin(raw: unknown): PinnedEscrowBundle | undefined {
   const pin = record(raw, ["serverUrl", "bundle"]);
-  return pin !== undefined && /^(?:[0-9a-f]{2})+$/.test(pin.bundle) ? pin : undefined;
+  if (pin === undefined || !hexBytes.test(pin.bundle)) return undefined;
+  const declined = (raw as { declined?: unknown }).declined;
+  return typeof declined === "string" && hexBytes.test(declined) ? { ...pin, declined } : pin;
 }
+
+/** Bytes in lowercase hex. */
+const hexBytes = /^(?:[0-9a-f]{2})+$/;
 
 /** A 32-byte key in lowercase hex. */
 const hexKey = /^[0-9a-f]{64}$/;
