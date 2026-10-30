@@ -1,5 +1,6 @@
 # Placeholder values for `make chart-lint` (scripts/chart_test.sh): every
-# required value is set and every Secret reference is used. None of these
+# required value is set, the export job is on (it is off by default) and
+# every Secret reference is used. None of these
 # objects exist anywhere; helm lint and helm template do not need them to.
 config:
   database:
@@ -27,6 +28,7 @@ config:
     issuerUrl: https://auth.example.com/application/o/vault-sync/
     audience: vault-sync
   export:
+    enabled: true
     output:
       persistence:
         type: persistentVolumeClaim

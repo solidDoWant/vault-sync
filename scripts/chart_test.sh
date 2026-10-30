@@ -5,14 +5,19 @@
 # cluster needed) and asserts on the resulting objects with jq (via yq), so the checks
 # hold for whatever the bjw-s common library makes of the chart's values:
 #
-#   - the server Deployment, export CronJob, Services, PodDisruptionBudget
-#     and ServiceMonitor are rendered, with the Secret references for the
+#   - the server Deployment, export CronJob, the one Service (ports http and
+#     metrics), and on request the ServiceMonitor, HTTPRoute and ingress are
+#     rendered, named after the release, with the Secret references for the
 #     database client certificate and CA, the S3 credentials and CA, and the
 #     escrow key;
+#   - by default the chart sets no policy (no PodDisruptionBudget, container
+#     resources or spread constraint) and renders no ServiceMonitor or
+#     export CronJob, and caller overrides render exactly as given;
+#   - values.schema.json rejects unknown keys, wrong types and bad durations;
 #   - the escrow Secret is mounted into the export job and named nowhere
 #     else, and every override that would put it into the server fails;
-#   - replicas, the optional OIDC client id, the export overrides, the
-#     security context and resource bounds render as configured, and the
+#   - replicas, the optional OIDC client id, the export overrides and the
+#     security context render as configured, and the
 #     server mounts nothing but Secrets (no per-replica state);
 #   - missing required values fail with a message naming them;
 #   - every VAULT_SYNC_* variable in docs/configuration.md can be set through
@@ -25,6 +30,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 chart="$repo_root/deploy/charts/vault-sync"
 base_values="$chart/ci/test-values.yaml"
+release="vault-sync"
 escrow_secret="vault-sync-escrow-key"
 
 for tool in helm yq jq; do
@@ -47,7 +53,7 @@ fail() {
 # render ARGS...: renders the chart with the placeholder values plus ARGS
 # into $work/out.json, one JSON object per manifest (stderr in $work/err).
 render() {
-	helm template vault-sync "$chart" -f "$base_values" "$@" >"$work/out.yaml" 2>"$work/err" &&
+	helm template "$release" "$chart" -f "$base_values" "$@" >"$work/out.yaml" 2>"$work/err" &&
 		yq eval-all --output-format=json --indent=0 'select(. != null)' "$work/out.yaml" >"$work/out.json"
 }
 
@@ -86,6 +92,9 @@ deployment='($docs[] | select(.kind == "Deployment"))'
 cronjob='($docs[] | select(.kind == "CronJob"))'
 server='('"$deployment"' | .spec.template.spec)'
 export_pod='('"$cronjob"' | .spec.jobTemplate.spec.template.spec)'
+service_monitors='[$docs[] | select(.kind == "ServiceMonitor")]'
+pdbs='[$docs[] | select(.kind == "PodDisruptionBudget")]'
+routes='[$docs[] | select(.kind == "HTTPRoute")]'
 
 # env_value POD NAME: the value of env var NAME in POD's first container.
 env_value() { echo "($1 | .containers[0].env[] | select(.name == \"$2\") | .value)"; }
@@ -112,16 +121,53 @@ else
 	fail "renders with the placeholder values: $(cat "$work/err")"
 fi
 
-check "renders the server Deployment" "[$deployment] | length == 1 and .[0].metadata.name == \"vault-sync-main\""
+check "renders the server Deployment" "[$deployment] | length == 1 and .[0].metadata.name == \"vault-sync\""
 check "renders the export CronJob running the export subcommand" \
 	"[$cronjob] | length == 1 and (.[0].spec.jobTemplate.spec.template.spec.containers[0].args == [\"export\", \"-out\", \"/export/vaults\"])"
-check "renders a ServiceMonitor scraping the metrics port of the metrics Service" \
-	"[\$docs[] | select(.kind == \"ServiceMonitor\")] | length == 1 and .[0].spec.endpoints[0].port == \"metrics\" and .[0].spec.selector.matchLabels[\"app.kubernetes.io/service\"] == \"vault-sync-metrics\""
-check "renders the API and metrics Services" \
-	"[\$docs[] | select(.kind == \"Service\") | .metadata.name + \":\" + (.spec.ports[0].port | tostring)] | sort == [\"vault-sync-main:8080\", \"vault-sync-metrics:9090\"]"
-check "renders a PodDisruptionBudget for the server" \
-	"[\$docs[] | select(.kind == \"PodDisruptionBudget\")] | length == 1 and .[0].spec.maxUnavailable == 1 and .[0].spec.selector.matchLabels[\"app.kubernetes.io/controller\"] == \"main\""
+check "renders one Service with ports http (8080) and metrics (9090)" \
+	"[\$docs[] | select(.kind == \"Service\")] | length == 1 and (.[0].spec.ports | map({name, port}) | sort_by(.port)) == [{\"name\": \"http\", \"port\": 8080}, {\"name\": \"metrics\", \"port\": 9090}] and .[0].spec.selector[\"app.kubernetes.io/controller\"] == \"main\""
 check "creates no Secrets" "[\$docs[] | select(.kind == \"Secret\")] | length == 0"
+
+# --- defaults set no policy -------------------------------------------------
+
+# The minimal install: only the database, S3 and OIDC settings.
+cat >"$work/minimal.yaml" <<'MINIMAL'
+config:
+  database:
+    url:
+      secretKeyRef: {name: vault-sync-database, key: dsn}
+  s3:
+    bucket: vault-sync
+    credentials: {secretName: vault-sync-bucket}
+  oidc:
+    issuerUrl: https://auth.example.com/application/o/vault-sync/
+    audience: vault-sync
+MINIMAL
+if helm template vault-sync "$chart" -f "$work/minimal.yaml" >"$work/out.yaml" 2>"$work/err" &&
+	yq eval-all --output-format=json --indent=0 'select(. != null)' "$work/out.yaml" >"$work/out.json"; then
+	pass "renders a minimal install (database, S3 and OIDC only)"
+else
+	fail "renders a minimal install (database, S3 and OIDC only): $(cat "$work/err")"
+fi
+check "by default renders no export CronJob" "[$cronjob] | length == 0"
+check "by default renders no ServiceMonitor" "$service_monitors | length == 0"
+check "by default renders no PodDisruptionBudget" "$pdbs | length == 0"
+check "by default renders no HTTPRoute" "$routes | length == 0"
+check "by default sets no container resources" "($server | .containers[0] | has(\"resources\") | not) or ($server | .containers[0].resources) == {}"
+check "by default sets no topology spread constraints" "($server | has(\"topologySpreadConstraints\") | not) or ($server | .topologySpreadConstraints) == []"
+
+# --- names -------------------------------------------------------------------
+
+# Every resource is named after the release, never with the chart name
+# twice, and the server's resources carry no suffix.
+for release in vs vault-sync obsidian-vault-sync; do
+	render --set config.server.metrics.serviceMonitor.enabled=true --set config.route.enabled=true \
+		--set resources.controllers.main.podDisruptionBudget.maxUnavailable=1
+	check "release $release: names every resource after the release" \
+		"([\$docs[] | select(.kind != \"CronJob\") | .kind + \"/\" + .metadata.name] | sort) == ([\"Deployment\", \"HTTPRoute\", \"PodDisruptionBudget\", \"Service\", \"ServiceAccount\", \"ServiceMonitor\"] | map(. + \"/$release\")) and ([$cronjob | .metadata.name] == [\"$release-export\"])"
+	check "release $release: the Pods' ServiceAccount is the release's" "($server | .serviceAccountName) == \"$release\""
+done
+release="vault-sync"
 
 # Secret references: each *_FILE variable points into a mount of the
 # referenced Secret.
@@ -204,8 +250,8 @@ check "the server mounts only Secrets (no per-replica state)" \
 for pod in server export_pod; do
 	check "$pod runs as non-root with a read-only root filesystem and no capabilities" \
 		"(${!pod} | .securityContext.runAsNonRoot) == true and (${!pod} | .containers[0].securityContext | .runAsNonRoot == true and .readOnlyRootFilesystem == true and .allowPrivilegeEscalation == false and .capabilities.drop == [\"ALL\"])"
-	check "$pod has CPU and memory requests and limits" \
-		"(${!pod} | .containers[0].resources | (.requests.cpu != null) and (.requests.memory != null) and (.limits.cpu != null) and (.limits.memory != null))"
+	check "$pod sets no container resources" \
+		"(${!pod} | .containers[0] | has(\"resources\") | not) or (${!pod} | .containers[0].resources) == {}"
 	check "$pod does not mount a service account token" \
 		"(${!pod} | .automountServiceAccountToken) == false"
 	check "$pod uses the RuntimeDefault seccomp profile" \
@@ -213,16 +259,16 @@ for pod in server export_pod; do
 done
 check "termination grace covers the default shutdown delay and drain timeout (5s + 30s) with a margin" \
 	"($server | .terminationGracePeriodSeconds) == 45"
-check "the server spreads its replicas across nodes" \
-	"($server | .topologySpreadConstraints) == [{\"maxSkew\": 1, \"topologyKey\": \"kubernetes.io/hostname\", \"whenUnsatisfiable\": \"ScheduleAnyway\", \"labelSelector\": ($server | .topologySpreadConstraints[0].labelSelector)}] and ($server | .topologySpreadConstraints[0].labelSelector.matchLabels[\"app.kubernetes.io/controller\"]) == \"main\""
+check "the server declares no topology spread constraints (the cluster's defaults apply)" \
+	"($server | has(\"topologySpreadConstraints\") | not) or ($server | .topologySpreadConstraints) == []"
 check "the probes keep their periods and failure thresholds" \
 	"($server | .containers[0] | [.startupProbe, .livenessProbe, .readinessProbe] | map({periodSeconds, failureThreshold})) == [{\"periodSeconds\": 5, \"failureThreshold\": 120}, {\"periodSeconds\": 10, \"failureThreshold\": 3}, {\"periodSeconds\": 2, \"failureThreshold\": 2}]"
 check "an export run is bounded by a deadline (6 hours by default)" \
 	"($cronjob | .spec.jobTemplate.spec.activeDeadlineSeconds) == 21600 and ($cronjob | .spec.concurrencyPolicy) == \"Forbid\""
 render --set config.export.activeDeadlineSeconds=600
 check "the export deadline is configurable" "($cronjob | .spec.jobTemplate.spec.activeDeadlineSeconds) == 600"
-rejects "rejects an export deadline of 0" "config.export.activeDeadlineSeconds" --set config.export.activeDeadlineSeconds=0
-rejects "rejects an empty export deadline" "config.export.activeDeadlineSeconds" --set config.export.activeDeadlineSeconds=
+rejects "rejects an export deadline of 0" "/config/export/activeDeadlineSeconds" --set config.export.activeDeadlineSeconds=0
+rejects "rejects an empty export deadline" "/config/export/activeDeadlineSeconds" --set config.export.activeDeadlineSeconds=
 
 # The grace period follows the shutdown settings: 1m + 1m30.5s = 150.5s,
 # rounded up to 151, plus the 10 second margin.
@@ -240,17 +286,65 @@ if render --set config.server.shutdownTimeout=1m --set resources.controllers.mai
 else
 	fail "accepts an explicit grace period one second above the shutdown delay plus the drain timeout: $(cat "$work/err")"
 fi
-rejects "rejects a shutdown delay that is not a Go duration" "config.server.shutdownDelay must be a Go duration" \
+rejects "rejects a shutdown delay that is not a Go duration" "/config/server/shutdownDelay" \
 	--set config.server.shutdownDelay=soon
 render
 
 render --set resources.controllers.main.replicas=3
-check "replicas are configurable" "($deployment | .spec.replicas) == 3 and ([\$docs[] | select(.kind == \"PodDisruptionBudget\")] | length) == 1"
-render --set resources.controllers.main.replicas=1
-check "a single replica gets no PodDisruptionBudget" "([\$docs[] | select(.kind == \"PodDisruptionBudget\")] | length) == 0 and ($deployment | .spec.replicas) == 1"
+check "replicas are configurable, without a PodDisruptionBudget" "($deployment | .spec.replicas) == 3 and ($pdbs | length) == 0"
 
-render --set resources.controllers.main.containers.main.resources.limits.memory=2Gi
-check "resource bounds are configurable" "($server | .containers[0].resources.limits.memory) == \"2Gi\" and ($server | .containers[0].resources.requests.memory) == \"128Mi\""
+# --- caller policy renders exactly as given ---------------------------------
+
+render --set resources.controllers.main.podDisruptionBudget.minAvailable=1
+check "a caller's PodDisruptionBudget renders exactly as given (minAvailable only)" \
+	"$pdbs | length == 1 and (.[0].spec | del(.selector)) == {\"minAvailable\": 1} and .[0].spec.selector.matchLabels[\"app.kubernetes.io/controller\"] == \"main\""
+render --set resources.controllers.main.containers.main.resources.limits.memory=2Gi \
+	--set resources.controllers.export.containers.main.resources.requests.cpu=50m
+check "caller resources render exactly as given" \
+	"($server | .containers[0].resources) == {\"limits\": {\"memory\": \"2Gi\"}} and ($export_pod | .containers[0].resources) == {\"requests\": {\"cpu\": \"50m\"}}"
+render --set-json 'resources.controllers.main.pod.topologySpreadConstraints=[{"maxSkew":2,"topologyKey":"topology.kubernetes.io/zone","whenUnsatisfiable":"DoNotSchedule"}]'
+check "a caller's spread constraint renders exactly as given" \
+	"($server | .topologySpreadConstraints | map(del(.labelSelector))) == [{\"maxSkew\": 2, \"topologyKey\": \"topology.kubernetes.io/zone\", \"whenUnsatisfiable\": \"DoNotSchedule\"}]"
+
+# --- ServiceMonitor, ingress and route --------------------------------------
+
+render --set config.server.metrics.serviceMonitor.enabled=true
+check "an enabled ServiceMonitor scrapes /metrics on port metrics of the Service" \
+	"$service_monitors | length == 1 and .[0].spec.endpoints[0].port == \"metrics\" and .[0].spec.endpoints[0].path == \"/metrics\" and .[0].spec.selector.matchLabels[\"app.kubernetes.io/service\"] == \"vault-sync\""
+
+if render --set resources.ingress.main.hosts[0].host=sync.example.com --set resources.ingress.main.hosts[0].paths[0].path=/; then
+	check "a plain ingress routes to port http without naming a Service" \
+		"[\$docs[] | select(.kind == \"Ingress\") | .spec.rules[0].http.paths[0].backend.service] == [{\"name\": \"vault-sync\", \"port\": {\"number\": 8080}}]"
+else
+	fail "a plain ingress routes to port http without naming a Service: $(cat "$work/err")"
+fi
+
+render --set config.route.enabled=true --set config.route.hostnames[0]=sync.example.com \
+	--set config.route.parentRefs[0].name=gateway --set config.route.parentRefs[0].namespace=gateway-system \
+	--set config.route.annotations.team=sync --set config.route.labels.tier=api
+check "the route attaches to the given Gateway for the given hostnames" \
+	"$routes | length == 1 and .[0].spec.hostnames == [\"sync.example.com\"] and (.[0].spec.parentRefs | map({name, namespace})) == [{\"name\": \"gateway\", \"namespace\": \"gateway-system\"}] and .[0].metadata.annotations.team == \"sync\" and .[0].metadata.labels.tier == \"api\""
+check "every route rule sends traffic to port http of the Service" \
+	"[$routes[0].spec.rules[].backendRefs[] | {name, port}] | unique == [{\"name\": \"vault-sync\", \"port\": 8080}]"
+check "the route never times out the realtime WebSocket and gives other requests 15 minutes" \
+	"($routes[0].spec.rules | map({path: .matches[0].path.value, timeouts})) == [{\"path\": \"/v1/realtime\", \"timeouts\": {\"request\": \"0s\", \"backendRequest\": \"0s\"}}, {\"path\": \"/\", \"timeouts\": {\"request\": \"15m\", \"backendRequest\": \"15m\"}}]"
+render --set config.route.enabled=true --set config.route.parentRefs[0].name=gateway \
+	--set-json 'resources.route.main.rules=[{"backendRefs":[{"identifier":"main","port":"http"}],"timeouts":{"request":"1h"}}]'
+check "resources.route overrides the computed route" \
+	"($routes[0].spec.rules | length) == 1 and $routes[0].spec.rules[0].timeouts == {\"request\": \"1h\"}"
+
+# --- schema -----------------------------------------------------------------
+
+rejects "the schema rejects an unknown config key" "additional properties 'forcepathstyle' not allowed" --set config.s3.forcepathstyle=true
+rejects "the schema rejects a wrong type" "/config/server/blob/maxSizeBytes" --set config.server.blob.maxSizeBytes=big
+rejects "the schema rejects a string boolean" "/config/s3/forcePathStyle" --set-string config.s3.forcePathStyle=true
+rejects "the schema rejects a bad duration" "does not match pattern" --set config.server.writeTimeout=soon
+rejects "the schema rejects an unknown log level" "/config/logLevel" --set config.logLevel=verbose
+if render --set config.server.writeTimeout=1h30m --set config.server.blob.maxSizeBytes=1073741824 --set config.s3.forcePathStyle=false; then
+	pass "the schema accepts typed values"
+else
+	fail "the schema accepts typed values: $(cat "$work/err")"
+fi
 
 render --set resources.controllers.main.containers.main.image.tag=1.2.3
 check "the image tag is configurable" "($server | .containers[0].image) == \"ghcr.io/soliddowant/vault-sync:1.2.3\""
@@ -279,9 +373,6 @@ check "export uses its own database and S3 credentials when given" \
 check "the export's own credentials never reach the server" \
 	"[$deployment | .. | strings | select(. == \"export-db\" or . == \"export-db-client\" or . == \"export-bucket\")] | length == 0"
 
-render --set config.server.metrics.serviceMonitor.enabled=false
-check "the ServiceMonitor can be disabled" "[\$docs[] | select(.kind == \"ServiceMonitor\")] | length == 0"
-
 if render --set config.export.enabled=false --set-json 'config.export.output.persistence={}'; then
 	check "a disabled export renders no CronJob and mounts no escrow key" \
 		"([$cronjob] | length) == 0 and ([\$docs[] | .. | strings | select(contains(\"$escrow_secret\"))] | length) == 0"
@@ -300,6 +391,8 @@ rejects "requires the OIDC issuer" "config.oidc.issuerUrl is required" --set con
 rejects "requires the OIDC audience" "config.oidc.audience is required" --set config.oidc.audience=
 rejects "requires the export volume" "config.export.output.persistence is required" --set-json 'config.export.output.persistence={}'
 rejects "rejects an export directory with a slash" "config.export.output.directory" --set config.export.output.directory=a/b
+rejects "rejects a database URL value together with a Secret" "mutually exclusive" --set config.export.database.url.value=postgres://db \
+	--set config.export.database.url.secretKeyRef.name=export-db --set config.export.database.url.secretKeyRef.key=dsn
 
 # --- documentation ----------------------------------------------------------
 

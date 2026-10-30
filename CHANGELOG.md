@@ -2,6 +2,20 @@
 
 All notable changes to vault-sync are listed here, newest release first.
 
+## Unreleased
+
+### Helm chart (breaking)
+
+The Helm chart was reworked so that it computes only what the server needs to run correctly and sets no policy you can't cleanly replace. Read this before upgrading a release of the chart:
+
+- **Every resource is renamed.** Resources are now named after the release, never with the chart name twice: a release `obsidian-vault-sync` gets the Deployment, Service, ServiceAccount, ServiceMonitor, PodDisruptionBudget and HTTPRoute `obsidian-vault-sync` and the CronJob `obsidian-vault-sync-export` (previously `<release>-vault-sync-main` and so on). Upgrading therefore replaces the Deployment and the Service: expect the server's pods to be recreated and point anything that names the old Service at the new name. The identifiers under `resources` (`main`, `export`) are unchanged, so overrides keep working.
+- **One Service.** The `metrics` Service is merged into the main Service, which now has ports `http` (8080, primary) and `metrics` (9090). A plain `resources.ingress` or route now resolves its backend to port `http` without naming a Service. Only port `http` may be routed to from outside the cluster.
+- **The ServiceMonitor is off by default** (`config.server.metrics.serviceMonitor.enabled: false`), so installs no longer fail on clusters without the prometheus-operator CRDs. Turn it on to keep scraping; it now selects the main Service.
+- **The export job is off by default** (`config.export.enabled: false`). Set it to `true` to keep your plaintext disaster-recovery copy; it is recommended.
+- **No PodDisruptionBudget, container resources or topology spread constraint by default.** Set them under `resources.controllers.<main|export>` if you want them (`docs/deployment.md` has examples and the previous values as a starting point).
+- **HTTPRoute support:** `config.route` (`enabled`, `hostnames`, `parentRefs`, `annotations`, `labels`) renders an HTTPRoute to port `http` with timeouts suited to the API: 15 minutes for requests (a `CommitBlob` may take up to 10 minutes) and none for the `/v1/realtime` WebSocket.
+- **Stricter values.** A `values.schema.json` checks `config`: unknown keys, wrong types and malformed durations now fail the install instead of being ignored. Optional settings default to `null` instead of `""` and take typed values: integers for sizes and counts (`maxRequestBytes: 1048576`, not `"1048576"`), booleans for switches (`forcePathStyle: false`), and Go duration strings (`30s`) for durations.
+
 ## 0.4.0
 
 vault-sync is a self-hosted replacement for Obsidian Sync: an Obsidian plugin and a sync server backed by PostgreSQL and S3. This release adds end-to-end encryption (Phase 4). A vault can now be encrypted on your devices so that the server stores only ciphertext for its notes, attachments and file names, shared with other members through invitations and protected against a server that tries to slip in keys or members. [How encryption works](https://github.com/solidDoWant/vault-sync/blob/0.4.0/docs/encryption.md) explains what it protects and what it doesn't. Install the server from the image `ghcr.io/soliddowant/vault-sync:0.4.0` or the Helm chart `oci://ghcr.io/soliddowant/charts/vault-sync` (version 0.4.0), and the plugin with BRAT from this repository's GitHub releases. A 0.3.0 deployment can be upgraded replica by replica.

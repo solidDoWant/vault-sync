@@ -18,6 +18,17 @@
 {{- $runAsUser := 65532 -}}
 
 {{- $config := .Values.config -}}
+
+{{/* Resource names: the bjw-s full name is the release name (the chart
+   name never appears twice in a name, whatever the release is called),
+   unless the caller sets global.nameOverride or global.fullnameOverride
+   themselves. The server controller then carries no suffix; the export
+   CronJob is <release>-export. */}}
+{{- $global := .Values.global | default dict -}}
+{{- if not $global.nameOverride -}}
+  {{- $_ := set $global "nameOverride" .Release.Name -}}
+{{- end -}}
+{{- $_ := set .Values "global" $global -}}
 {{- $exportEnabled := $config.export.enabled -}}
 
 {{/* ============================================================ */}}
@@ -232,9 +243,10 @@
   {{- $_ := set $serverEnv "VAULT_SYNC_OIDC_CLIENT_ID" . -}}
 {{- end -}}
 
-{{/* Optional values: an empty value leaves the variable unset, so the
-   server's default applies. Compared as strings so that a numeric 0 or a
-   boolean false still reaches the server (which validates it). */}}
+{{/* Optional values: null (or an empty string) leaves the variable unset,
+   so the server's default applies. Compared as strings so that a numeric 0
+   or a boolean false still reaches the server (which validates it).
+   values.schema.json checks each value's type. */}}
 {{- $shared := dict
   "VAULT_SYNC_LOG_LEVEL" $config.logLevel
   "VAULT_SYNC_S3_BUCKET" $config.s3.bucket
@@ -336,24 +348,16 @@
 -}}
 {{- $image := dict "repository" $defaultImageRepository "tag" .Chart.AppVersion -}}
 
-{{- $userControllers := .Values.resources.controllers | default dict -}}
-{{- $userServer := index $userControllers $serverController | default dict -}}
-{{- $replicas := index $userServer "replicas" | default 2 | int -}}
-
 {{- $probe := dict "enabled" true "custom" true -}}
 {{- $server := dict
   "type" "deployment"
   "replicas" 2
   "strategy" "RollingUpdate"
   "rollingUpdate" (dict "maxUnavailable" 0 "maxSurge" 1)
+  "forceRename" (include "bjw-s.common.lib.chart.names.fullname" $)
   "pod" (dict
     "terminationGracePeriodSeconds" $terminationGracePeriod
     "securityContext" $podSecurityContext
-    "topologySpreadConstraints" (list (dict
-      "maxSkew" 1
-      "topologyKey" "kubernetes.io/hostname"
-      "whenUnsatisfiable" "ScheduleAnyway"
-    ))
   )
   "containers" (dict $container (dict
     "image" (mustDeepCopy $image)
@@ -380,15 +384,8 @@
       )) $probe)
     )
     "securityContext" $containerSecurityContext
-    "resources" (dict
-      "requests" (dict "cpu" "100m" "memory" "128Mi")
-      "limits" (dict "cpu" "1" "memory" "512Mi")
-    )
   ))
 -}}
-{{- if gt $replicas 1 -}}
-  {{- $_ := set $server "podDisruptionBudget" (dict "maxUnavailable" 1) -}}
-{{- end -}}
 
 {{- $computedControllers := dict $serverController $server -}}
 {{- if $exportEnabled -}}
@@ -412,26 +409,28 @@
       "args" (list "export" "-out" (printf "%s/%s" $exportMount $config.export.output.directory))
       "env" $exportEnv
       "securityContext" $containerSecurityContext
-      "resources" (dict
-        "requests" (dict "cpu" "100m" "memory" "128Mi")
-        "limits" (dict "cpu" "1" "memory" "1Gi")
-      )
     ))
   ) -}}
 {{- end -}}
 
 {{/* ============================================================ */}}
-{{/* Services and ServiceMonitor                                  */}}
+{{/* Service, ServiceMonitor and HTTPRoute                         */}}
 {{/* ============================================================ */}}
+{{/* One Service with both ports, so ingress and route backends resolve to
+   the primary port "http" without naming a Service. Only "http" may be
+   routed to from outside the cluster; "metrics" serves /metrics and the
+   probes. */}}
 {{- $services := dict
-  "main" (dict "controller" $serverController "ports" (dict "http" (dict "port" $httpPort "primary" true)))
-  "metrics" (dict "controller" $serverController "ports" (dict "metrics" (dict "port" $metricsPort)))
+  "main" (dict "controller" $serverController "ports" (dict
+    "http" (dict "port" $httpPort "primary" true)
+    "metrics" (dict "port" $metricsPort)
+  ))
 -}}
 {{- $serviceMonitors := dict -}}
 {{- $serviceMonitor := $config.server.metrics.serviceMonitor -}}
 {{- if $serviceMonitor.enabled -}}
   {{- $_ := set $serviceMonitors "main" (dict
-    "service" (dict "identifier" "metrics")
+    "service" (dict "identifier" "main")
     "endpoints" (list (dict
       "port" "metrics"
       "path" "/metrics"
@@ -441,6 +440,40 @@
   ) -}}
 {{- end -}}
 
+{{/* The HTTPRoute (config.route) sends the host to port "http". Its
+   timeouts suit the API: a CommitBlob response may only start once the
+   server has composed the whole blob (up to 10 minutes, SPEC.md §6.2),
+   so ordinary requests get 15 minutes; /v1/realtime is a long-lived
+   WebSocket, so its rule disables the request timeout ("0s"). */}}
+{{- $routes := dict -}}
+{{- $route := $config.route | default dict -}}
+{{- if $route.enabled -}}
+  {{- $backend := list (dict "identifier" "main" "port" "http") -}}
+  {{- $item := dict
+    "hostnames" ($route.hostnames | default list)
+    "parentRefs" ($route.parentRefs | default list)
+    "rules" (list
+      (dict
+        "matches" (list (dict "path" (dict "type" "PathPrefix" "value" "/v1/realtime")))
+        "backendRefs" $backend
+        "timeouts" (dict "request" "0s" "backendRequest" "0s")
+      )
+      (dict
+        "matches" (list (dict "path" (dict "type" "PathPrefix" "value" "/")))
+        "backendRefs" $backend
+        "timeouts" (dict "request" "15m" "backendRequest" "15m")
+      )
+    )
+  -}}
+  {{- with $route.annotations -}}
+    {{- $_ := set $item "annotations" . -}}
+  {{- end -}}
+  {{- with $route.labels -}}
+    {{- $_ := set $item "labels" . -}}
+  {{- end -}}
+  {{- $_ := set $routes "main" $item -}}
+{{- end -}}
+
 {{/* ============================================================ */}}
 {{/* Merge user resources                                         */}}
 {{/* ============================================================ */}}
@@ -448,6 +481,7 @@
   "controllers" $computedControllers
   "service" $services
   "serviceMonitor" $serviceMonitors
+  "route" $routes
   "persistence" $persistence
 -}}
 {{- $merged := mustMergeOverwrite $computed (mustDeepCopy (.Values.resources | default dict)) -}}
