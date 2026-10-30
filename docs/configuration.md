@@ -184,6 +184,17 @@ Besides the standard Go runtime (`go_*`) and process (`process_*`) metrics:
 | `vault_sync_retention_purge_markers_pruned_total` | counter | | Purge markers older than `VAULT_SYNC_RETENTION_PURGE_MARKER_HORIZON` that this replica's retention job deleted. A run prunes at most 100,000: growth by that much every run means pruning is falling behind the purges (see [Retention and history](#retention-and-history)). |
 | `vault_sync_retention_vaults_purged_total` | counter | | Vaults deleted more than 30 days ago whose rows and S3 objects this replica's retention job purged (see [Deleting a vault](design/sharing.md#deleting-a-vault)). |
 | `vault_sync_retention_run_failures_total` | counter | | Retention runs on this replica that failed in part (logged as `retention run failed`); the next run retries. Alert if it keeps rising. |
+| `vault_sync_db_pool_acquired_connections` | gauge | | PostgreSQL connections of this replica's pool in use. |
+| `vault_sync_db_pool_idle_connections` | gauge | | Open PostgreSQL connections idle in this replica's pool. |
+| `vault_sync_db_pool_waiting_acquires` | gauge | | Requests for a connection from this replica's pool in progress. Sustained values near the pool size mean the pool is too small or the database is slow. |
+| `vault_sync_db_pool_acquire_duration_seconds` | histogram | | Time to get a connection from the pool, including waiting for one and opening it. |
+| `vault_sync_db_query_errors_total` | counter | | PostgreSQL queries and statements that failed, including those the server expects and handles (such as a commit losing a race) and those canceled with their request. Alert on a sustained rise. |
+| `vault_sync_s3_requests_total` | counter | `operation`, `outcome` | S3 operations, by S3 API operation (`PutObject`, `GetObject`, `HeadBucket`, ...) and outcome: `ok`, `not_found` (HTTP 404, expected for example when deleting a missing object) or `error`. One operation counts once, however often the SDK retried it. |
+| `vault_sync_s3_request_duration_seconds` | histogram | `operation`, `outcome` | Time each S3 operation took, retries included. |
+| `vault_sync_blob_uploaded_bytes_total` | counter | | Blob chunk bytes clients uploaded that this replica accepted. |
+| `vault_sync_blob_downloaded_bytes_total` | counter | | Blob bytes this replica served to clients' downloads. |
+| `vault_sync_oidc_jwks_refresh_failures_total` | counter | | Fetches of the OIDC issuer's discovery document and key set that failed; the server keeps using the keys it has. |
+| `vault_sync_oidc_jwks_age_seconds` | gauge | | Seconds since this replica last fetched the issuer's key set successfully, `NaN` before the first fetch. Keys are fetched when a token needs them and at most hourly, so on an idle replica the age keeps growing; alert on a high age together with refresh failures. |
 
 Calls rejected for authentication are counted with code `unauthenticated`. Requests rejected before reaching an RPC handler (oversized declared bodies, unknown routes, malformed messages) are not counted.
 

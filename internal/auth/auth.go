@@ -78,6 +78,8 @@ type VerifierOptions struct {
 	MaxKeyAge time.Duration
 	// Logger defaults to discarding logs.
 	Logger *slog.Logger
+	// Metrics, if set, records key set refreshes.
+	Metrics *Metrics
 }
 
 // Verifier validates OIDC access tokens: signature (with an allowed

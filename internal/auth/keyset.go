@@ -92,6 +92,7 @@ type remoteKeySet struct {
 	minRefreshInterval time.Duration
 	maxKeyAge          time.Duration
 	logger             *slog.Logger
+	metrics            *Metrics
 
 	// mu guards keys, fetchedAt, lastAttempt and inflight. It is never held
 	// during a fetch.
@@ -124,6 +125,7 @@ func newRemoteKeySet(options VerifierOptions) *remoteKeySet {
 		minRefreshInterval: options.MinRefreshInterval,
 		maxKeyAge:          options.MaxKeyAge,
 		logger:             options.Logger,
+		metrics:            options.Metrics,
 	}
 
 	if issuer, err := url.Parse(options.IssuerURL); err == nil {
@@ -343,6 +345,8 @@ func (keySet *remoteKeySet) run(ctx context.Context, call *refresh, startedAt ti
 	keySet.inflight = nil
 	keySet.mu.Unlock()
 
+	// Recorded before waiters resume, so they observe it.
+	keySet.metrics.observeRefresh(keySet.now, startedAt, err)
 	close(call.done)
 
 	if err != nil {

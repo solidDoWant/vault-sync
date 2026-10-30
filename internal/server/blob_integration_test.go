@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"sync"
 	"testing"
 
@@ -64,7 +65,9 @@ func newBlobFixtureWithRequestLimit(t *testing.T, limits api.BlobLimits, maxRequ
 	pool := migratedPool(t)
 	queries := store.New(pool)
 
-	objects, err := blobstore.New(testinfra.S3Bucket(t))
+	objectMetrics := blobstore.NewMetrics()
+
+	objects, err := blobstore.NewWithMetrics(testinfra.S3Bucket(t), objectMetrics)
 	require.NoError(t, err)
 
 	issuer := authtest.NewIssuer(t)
@@ -80,7 +83,8 @@ func newBlobFixtureWithRequestLimit(t *testing.T, limits api.BlobLimits, maxRequ
 		Devices:         queries,
 		Vaults:          queries,
 		Memberships:     queries,
-		Blobs:           &api.BlobService{Store: queries, Objects: objects, Limits: limits},
+		Blobs:           &api.BlobService{Store: queries, Objects: objects, Limits: limits, Metrics: objectMetrics},
+		Dependencies:    server.DependencyMetrics{ObjectStore: objectMetrics},
 		Logger:          logger,
 	})
 
@@ -346,6 +350,28 @@ func TestBlobUploadAndDownload(t *testing.T) {
 			requireCode(t, connect.CodeInvalidArgument, err, "offset beyond the end")
 		})
 	}
+}
+
+func TestBlobTransfersAreCountedInTheMetrics(t *testing.T) {
+	fixture := newBlobFixture(t, defaultBlobLimits)
+	token := fixture.token(t, "alice")
+	vault := fixture.createVault(t, token, "Notes")
+
+	content := randomBytes(t, 2*config.DefaultBlobMaxChunkBytes+17)
+	blobID := blobIDOf(content)
+
+	require.NoError(t, fixture.upload(t, token, vault.GetId(), blobID, content))
+	uploaded, err := strconv.ParseFloat(metricValue(t, fixture.running, "vault_sync_blob_uploaded_bytes_total"), 64)
+	require.NoError(t, err)
+	assert.Equal(t, float64(len(content)), uploaded)
+	assert.Equal(t, "0", metricValue(t, fixture.running, "vault_sync_blob_downloaded_bytes_total"))
+
+	_, err = fixture.download(t, token, vault.GetId(), blobID, 5, 100)
+	require.NoError(t, err)
+	assert.Equal(t, "100", metricValue(t, fixture.running, "vault_sync_blob_downloaded_bytes_total"))
+
+	// Each staged chunk and the composed blob were written to S3.
+	assert.NotEmpty(t, metricValue(t, fixture.running, `vault_sync_s3_requests_total{operation="PutObject",outcome="ok"}`))
 }
 
 // Criterion 2: committed bytes that do not hash to blob_id fail the commit
