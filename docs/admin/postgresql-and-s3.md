@@ -2,7 +2,7 @@
 
 For: admins. You run PostgreSQL (the examples use CloudNativePG) and an S3-compatible object store (the examples use Ceph RGW with Rook). You install the server with the Helm chart.
 
-The server keeps all its data in one PostgreSQL database and one S3 bucket. The replicas keep no data of their own. This page tells you how to set up the database and the bucket, how to protect the connections with TLS, and which permissions the server needs. The Helm chart creates no database, bucket or Secret. You create them and give their names to the chart. The chart values are in [Chart values](../deployment.md#chart-values), and the environment variables are in the [configuration reference](configuration-reference.md).
+The server keeps all its data in one PostgreSQL database and one S3 bucket. The replicas keep no data of their own. This page tells you how to set up the database and the bucket, how to protect the connections with TLS, and which permissions the server needs. The Helm chart creates no database, bucket or Secret. You create them and give their names to the chart. The chart values are in [Chart values](chart-values.md), and the environment variables are in the [configuration reference](configuration-reference.md).
 
 ## What lives where
 

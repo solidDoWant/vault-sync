@@ -2,7 +2,7 @@
 
 For: admins. You run the server with the Helm chart and use Prometheus with the prometheus-operator.
 
-The Helm chart ships alerting rules as a prometheus-operator `PrometheusRule`. They are off by default. [deployment.md](../deployment.md#alerts) tells you how to turn them on and how to change one alert (`config.alerts.rules.<AlertName>`: `enabled`, `for`, `severity`, `threshold`). The rules are in `deploy/charts/vault-sync/alerts/vault-sync.rules.yaml`. This page has one runbook per alert.
+The Helm chart ships alerting rules as a prometheus-operator `PrometheusRule`. They are off by default. [Chart values](chart-values.md#alerts) tells you how to turn them on and how to change one alert (`config.alerts.rules.<AlertName>`: `enabled`, `for`, `severity`, `threshold`). The rules are in `deploy/charts/vault-sync/alerts/vault-sync.rules.yaml`. This page has one runbook per alert.
 
 ## How the alerts work
 

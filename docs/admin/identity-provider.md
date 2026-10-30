@@ -59,7 +59,7 @@ Then set the chart values:
 - Set `config.oidc.audience` to the provider's client ID. Authentik puts the client ID in the `aud` of the access token.
 - Leave `config.oidc.clientId` empty. Then the chart leaves `VAULT_SYNC_OIDC_CLIENT_ID` unset, and the plugin signs in as the audience. Set it only if the plugin must sign in as another client.
 
-These values set `VAULT_SYNC_OIDC_ISSUER_URL`, `VAULT_SYNC_OIDC_AUDIENCE` and `VAULT_SYNC_OIDC_CLIENT_ID`. See [Chart values](../deployment.md#chart-values).
+These values set `VAULT_SYNC_OIDC_ISSUER_URL`, `VAULT_SYNC_OIDC_AUDIENCE` and `VAULT_SYNC_OIDC_CLIENT_ID`. See [Chart values](chart-values.md).
 
 Users enter only the server URL in the plugin. The server tells the plugin the issuer and the client ID. The plugin has optional settings for both in its *Advanced* group. A user needs them only for a server too old to advertise them, or to pin the issuer.
 

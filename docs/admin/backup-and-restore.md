@@ -24,7 +24,7 @@ The export is a one-shot job. It runs, writes a JSON summary to stdout, and exit
 
 ### Run it with the Helm chart
 
-The chart runs the export as a CronJob, but it is off by default. To turn it on, set `config.export.enabled: true` and give it an output volume in `config.export.output.persistence`. [Chart values](../deployment.md#chart-values) lists every value of the export.
+The chart runs the export as a CronJob, but it is off by default. To turn it on, set `config.export.enabled: true` and give it an output volume in `config.export.output.persistence`. [Chart values](chart-values.md) lists every value of the export.
 
 - The job runs daily at 03:00 by default. Two runs never overlap. The chart stops a run after 6 hours by default, so a hung run (for example on a stalled NFS volume) cannot block every later run. Kubernetes retries a failed run twice.
 - The job writes to the directory `config.export.output.directory` (`vaults` by default) in the volume. It also keeps a lock file and a staging directory next to that directory. So the top level of the volume must be writable.

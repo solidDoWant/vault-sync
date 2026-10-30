@@ -67,7 +67,7 @@ func (dependencies DependencyMetrics) collectors() []prometheus.Collector {
 
 // serverCollectors returns every vault_sync_* collector the server
 // registers. Every such metric must be registered through this function:
-// the Metrics table in docs/configuration.md is checked against it.
+// docs/admin/metrics-reference.md is generated from it.
 func serverCollectors(hub *realtime.Hub, rpc *rpcMetrics, concurrency *concurrencyMetrics, retained *retention.Metrics, dependencies DependencyMetrics) []prometheus.Collector {
 	collected := append(rpc.collectors(), concurrency.collectors()...)
 	if retained != nil {

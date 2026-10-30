@@ -38,7 +38,7 @@ Revisions purged before the release that added purge markers have no marker. Rev
 
 ## Settings
 
-The settings of the policy are in [Retention and history](configuration-reference.md#retention-and-history) in the configuration reference. The chart sets them from the values under `config.server.retention` and `config.server.blob.gcGrace` (see [Chart values](../deployment.md#chart-values)). [Which variables each command reads](configuration.md#which-variables-each-command-reads) tells you which command reads each one.
+The settings of the policy are in [Retention and history](configuration-reference.md#retention-and-history) in the configuration reference. The chart sets them from the values under `config.server.retention` and `config.server.blob.gcGrace` (see [Chart values](chart-values.md)). [Which variables each command reads](configuration.md#which-variables-each-command-reads) tells you which command reads each one.
 
 If you change `VAULT_SYNC_RETENTION_KEEP_ALL` or `VAULT_SYNC_RETENTION_KEEP_DAILY`, the next run reads more of the database (see [Storage growth](#storage-growth)).
 

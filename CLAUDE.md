@@ -50,14 +50,14 @@ Run `make help` for the full list (keep it and this section current as targets a
 - `make fmt` / `make vet` / `make lint` (`lint-fix`) — format, vet, lint (Go + plugin).
 - `make test` — Go unit tests with `-race` + plugin vitest.
 - `make generate` / `make check-generate`: regenerate protobuf code, or fail on drift.
-- `make generate-docs` / `make check-generate-docs`: regenerate the reference pages in `docs/admin/` (the metrics reference, from the metrics' `Help` text, and the configuration reference, from the doc comments of the `*Env` constants in `internal/config/config.go`), or fail on drift. `make test` also fails on drift.
+- `make generate-docs` / `make check-generate-docs`: regenerate the reference pages in `docs/admin/` (the metrics reference, from the metrics' `Help` text, the configuration reference, from the doc comments of the `*Env` constants in `internal/config/config.go`, and the chart values, from the `# --` comments in the chart's `values.yaml` with `helm-docs`), or fail on drift. `make test` also fails on drift of the first two.
 - `make test-integration` — `integration`-tagged Go tests against real PostgreSQL + S3 (`docker compose`, torn down afterwards; tests skip without Docker). Extra `go test` args: `./scripts/test-integration.sh -run X ./internal/store/`.
 - `make test-integration-postgres14` — the `./internal/store/` and rolling-upgrade integration tests on PostgreSQL 14, the minimum supported version (`VAULT_SYNC_TEST_POSTGRES_VERSION=14`; needs Docker). Run it when touching migrations or SQL.
 - `make acceptance`: run every `[AC-nn]` acceptance test and print the scoreboard (scenarios passing out of the total in `docs/acceptance/phase-2.md`).
 - `make test-e2e` — plugin e2e in a pinned real Obsidian via `wdio-obsidian-service` (headless via xvfb) against a real server on PostgreSQL + S3 (`docker compose`); `VAULT_SYNC_E2E_MOBILE=1` uses Obsidian's emulated mobile mode. See `docs/testing/e2e.md`.
 - `make docs-screenshots`: regenerate the settings-tab screenshots in `docs/user/images/` with the e2e harness (needs Docker). Run it when the settings tab changes.
 - `make build-images` — build the server OCI image with Nix (`nix/`), check its binary with `govulncheck -mode=binary`, load it into Docker and tag it `ghcr.io/soliddowant/vault-sync:$VERSION`; `PUSH_ALL=true` also pushes. Needs Docker. After a `go.mod`/`go.sum` change, run `make update-vendor-hash` to refresh `vendorHash` in `nix/server.nix`.
-- `make chart-lint` — lint `deploy/charts/vault-sync` and check its rendered manifests (`scripts/chart_test.sh`; no cluster). Run it when touching the chart, the environment variables (`docs/admin/configuration-reference.md`) or `docs/deployment.md`. `make helm` packages the chart.
+- `make chart-lint` — lint `deploy/charts/vault-sync` and check its rendered manifests (`scripts/chart_test.sh`; no cluster). Run it when touching the chart, the environment variables (`docs/admin/configuration-reference.md`) or the chart values (`docs/admin/chart-values.md`, generated). `make helm` packages the chart.
 - `make release VERSION=x.y.z` — dry run of a release (image, chart, plugin assets `main.js`/`manifest.json`/`styles.css`, tag, GitHub release). Never run it with `PUSH_ALL=true`: releasing is the human's call. See `docs/dev/releasing.md`.
 
 ## Dev Tools

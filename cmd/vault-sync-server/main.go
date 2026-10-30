@@ -17,7 +17,7 @@
 // and attachments into an empty vault and exits (docs/admin/backup-and-restore.md).
 //
 // `vault-sync-server retention set|unset|list` manages per-vault retention
-// overrides and exits (docs/configuration.md, SPEC.md §11).
+// overrides and exits (docs/admin/history-and-retention.md, SPEC.md §11).
 //
 // `vault-sync-server vault undelete VAULT_ID` restores a deleted vault that
 // has not been purged yet and exits (docs/design/sharing.md).

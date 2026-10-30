@@ -26,9 +26,9 @@ No metric has a per-user, per-vault or per-device label.
 
 ## Scraping with the chart
 
-`config.server.metrics.serviceMonitor.enabled` scrapes the per-instance port with a prometheus-operator ServiceMonitor. `config.server.metrics.serviceWide.enabled` adds the service-wide port ([Chart values](../deployment.md#server)).
+`config.server.metrics.serviceMonitor.enabled` scrapes the per-instance port with a prometheus-operator ServiceMonitor. `config.server.metrics.serviceWide.enabled` adds the service-wide port ([Chart values](chart-values.md#metrics)).
 
-The service-wide alerts (retention, export, backlogs) read the service-wide metrics. If you do not scrape port `service-metrics`, with the chart or with your own scrape configuration, these alerts never fire. [Alerts](../deployment.md#alerts) shows how to turn on the alert rules.
+The service-wide alerts (retention, export, backlogs) read the service-wide metrics. If you do not scrape port `service-metrics`, with the chart or with your own scrape configuration, these alerts never fire. [Alerts](chart-values.md#alerts) shows how to turn on the alert rules.
 
 ## Grafana dashboards
 
@@ -78,7 +78,7 @@ config:
         # labelValue: "1"
 ```
 
-[Grafana dashboards](../deployment.md#grafana-dashboards) lists every value of `config.grafana.dashboards`.
+[Grafana dashboards](chart-values.md#grafana-dashboards) lists every value of `config.grafana.dashboards`.
 
 ### Import the dashboards by hand
 

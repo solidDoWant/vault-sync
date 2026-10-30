@@ -31,7 +31,7 @@
 #     docs/admin/metrics-reference.md and every alert has a docs/admin/alerts.md section
 #     (and a heading in the docs/alerts.md stub);
 #   - every VAULT_SYNC_* variable in docs/admin/configuration-reference.md can
-#     be set through the chart, and every config value is documented in docs/deployment.md.
+#     be set through the chart, and every config value is documented in docs/admin/chart-values.md.
 #
 # Needs helm, yq, jq and promtool (all in the dev shell) and, on the first run, network
 # access to fetch the pinned bjw-s common chart (Chart.lock).
@@ -626,12 +626,14 @@ for var in $documented_vars; do
 	check "the chart can set $var" "[$pod | .containers[0].env[] | select(.name == \"$var\")] | length == 1"
 done
 
-# Every config value must be documented in docs/deployment.md.
+# Every config value must be documented in docs/admin/chart-values.md, which
+# helm-docs generates from the `# --` comments in values.yaml: its row must
+# have a description, so a value without a `# --` comment fails here.
 for path in $(yq --output-format=json '.' "$chart/values.yaml" | jq -r '.config | paths(type != "object" or length == 0) | "config." + (map(tostring) | join("."))'); do
-	if grep -qF -- "\`$path\`" "$repo_root/docs/deployment.md"; then
-		pass "docs/deployment.md documents $path"
+	if grep -F -- "| \`$path\` |" "$repo_root/docs/admin/chart-values.md" | grep -qvE '\|[[:space:]]*\|[[:space:]]*$'; then
+		pass "docs/admin/chart-values.md documents $path"
 	else
-		fail "docs/deployment.md documents $path"
+		fail "docs/admin/chart-values.md documents $path"
 	fi
 done
 
