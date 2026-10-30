@@ -11,8 +11,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/solidDoWant/vault-sync/internal/auth"
+	"github.com/solidDoWant/vault-sync/internal/blobstore"
 	"github.com/solidDoWant/vault-sync/internal/realtime"
 	"github.com/solidDoWant/vault-sync/internal/retention"
+	"github.com/solidDoWant/vault-sync/internal/store"
 )
 
 // This test lives in package server because the full set of registered
@@ -34,17 +37,23 @@ func registeredMetrics(t *testing.T) map[string]documentedMetric {
 	hub := realtime.NewHub(realtime.Options{})
 	registered := map[string]documentedMetric{}
 
-	for _, collector := range serverCollectors(hub, newRPCMetrics(), newConcurrencyMetrics(), retention.NewMetrics()) {
+	dependencies := DependencyMetrics{Database: store.NewMetrics(), ObjectStore: blobstore.NewMetrics(), OIDC: auth.NewMetrics()}
+
+	for _, collector := range serverCollectors(hub, newRPCMetrics(), newConcurrencyMetrics(), retention.NewMetrics(), dependencies) {
 		var kind string
 
 		// Gauge before Counter: a Gauge also satisfies the Counter interface.
-		switch collector.(type) {
+		switch typed := collector.(type) {
 		case prometheus.Gauge, *prometheus.GaugeVec:
 			kind = "gauge"
 		case prometheus.Counter, *prometheus.CounterVec:
 			kind = "counter"
 		case prometheus.Histogram, *prometheus.HistogramVec:
 			kind = "histogram"
+		case prometheus.Metric:
+			// A GaugeFunc or CounterFunc: both have the same methods, so
+			// its type is read from the metric it writes.
+			kind = funcMetricKind(t, typed)
 		default:
 			require.Failf(t, "unknown collector type", "%T", collector)
 		}
@@ -67,6 +76,20 @@ func registeredMetrics(t *testing.T) map[string]documentedMetric {
 	}
 
 	return registered
+}
+
+// funcMetricKind returns the type of a GaugeFunc or CounterFunc.
+func funcMetricKind(t *testing.T, metric prometheus.Metric) string {
+	t.Helper()
+
+	registry := prometheus.NewPedanticRegistry()
+	require.NoError(t, registry.Register(metric.(prometheus.Collector)))
+
+	families, err := registry.Gather()
+	require.NoError(t, err)
+	require.Len(t, families, 1)
+
+	return strings.ToLower(families[0].GetType().String())
 }
 
 // documentedMetrics parses the Metrics table of docs/configuration.md. It

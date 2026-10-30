@@ -133,6 +133,10 @@ type Options struct {
 	// Retention holds the retention job's metrics, served with the
 	// server's. When nil, they are not served.
 	Retention *retention.Metrics
+	// Dependencies holds the metrics of the server's PostgreSQL pool, object
+	// store and OIDC key set, served with the server's. Those left nil are
+	// not served.
+	Dependencies DependencyMetrics
 	// Logger receives server logs. Request bodies, tokens and vault paths
 	// are never logged.
 	Logger *slog.Logger
@@ -177,7 +181,7 @@ func New(options Options) *Server {
 
 	rpcMetrics := newRPCMetrics()
 	concurrency := newConcurrencyMetrics()
-	registry := newRegistry(serverCollectors(options.Realtime, rpcMetrics, concurrency, options.Retention))
+	registry := newRegistry(serverCollectors(options.Realtime, rpcMetrics, concurrency, options.Retention, options.Dependencies))
 
 	srv := &Server{options: options}
 	srv.api = newAPIHandler(options, rpcMetrics, newUserLimiter(options.MaxConcurrentRPCsPerUser, concurrency))

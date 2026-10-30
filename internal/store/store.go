@@ -34,6 +34,10 @@ type Config struct {
 	// (default_transaction_read_only), so PostgreSQL refuses any write. The
 	// export job uses it: it must never change the database.
 	ReadOnly bool
+
+	// Metrics, if set, records the pool's connections, acquires and failed
+	// queries.
+	Metrics *Metrics
 }
 
 // NewPoolConfig parses cfg into a pgxpool configuration. Setting any TLS file
@@ -62,6 +66,10 @@ func NewPoolConfig(cfg Config) (*pgxpool.Config, error) {
 	// second, which a busy pool's connections rarely are.
 	poolConfig.ShouldPing = func(context.Context, pgxpool.ShouldPingParams) bool { return true }
 
+	if cfg.Metrics != nil {
+		poolConfig.ConnConfig.Tracer = metricsTracer{metrics: cfg.Metrics}
+	}
+
 	if cfg.ReadOnly {
 		poolConfig.ConnConfig.RuntimeParams["default_transaction_read_only"] = "on"
 	}
@@ -86,6 +94,10 @@ func Open(ctx context.Context, cfg Config) (*pgxpool.Pool, error) {
 		pool.Close()
 
 		return nil, fmt.Errorf("connect to database: %w", err)
+	}
+
+	if cfg.Metrics != nil {
+		cfg.Metrics.pool.Store(pool)
 	}
 
 	return pool, nil
