@@ -100,7 +100,7 @@ The Coraza WAF in front of the server rejects inspected request bodies above 1 M
 
 The rest of the ingress:
 
-- Route the host to port `http` (8080) of the Service, for example with `config.route` (a Gateway API HTTPRoute, see [Route](#route)) or `resources.ingress`. Only port `http` may be routed to from outside the cluster: never expose port `metrics` (9090). The chart renders one Service, so an ingress's backend resolves to port `http` without naming a Service:
+- Route the host to port `http` (8080) of the Service, for example with `config.route` (a Gateway API HTTPRoute, see [Route](#route)) or `resources.ingress`. Only port `http` may be routed to from outside the cluster: never expose port `metrics` (9090) or `service-metrics` (9091). The chart renders one Service, so an ingress's backend resolves to port `http` without naming a Service:
 
   ```yaml
   resources:
@@ -171,7 +171,7 @@ config:
 helm install vault-sync oci://ghcr.io/soliddowant/charts/vault-sync --version <version> -n vault-sync -f values.yaml
 ```
 
-The chart then renders, each named after the release (here `vault-sync`): the server Deployment, one Service with ports `http` (8080) and `metrics` (9090), an HTTPRoute, a ServiceAccount without an API token, and the export CronJob `vault-sync-export`. With `config.server.metrics.serviceMonitor.enabled: true` it adds a ServiceMonitor. It creates no Secrets, and sets no PodDisruptionBudget, container resources or spread constraints: see [High availability](#high-availability) for what to add.
+The chart then renders, each named after the release (here `vault-sync`): the server Deployment, one Service with ports `http` (8080), `metrics` (9090) and `service-metrics` (9091), an HTTPRoute, a ServiceAccount without an API token, and the export CronJob `vault-sync-export`. With `config.server.metrics.serviceMonitor.enabled: true` it adds a ServiceMonitor, and with `config.server.metrics.serviceWide.enabled: true` as well that ServiceMonitor also scrapes port `service-metrics`. It creates no Secrets, and sets no PodDisruptionBudget, container resources or spread constraints: see [High availability](#high-availability) for what to add.
 
 Every resource is named after the release, never with the chart name in it twice: a release `obsidian-vault-sync` renders the Deployment, Service, ServiceAccount, ServiceMonitor, HTTPRoute and PodDisruptionBudget `obsidian-vault-sync` and the CronJob `obsidian-vault-sync-export`. The chart sets the bjw-s `global.nameOverride` to the release name unless you set it.
 
@@ -259,7 +259,7 @@ The chart has two top-level keys. `config` is the chart's own interface, describ
 
 ### Server
 
-The listen addresses are fixed by the chart: `VAULT_SYNC_LISTEN_ADDRESS` is `:8080` (port `http`) `VAULT_SYNC_METRICS_LISTEN_ADDRESS` is `:9090` (port `metrics`, which the probes and the ServiceMonitor use), and `VAULT_SYNC_SERVICE_METRICS_LISTEN_ADDRESS` is `:9091`. Every value below sets the variable named, documented in configuration.md; null uses the server's default. Byte sizes, counts and limits are integers, `config.server.escrow.default` is a boolean, and the rest are Go durations, except the escrow keys and ids (strings).
+The listen addresses are fixed by the chart: `VAULT_SYNC_LISTEN_ADDRESS` is `:8080` (port `http`) `VAULT_SYNC_METRICS_LISTEN_ADDRESS` is `:9090` (port `metrics`, which the probes and the ServiceMonitor use), and `VAULT_SYNC_SERVICE_METRICS_LISTEN_ADDRESS` is `:9091` (port `service-metrics`). Every value below sets the variable named, documented in configuration.md; null uses the server's default. Byte sizes, counts and limits are integers, `config.server.escrow.default` is a boolean, and the rest are Go durations, except the escrow keys and ids (strings).
 
 | Value | Variable |
 |---|---|
@@ -293,6 +293,7 @@ The listen addresses are fixed by the chart: `VAULT_SYNC_LISTEN_ADDRESS` is `:80
 | `config.server.metrics.serviceMonitor.enabled` | `false` | Create a prometheus-operator ServiceMonitor scraping `/metrics` on port `metrics` of the Service. Needs the `monitoring.coreos.com` CRDs. |
 | `config.server.metrics.serviceMonitor.interval` | `1m` | Scrape interval. |
 | `config.server.metrics.serviceMonitor.scrapeTimeout` | `10s` | Scrape timeout. |
+| `config.server.metrics.serviceWide.enabled` | `false` | Add a second ServiceMonitor endpoint scraping the service-wide `/metrics` on port `service-metrics`, with the same interval and timeout. Needs `config.server.metrics.serviceMonitor.enabled`. Every replica serves the same values; to scrape only one replica, configure that in your scraper. |
 
 ### Export
 
@@ -342,7 +343,7 @@ Under `resources`, the chart computes these bjw-s entries; your values are merge
 | `resources.controllers.main` | The server Deployment, named after the release: `replicas: 2`, `RollingUpdate` with `maxUnavailable: 0` and `maxSurge: 1`, `terminationGracePeriodSeconds` of `config.server.shutdownDelay` plus `config.server.shutdownTimeout` plus 10 seconds (at least 45; 45 with the defaults), `automountServiceAccountToken: false`, a startup probe (`/healthz`, up to 10 minutes, so long migrations are not killed), a liveness probe (`/healthz`) and a readiness probe (`/readyz`, every 2 s) on the metrics port. |
 | `resources.controllers.export` | The export CronJob `<release>-export`: `concurrencyPolicy: Forbid`, `backoffLimit: 2` and 3 successful and 3 failed Jobs kept. |
 | both controllers | Container `main`, image `ghcr.io/soliddowant/vault-sync` at the chart's `appVersion`, user and group `65532` (`runAsNonRoot`, `fsGroup` 65532), a read-only root filesystem, no privilege escalation, all capabilities dropped and the `RuntimeDefault` seccomp profile. |
-| `resources.service.main` | One ClusterIP Service with ports `http` (8080, primary) and `metrics` (9090). |
+| `resources.service.main` | One ClusterIP Service with ports `http` (8080, primary), `metrics` (9090) and `service-metrics` (9091). |
 | `resources.serviceMonitor.main` | The ServiceMonitor, when enabled. |
 | `resources.route.main` | The HTTPRoute, when `config.route.enabled`. |
 | `resources.persistence.*` | `database-client-cert`, `database-ca`, `s3-credentials`, `s3-ca`, `export-database-client-cert`, `export-s3-credentials`, `escrow` (read-only Secrets, mode `0440`) and `export` (the output volume). |

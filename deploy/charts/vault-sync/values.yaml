@@ -178,6 +178,12 @@ config:
         interval: 1m
         scrapeTimeout: 10s
       serviceWide:
+        # enabled adds a second endpoint to the ServiceMonitor, scraping the
+        # service-wide /metrics on port "service-metrics" (9091) with the
+        # same interval and timeout. Needs serviceMonitor.enabled. Every
+        # replica serves the same values; to scrape only one, configure your
+        # scraper instead.
+        enabled: false
         # VAULT_SYNC_SERVICE_METRICS_INTERVAL: how often each replica reads
         # the service-wide metrics from PostgreSQL (served on 9091).
         interval: null
@@ -298,9 +304,12 @@ config:
 #     concurrencyPolicy Forbid, backoffLimit 2 and
 #     config.export.activeDeadlineSeconds.
 #   - service.main: one Service with port "http" (8080, primary: ingress and
-#     route backends resolve to it) and port "metrics" (9090; never route
-#     to it from outside the cluster).
-#   - serviceMonitor.main (when config.server.metrics.serviceMonitor.enabled).
+#     route backends resolve to it), port "metrics" (9090) and port
+#     "service-metrics" (9091); never route to either metrics port from
+#     outside the cluster.
+#   - serviceMonitor.main (when config.server.metrics.serviceMonitor.enabled),
+#     with a second endpoint for port "service-metrics" when
+#     config.server.metrics.serviceWide.enabled.
 #   - route.main (when config.route.enabled).
 #   - persistence entries for every Secret above and the export volume.
 #

@@ -412,6 +412,9 @@
                   "type": "object",
                   "additionalProperties": false,
                   "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
                     "interval": {
                       "oneOf": [
                         {
