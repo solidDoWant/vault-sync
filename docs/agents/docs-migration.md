@@ -254,13 +254,13 @@ All sections stay and keep their rules: the engine design is fixed. The develope
 
 | Section | W | Class | Destination | Notes |
 |---|---|---|---|---|
-| [ ] `acceptance.md` (all sections) | 864 | keep | stays; linked from `dev/README.md` | |
-| [ ] `integration.md` (all sections) | 1,507 | keep | stays (≈900 W); linked from `dev/README.md` | Per-test lists restate the test files: delete. |
-| [ ] `e2e.md` "How it fits together" | 5,026 | move | stays (≈1,500 W: the parts, how to run, how to debug) | Step-by-step harness internals move to comments in `plugin/test/e2e/` (the wdio config and helpers) and `scripts/`; descriptions of individual specs are a delete (the spec names say it). |
-| [ ] `e2e.md` Platforms, Android emulator job | 1,000 | keep | stays (≈500 W) | CI job detail restates `.github/workflows/`: delete. |
-| [ ] `e2e.md` "Real Android app on an emulator (spike, #187)" | 984 | delete | — | A finished spike: history. Keep any instruction still used, as one paragraph under the Android job, without the issue number. |
-| [ ] `android.md` (all sections) | 3,267 | keep | stays (≈1,500 W); linked from `dev/releasing.md` | Manual release checklist; cut repeated setup steps. |
-| [ ] `proto-compatibility.md` (all sections) | 800 | keep | stays (≈500 W) | `buf.yaml` cites it. The breaking-change rules `buf breaking` enforces: delete; keep why and what to do on a failure. |
+| [x] `acceptance.md` (all sections) | 864 | keep | stays; linked from `dev/README.md` | Done: reader line added, content unchanged. |
+| [x] `integration.md` (all sections) | 1,507 | keep | stays (≈900 W); linked from `dev/README.md` | Per-test lists restate the test files: delete. |
+| [x] `e2e.md` "How it fits together" | 5,026 | move | stays (≈1,500 W: the parts, how to run, how to debug) | Step-by-step harness internals move to comments in `plugin/test/e2e/` (the wdio config and helpers) and `scripts/`; descriptions of individual specs are a delete (the spec names say it). Done: the spec descriptions are deleted. The harness facts a test writer needs (driver, configuration, harness plugin, two devices, helpers) stay as a short list in `e2e.md`, not as code comments, because they span several files. |
+| [x] `e2e.md` Platforms, Android emulator job | 1,000 | keep | stays (≈500 W) | CI job detail restates `.github/workflows/`: delete. |
+| [x] `e2e.md` "Real Android app on an emulator (spike, #187)" | 984 | delete | — | A finished spike: history. Keep any instruction still used, as one paragraph under the Android job, without the issue number. Done: the still-used facts (the APK hash check, `adb reverse` and airplane mode, Appium's numeric `status`) are in "Android emulator job" and "Writing e2e tests". `SPEC.md` §13 now cites the job, not the spike. |
+| [x] `android.md` (all sections) | 3,267 | keep | stays (≈1,500 W); linked from `dev/releasing.md` | Manual release checklist; cut repeated setup steps. Done: each section's automated rows became one line naming the covered behaviour and the test files. The manual rows stay whole. |
+| [x] `proto-compatibility.md` (all sections) | 800 | keep | stays (≈500 W) | `buf.yaml` cites it. The breaking-change rules `buf breaking` enforces: delete; keep why and what to do on a failure. |
 
 ## docs/acceptance/ (stays; owner)
 

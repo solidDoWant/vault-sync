@@ -1,6 +1,8 @@
 # Integration tests
 
-Server integration tests run against a real PostgreSQL and a real S3-compatible object store. They are Go tests guarded by the `integration` build tag, so `make test` never runs them.
+For: developers and agents. This page says how to run the server integration tests and how to write one.
+
+Server integration tests run against a real PostgreSQL and a real S3-compatible object store. They are Go tests with the `integration` build tag, so `make test` never runs them.
 
 ## Running
 
@@ -8,16 +10,16 @@ Server integration tests run against a real PostgreSQL and a real S3-compatible 
 make test-integration
 ```
 
-This runs `scripts/test-integration.sh`, which uses `scripts/with-test-stack.sh` (shared with `make test-e2e`, see `e2e.md`) to:
+This runs `scripts/test-integration.sh`. It uses `scripts/with-test-stack.sh` (shared with `make test-e2e`, see `e2e.md`) to:
 
-1. start the stack in `deploy/compose/compose.test.yaml` under a compose project name unique to the run, waiting until every service is healthy;
-2. export the connection details below;
-3. run `go test -race -count=1 -tags integration ./...`;
-4. remove the containers, network, and volumes on exit, whether the tests passed, failed, or were interrupted.
+1. Start the stack in `deploy/compose/compose.test.yaml` under a compose project name unique to the run, and wait until every service is healthy.
+2. Export the connection details below.
+3. Run `go test -race -count=1 -tags integration ./...`.
+4. Remove the containers, network and volumes on exit, also when the tests fail or are interrupted.
 
-To run a subset, call the script with `go test` arguments, for example `./scripts/test-integration.sh -run TestMigrate -v ./internal/store/`.
+To run a subset, give the script `go test` arguments, for example `./scripts/test-integration.sh -run TestMigrate -v ./internal/store/`.
 
-Without Docker the script prints a notice and still runs the tests; every test that needs a dependency skips with a message naming the missing environment variable.
+Without Docker, the script prints a notice and still runs the tests. Every test that needs a dependency then skips with a message that names the missing variable.
 
 ## Stack
 
@@ -26,25 +28,30 @@ Without Docker the script prints a notice and still runs the tests; every test t
 | `postgres` | `mirror.gcr.io/library/postgres:18.6-alpine`, pinned by digest | Data on tmpfs, `fsync` off. |
 | `s3` | `mirror.gcr.io/versity/versitygw:v1.9.0`, pinned by digest | S3 gateway over a POSIX directory on tmpfs. MinIO no longer publishes images. |
 
-Host ports are ephemeral and bound to `127.0.0.1`, so several runs can proceed in parallel. Renovate keeps the tags and digests current.
+Host ports are ephemeral and bound to `127.0.0.1`, so several runs can go on in parallel. Renovate keeps the tags and digests current.
 
-No image comes from Docker Hub (`docker.io`), whose outages and rate limits used to fail CI: both come from Google's Docker Hub mirror, `mirror.gcr.io` (PostgreSQL's official image as `mirror.gcr.io/library/postgres`). The mirror serves Docker Hub's exact content, so a tag has the same digest on either registry. ECR Public's copy of the official images (`public.ecr.aws/docker/library`) is not used: GitHub's shared runner IPs exhaust its anonymous data limit. `scripts/with-test-stack.sh` pulls the images before starting them through `scripts/test-images.sh`, which skips images already present locally and retries a failed pull up to three times with backoff: 5, 15 and 45 seconds, or 60, 120 and 240 seconds when the registry answers with a rate limit (`toomanyrequests`, HTTP 429), whose quotas are counted per minute. In CI, every Linux job that starts the stack (integration, integration on PostgreSQL 14 and the Linux plugin e2e legs) first runs `.github/actions/test-images`, which restores the images from an actions cache keyed on the compose files (and so on the pinned digests) with `docker save`/`docker load`, so the registry is contacted only when a digest changes. On a cache miss it pulls and caches them; a failed pull there does not fail the job, the stack's own pull retries. The action switches the runner's Docker to the containerd image store, the only one under which a loaded image still answers to its digest reference. There is no fallback registry. `mirror.gcr.io` lists only the tags someone has pulled through it, so Renovate (which looks the tags up there) may offer a new release a little later than Docker Hub does; when bumping versitygw, also run `scripts/with-native-s3.sh --update-pin vX.Y.Z`, which rewrites the script's version and per-asset SHA-256s from that release's `checksums.txt` (the version must match the image tag). On Renovate's pull requests the `renovate-fixups` workflow does this and pushes the result.
+No image comes from Docker Hub, because its outages and rate limits failed CI. Both come from Google's mirror of Docker Hub, `mirror.gcr.io`, which serves the same content with the same digests. ECR Public is not used, because GitHub's shared runner IPs use up its anonymous data limit. There is no fallback registry.
+
+- `scripts/test-images.sh` pulls the images before the stack starts. It skips images that are already present, and retries a failed pull three times: after 5, 15 and 45 seconds, or after 60, 120 and 240 seconds when the registry answers with a rate limit (`toomanyrequests`, HTTP 429).
+- In CI, every Linux job that starts the stack first runs `.github/actions/test-images`. It restores the images from an actions cache keyed on the compose files (`docker save`/`docker load`), so CI contacts the registry only when a digest changes. A failed pull there does not fail the job, because the stack's own pull retries. The action switches Docker to the containerd image store, the only store where a loaded image still answers to its digest reference.
+- `mirror.gcr.io` lists only the tags that someone pulled through it, so Renovate can offer a new release later than Docker Hub has it.
+- When you bump versitygw, also run `scripts/with-native-s3.sh --update-pin vX.Y.Z`. It rewrites the script's version and per-asset SHA-256s from the release's `checksums.txt`. On Renovate's pull requests, the `renovate-fixups` workflow does this.
 
 ## PostgreSQL 14, the minimum supported version
 
-The server supports PostgreSQL 14 or newer (`SPEC.md` §3, §12), but the stack above runs the newest PostgreSQL. So that a migration or query that needs a feature newer than 14 cannot slip in, the schema-dependent tests also run on PostgreSQL 14:
+The server supports PostgreSQL 14 or newer (`SPEC.md` §3, §12), but the stack above runs the newest PostgreSQL. So that no migration or query needs a feature newer than 14, the tests that depend on the schema also run on PostgreSQL 14:
 
 ```sh
 make test-integration-postgres14
 ```
 
-This runs `scripts/test-integration-postgres14.sh`, which starts the stack with `VAULT_SYNC_TEST_POSTGRES_VERSION=14` and runs every test in `./internal/store/` (the migrations and all store queries) plus `TestRollingUpgrade` in `./cmd/vault-sync-server/` (the previous release's migrations, then this one's, on one database). The rest of the suite runs only on the default image, to keep CI time down. Unlike `make test-integration`, it fails without Docker. CI runs it as the `integration-postgres14` job, which the required `checks` job covers.
+This runs `scripts/test-integration-postgres14.sh`. It starts the stack with `VAULT_SYNC_TEST_POSTGRES_VERSION=14` and runs every test in `./internal/store/` plus `TestRollingUpgrade` in `./cmd/vault-sync-server/`. Unlike `make test-integration`, it fails without Docker. CI runs it as the `integration-postgres14` job, which the required `checks` job covers.
 
-`VAULT_SYNC_TEST_POSTGRES_VERSION` works with any script built on `scripts/with-test-stack.sh`, for example `VAULT_SYNC_TEST_POSTGRES_VERSION=14 ./scripts/test-integration.sh -run TestMigrate -v ./internal/store/`. It applies the compose override `deploy/compose/compose.test-postgres<version>.yaml` (only `compose.test-postgres14.yaml` exists; it pins `mirror.gcr.io/library/postgres:14.24-alpine` by digest and changes nothing but the image), and the script fails if no such override exists or the running server reports a different major version. Renovate updates the override's minor version and digest but never proposes a new major version for it.
+`VAULT_SYNC_TEST_POSTGRES_VERSION` works with any script built on `scripts/with-test-stack.sh`. It applies the compose override `deploy/compose/compose.test-postgres<version>.yaml`. Only `compose.test-postgres14.yaml` exists: it pins `mirror.gcr.io/library/postgres:14.24-alpine` by digest and changes nothing else. The script fails if the override does not exist or the server reports a different major version. Renovate updates the override's minor version and digest, but never proposes a new major version for it.
 
 ## Environment
 
-The script exports these variables; set them yourself to point the tests at other instances.
+The script exports these variables. Set them yourself to point the tests at other instances.
 
 | Variable | Meaning |
 |---|---|
@@ -56,26 +63,17 @@ The script exports these variables; set them yourself to point the tests at othe
 
 ## Plugin protocol client against the real server
 
-`cmd/vault-sync-server/client_integration_test.go` (`TestPluginProtocolClient`) checks that the plugin's protocol client (`plugin/src/core/protocol`) works against a real server. The Go test:
-
-1. creates a database with `testinfra.PostgresConfig` (so it skips without Docker, like the other tests);
-2. starts a fake OIDC issuer (`internal/auth/authtest`) on a loopback port and mints a valid access token and one signed by a key the issuer never published;
-3. builds the server binary and starts it on ephemeral loopback ports, pointed at the database and the fake issuer;
-4. runs the locally installed `node_modules/.bin/vitest run --config vitest.integration.config.ts` in `plugin/` (not `npx`, so it never fetches a package), passing the server URL and tokens in `VAULT_SYNC_IT_SERVER_URL`, `VAULT_SYNC_IT_TOKEN` and `VAULT_SYNC_IT_FOREIGN_TOKEN`, and fails unless every test in that suite ran and passed.
-
-The vitest suite (`plugin/test/integration/*.integration.test.ts`) skips itself when those variables are unset, and `plugin/vitest.config.ts` excludes it, so `make test` and plain `npm test` never touch the network. `make test-integration` installs the plugin's npm dependencies first, since the Go test needs `vitest`. To run only this test: `./scripts/test-integration.sh -run TestPluginProtocolClient -v ./cmd/vault-sync-server/`.
+`TestPluginProtocolClient` (`cmd/vault-sync-server/client_integration_test.go`) starts a fake OIDC issuer (`internal/auth/authtest`) and a real server. It then runs the plugin's vitest suite `plugin/test/integration/*.integration.test.ts` with the locally installed `vitest` (never `npx`), and passes the server URL and tokens in `VAULT_SYNC_IT_SERVER_URL`, `VAULT_SYNC_IT_TOKEN` and `VAULT_SYNC_IT_FOREIGN_TOKEN`. It fails unless every test in that suite ran and passed. The vitest suite skips itself without those variables, and `plugin/vitest.config.ts` excludes it, so `make test` and `npm test` never touch the network. `make test-integration` installs the plugin's npm dependencies first.
 
 ## Multi-instance and rolling-upgrade tests
 
-The high-availability requirement (SPEC.md §12) is proven by tests that run several server processes against one test database and one test bucket. The helpers live in `cmd/vault-sync-server/instances_integration_test.go`.
+Tests that run several server processes against one database and one bucket prove the high-availability requirement (SPEC.md §12). Their helpers are in `cmd/vault-sync-server/instances_integration_test.go`.
 
-- `ha_integration_test.go` covers blob uploads and revision commits. In the first upload case, consecutive requests, including the chunks and commit of one upload, alternate between instances. In the second, an instance is `SIGKILL`ed mid-chunk and another mid-commit, and the client retries on a third. In the third, an instance receives `SIGTERM` while a client alternates between it and another instance. `TestRevisionsAreConsistentAcrossInstances` commits revisions alternately through two instances and checks that `ListChanges`, `GetRevision` and `GetDocumentHistory` (also paged across both) return identical results, with head-moved conflicts and idempotent retries behaving as on one instance. `TestCommitRetryOnAnotherInstanceAfterSIGKILLMidCommit` kills an instance while it handles `CommitRevision`, at two points the test controls through its own PostgreSQL session: before the commit wrote anything (the test holds the vault's row lock), and while its transaction commits after every write (a deferred trigger the test installs waits for an advisory lock the test holds). In both cases the retry of the same `revision_id` on another instance succeeds, and exactly one revision exists, with gapless `seq` and `head_seq` advanced once. The revision helpers live in `sync_integration_test.go`.
-- `upgrade_integration_test.go` (`TestRollingUpgrade`) builds the **previous release** from git history (`git archive` of that revision, then `go build`). It runs that build beside this one on one database: the previous release migrates first, then the new one migrates while the previous one is serving. Both then serve mixed traffic, including revision commits, `ListChanges` and document history, with commits of one release retried on the other, and the previous release is restarted on the newer schema. If `VAULT_SYNC_TEST_PREVIOUS_RELEASE` selects a release that predates revisions (its `SyncService` is unimplemented), the revision part is skipped with a log line; for the default previous release it is required. A migration that the previous release cannot run against fails this test. The previous release is the merge base of `HEAD` and `origin/master`, or `HEAD^` when `HEAD` is on master. Set `VAULT_SYNC_TEST_PREVIOUS_RELEASE` to any git revision to override it. Without the needed git history the test skips locally and fails in CI (`CI` set), which is why the workflow checks out with `fetch-depth: 0`.
-- `internal/blobstore/ha_integration_test.go` runs the upload cleaner of four simulated instances at once. It checks that every abandoned session is removed exactly once and that no instance logs a warning or an error.
+`TestRollingUpgrade` (`upgrade_integration_test.go`) builds the previous release from git history and runs it beside this build on one database, with mixed traffic before and after the new migrations. A migration that the previous release cannot run against fails this test. The previous release is the merge base of `HEAD` and `origin/master`, or `HEAD^` when `HEAD` is on master. Set `VAULT_SYNC_TEST_PREVIOUS_RELEASE` to any git revision to override it. Without the git history, the test skips locally and fails in CI (`CI` set), so the workflow checks out with `fetch-depth: 0`.
 
 ## Writing integration tests
 
 - Start the file with `//go:build integration`.
-- Use `internal/testinfra`: `testinfra.PostgresConfig(t)` creates an empty database for the test (dropped at cleanup) and returns a `store.Config`; `testinfra.S3(t)` returns the object store's connection details. Both skip the test when their variables are unset.
-- Apply the schema with `store.Migrate` on the test's own database; never share databases between tests.
-- Start child processes (the server binary, node) with `testinfra.NewChild` (`internal/testinfra/process.go`), not bare `exec.Command`, and build the server with `testinfra.BuildServer`. `go test -timeout` panics without running `t.Cleanup`, so a plain child, and anything it spawned, would outlive the test. A `NewChild` process is SIGKILLed shortly before the test binary's deadline and at cleanup. On Linux this kill reaches its whole process group, so grandchildren die too, and the kernel also kills the child if the test binary dies first (`Pdeathsig`).
+- Use `internal/testinfra`. `testinfra.PostgresConfig(t)` creates an empty database for the test (dropped at cleanup) and returns a `store.Config`. `testinfra.S3(t)` returns the object store's connection details. Both skip the test when their variables are unset.
+- Apply the schema with `store.Migrate` on the test's own database. Never share a database between tests.
+- Start child processes (the server binary, node) with `testinfra.NewChild` (`internal/testinfra/process.go`), not with a bare `exec.Command`, and build the server with `testinfra.BuildServer`. `go test -timeout` panics without running `t.Cleanup`, so a plain child, and anything it started, would outlive the test. A `NewChild` process is killed (SIGKILL) shortly before the test binary's deadline and at cleanup. On Linux the kill reaches the whole process group, and the kernel also kills the child if the test binary dies first (`Pdeathsig`).
