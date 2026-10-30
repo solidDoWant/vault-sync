@@ -214,6 +214,18 @@ These describe the whole deployment rather than one replica, and are served only
 | `vault_sync_service_live_documents_approximate` | gauge | | Approximate documents not deleted, read from PostgreSQL's planner statistics (`pg_class.reltuples`) instead of counting rows; autovacuum and `ANALYZE` update it, and it is 0 until the table is first analyzed. Deleted vaults' documents count until the vault is purged. |
 | `vault_sync_service_revisions_approximate` | gauge | | Approximate stored revisions, from the planner statistics like the live documents. |
 | `vault_sync_service_schema_version` | gauge | | Highest database migration version applied. During a rolling upgrade it shows when the schema is ahead of the replicas. |
+| `vault_sync_service_blobs` | gauge | | Stored blobs, from the blob rows (not an S3 listing), deleted vaults' included until purged. Exact while the planner estimates fewer than 100,000; beyond that it is that estimate (`pg_class.reltuples`), since every revision with content has a blob and an exact count would scan the table. |
+| `vault_sync_service_blob_bytes` | gauge | | Recorded size in bytes of the stored blobs. Exact below 100,000 blobs; beyond that approximate: the estimated blob count times the mean size in a sample of 1% of the table's pages (`TABLESAMPLE SYSTEM`). |
+| `vault_sync_service_upload_sessions` | gauge | | Open blob upload sessions (not yet committed, discarded or expired). |
+| `vault_sync_service_upload_session_reserved_bytes` | gauge | | Declared size in bytes of the open blob upload sessions. |
+| `vault_sync_service_upload_session_oldest_age_seconds` | gauge | | Age in seconds of the oldest open blob upload session at the last refresh; 0 without one. |
+| `vault_sync_service_gc_pending_blobs` | gauge | | Blobs a retention purge released that the garbage collector has not deleted yet: inside the grace period, or not yet collected. |
+| `vault_sync_service_gc_pending_blob_bytes` | gauge | | Recorded size in bytes of the blobs awaiting garbage collection. |
+| `vault_sync_service_deleted_vaults` | gauge | | Deleted vaults the vault purge has not removed yet (restorable, or waiting for the purge). |
+| `vault_sync_service_rekey_vaults` | gauge | | Encrypted vaults not deleted with at least one revision not on the vault's current epoch: a re-key in progress. |
+| `vault_sync_service_stale_epoch_revisions` | gauge | | Revisions of encrypted vaults not deleted that are not on their vault's current epoch: the re-encryption backlog (`ListStaleRevisions`), summed over every vault. |
+| `vault_sync_service_encrypted_vaults_by_escrow` | gauge | `escrow` | Encrypted vaults not deleted, by `escrow` (`true` when escrow is on). Both values are always exported. |
+| `vault_sync_service_escrow_rewrap_slots` | gauge | | Escrow key slots of vaults not deleted that still name a retiring escrow key id (`VAULT_SYNC_ESCROW_RETIRING_KEY_IDS`): the re-wrap backlog of an escrow key rotation. 0 without retiring ids. |
 | `vault_sync_service_metrics_last_refresh_success_timestamp_seconds` | gauge | | Unix time of the last refresh on this replica in which every service-wide query succeeded; 0 before the first. |
 
 ## Startup and shutdown

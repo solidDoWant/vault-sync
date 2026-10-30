@@ -33,6 +33,13 @@ type Store interface {
 	CountPendingInvitations(ctx context.Context) (int64, error)
 	EstimateRows(ctx context.Context) (store.RowEstimates, error)
 	SchemaVersion(ctx context.Context) (int64, error)
+	EstimateBlobs(ctx context.Context, sampling store.BlobSampling) (store.BlobEstimate, error)
+	CountUploadSessions(ctx context.Context) (store.UploadSessions, error)
+	CountReleasedBlobs(ctx context.Context) (store.ReleasedBlobCounts, error)
+	CountDeletedVaults(ctx context.Context) (int64, error)
+	CountStaleEpochRevisions(ctx context.Context) (store.StaleEpochCounts, error)
+	CountEscrowVaults(ctx context.Context) (store.EscrowCounts, error)
+	CountEscrowSlotsNamingKeys(ctx context.Context, keyIDs []string) (int64, error)
 }
 
 // encryptions and sharing are the only label values of
@@ -54,6 +61,18 @@ type Metrics struct {
 	documents          prometheus.Gauge
 	revisions          prometheus.Gauge
 	schemaVersion      prometheus.Gauge
+	blobs              prometheus.Gauge
+	blobBytes          prometheus.Gauge
+	uploadSessions     prometheus.Gauge
+	uploadReserved     prometheus.Gauge
+	uploadOldestAge    prometheus.Gauge
+	gcPendingBlobs     prometheus.Gauge
+	gcPendingBytes     prometheus.Gauge
+	deletedVaults      prometheus.Gauge
+	rekeyVaults        prometheus.Gauge
+	staleRevisions     prometheus.Gauge
+	escrowVaults       *prometheus.GaugeVec
+	escrowRewrapSlots  prometheus.Gauge
 	lastSuccess        prometheus.Gauge
 }
 
@@ -79,6 +98,28 @@ func NewMetrics() *Metrics {
 		revisions: gauge("vault_sync_service_revisions_approximate",
 			"Approximate stored revisions, from PostgreSQL planner statistics (pg_class.reltuples), which autovacuum and ANALYZE update; 0 until the table is first analyzed."),
 		schemaVersion: gauge("vault_sync_service_schema_version", "Highest database migration version applied."),
+		blobs: gauge("vault_sync_service_blobs",
+			"Stored blobs. Exact below 100,000; beyond that approximate, from PostgreSQL planner statistics (pg_class.reltuples), which autovacuum and ANALYZE update."),
+		blobBytes: gauge("vault_sync_service_blob_bytes",
+			"Recorded size in bytes of the stored blobs. Exact below 100,000 blobs; beyond that approximate: the approximate blob count times the mean size in a 1% page sample (TABLESAMPLE SYSTEM)."),
+		uploadSessions: gauge("vault_sync_service_upload_sessions", "Open blob upload sessions."),
+		uploadReserved: gauge("vault_sync_service_upload_session_reserved_bytes", "Declared size in bytes of the open blob upload sessions."),
+		uploadOldestAge: gauge("vault_sync_service_upload_session_oldest_age_seconds",
+			"Age in seconds of the oldest open blob upload session at the last refresh; 0 without one."),
+		gcPendingBlobs: gauge("vault_sync_service_gc_pending_blobs",
+			"Blobs released by a retention purge that the garbage collector has not deleted yet (still inside the grace period, or not yet collected)."),
+		gcPendingBytes: gauge("vault_sync_service_gc_pending_blob_bytes", "Recorded size in bytes of the blobs awaiting garbage collection."),
+		deletedVaults:  gauge("vault_sync_service_deleted_vaults", "Deleted vaults the vault purge has not removed yet."),
+		rekeyVaults: gauge("vault_sync_service_rekey_vaults",
+			"Encrypted vaults not deleted with a revision not on the vault's current epoch: a re-key in progress."),
+		staleRevisions: gauge("vault_sync_service_stale_epoch_revisions",
+			"Revisions of encrypted vaults not deleted that are not on their vault's current epoch: the re-encryption backlog."),
+		escrowVaults: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "vault_sync_service_encrypted_vaults_by_escrow",
+			Help: "Encrypted vaults not deleted, by escrow (true when escrow is on).",
+		}, []string{"escrow"}),
+		escrowRewrapSlots: gauge("vault_sync_service_escrow_rewrap_slots",
+			"Escrow key slots of vaults not deleted that still name a retiring escrow key id (VAULT_SYNC_ESCROW_RETIRING_KEY_IDS); 0 without one."),
 		lastSuccess: gauge("vault_sync_service_metrics_last_refresh_success_timestamp_seconds",
 			"Unix time of the last refresh in which every service-wide query succeeded; 0 before the first. A failed query keeps its metrics' previous values."),
 	}
@@ -87,6 +128,10 @@ func NewMetrics() *Metrics {
 		for _, shared := range sharing {
 			metrics.vaults.WithLabelValues(encryption, strconv.FormatBool(shared))
 		}
+	}
+
+	for _, escrow := range sharing {
+		metrics.escrowVaults.WithLabelValues(strconv.FormatBool(escrow))
 	}
 
 	return metrics
@@ -99,7 +144,11 @@ func (metrics *Metrics) Collectors() []prometheus.Collector {
 	return []prometheus.Collector{
 		metrics.devices, metrics.usersWithDevices, metrics.activeDevicesDay, metrics.activeDevicesMonth,
 		metrics.vaults, metrics.memberships, metrics.pendingInvitations,
-		metrics.documents, metrics.revisions, metrics.schemaVersion, metrics.lastSuccess,
+		metrics.documents, metrics.revisions, metrics.schemaVersion,
+		metrics.blobs, metrics.blobBytes, metrics.uploadSessions, metrics.uploadReserved, metrics.uploadOldestAge,
+		metrics.gcPendingBlobs, metrics.gcPendingBytes, metrics.deletedVaults,
+		metrics.rekeyVaults, metrics.staleRevisions, metrics.escrowVaults, metrics.escrowRewrapSlots,
+		metrics.lastSuccess,
 	}
 }
 
@@ -121,6 +170,12 @@ type Refresher struct {
 	Metrics *Metrics
 	// QueryTimeout bounds each query; DefaultQueryTimeout when zero.
 	QueryTimeout time.Duration
+	// EscrowRetiringKeyIDs are the retiring escrow key ids whose slots
+	// vault_sync_service_escrow_rewrap_slots counts.
+	EscrowRetiringKeyIDs []string
+	// BlobSampling bounds the blob estimate; store.DefaultBlobSampling when
+	// zero.
+	BlobSampling store.BlobSampling
 	Logger       *slog.Logger
 	// Now returns the current time; time.Now when nil.
 	Now func() time.Time
@@ -149,6 +204,17 @@ func (refresher *Refresher) Run(ctx context.Context, interval time.Duration) {
 // they all did.
 func (refresher *Refresher) Refresh(ctx context.Context) bool {
 	metrics := refresher.Metrics
+
+	now := time.Now
+	if refresher.Now != nil {
+		now = refresher.Now
+	}
+
+	sampling := refresher.BlobSampling
+	if sampling == (store.BlobSampling{}) {
+		sampling = store.DefaultBlobSampling
+	}
+
 	queries := []struct {
 		name string
 		run  func(ctx context.Context) error
@@ -217,6 +283,76 @@ func (refresher *Refresher) Refresh(ctx context.Context) bool {
 
 			return err
 		}},
+		{"blobs", func(ctx context.Context) error {
+			estimate, err := refresher.Store.EstimateBlobs(ctx, sampling)
+			if err == nil {
+				metrics.blobs.Set(float64(estimate.Blobs))
+				metrics.blobBytes.Set(float64(estimate.Bytes))
+			}
+
+			return err
+		}},
+		{"upload_sessions", func(ctx context.Context) error {
+			sessions, err := refresher.Store.CountUploadSessions(ctx)
+			if err != nil {
+				return err
+			}
+
+			metrics.uploadSessions.Set(float64(sessions.Open))
+			metrics.uploadReserved.Set(float64(sessions.ReservedBytes))
+
+			age := 0.0
+			if !sessions.OldestCreatedAt.IsZero() {
+				age = max(now().Sub(sessions.OldestCreatedAt).Seconds(), 0)
+			}
+
+			metrics.uploadOldestAge.Set(age)
+
+			return nil
+		}},
+		{"gc_pending_blobs", func(ctx context.Context) error {
+			counts, err := refresher.Store.CountReleasedBlobs(ctx)
+			if err == nil {
+				metrics.gcPendingBlobs.Set(float64(counts.Blobs))
+				metrics.gcPendingBytes.Set(float64(counts.Bytes))
+			}
+
+			return err
+		}},
+		{"deleted_vaults", func(ctx context.Context) error {
+			count, err := refresher.Store.CountDeletedVaults(ctx)
+			if err == nil {
+				metrics.deletedVaults.Set(float64(count))
+			}
+
+			return err
+		}},
+		{"stale_epoch_revisions", func(ctx context.Context) error {
+			counts, err := refresher.Store.CountStaleEpochRevisions(ctx)
+			if err == nil {
+				metrics.rekeyVaults.Set(float64(counts.Vaults))
+				metrics.staleRevisions.Set(float64(counts.Revisions))
+			}
+
+			return err
+		}},
+		{"escrow_vaults", func(ctx context.Context) error {
+			counts, err := refresher.Store.CountEscrowVaults(ctx)
+			if err == nil {
+				metrics.escrowVaults.WithLabelValues("true").Set(float64(counts.On))
+				metrics.escrowVaults.WithLabelValues("false").Set(float64(counts.Off))
+			}
+
+			return err
+		}},
+		{"escrow_rewrap_slots", func(ctx context.Context) error {
+			count, err := refresher.Store.CountEscrowSlotsNamingKeys(ctx, refresher.EscrowRetiringKeyIDs)
+			if err == nil {
+				metrics.escrowRewrapSlots.Set(float64(count))
+			}
+
+			return err
+		}},
 	}
 
 	timeout := refresher.QueryTimeout
@@ -246,11 +382,6 @@ func (refresher *Refresher) Refresh(ctx context.Context) bool {
 	}
 
 	if succeeded {
-		now := time.Now
-		if refresher.Now != nil {
-			now = refresher.Now
-		}
-
 		metrics.lastSuccess.Set(float64(now().UnixNano()) / float64(time.Second))
 	}
 
