@@ -55,7 +55,7 @@ config:
   s3:
     # bucket is VAULT_SYNC_S3_BUCKET (required). The bucket must exist.
     bucket: ""
-    # endpoint is VAULT_SYNC_S3_ENDPOINT, for example the Ceph RGW URL. Empty
+    # endpoint is VAULT_SYNC_S3_ENDPOINT, for example the Ceph RGW URL. null
     # uses AWS S3.
     endpoint: null
     # region is VAULT_SYNC_S3_REGION. null uses the server default
@@ -64,7 +64,7 @@ config:
     # forcePathStyle is VAULT_SYNC_S3_FORCE_PATH_STYLE, a boolean.
     # null uses the server default (true).
     forcePathStyle: null
-    # idleTimeout is VAULT_SYNC_S3_IDLE_TIMEOUT, a Go duration. Empty uses the
+    # idleTimeout is VAULT_SYNC_S3_IDLE_TIMEOUT, a Go duration. null uses the
     # server default (2m).
     idleTimeout: null
     # credentials names the Secret holding the S3 access key id and secret
