@@ -27,6 +27,8 @@ export interface PluginData {
   identityProvider?: IdentityProvider;
   /** This device's name, registered with the server and used in conflict-copy names; empty means the platform's name. */
   deviceName: string;
+  /** Whether the settings tab's Advanced group is open; absent while it is closed. A display preference of this device only. */
+  advancedSettingsOpen?: boolean;
   /** This install's registered device. Registered once per account, then reused. */
   device?: RegisteredDevice;
   /**
@@ -191,6 +193,7 @@ export function parsePluginData(raw: unknown): PluginData {
     oidcClientId: text("oidcClientId") ?? defaultPluginData.oidcClientId,
     deviceName: text("deviceName") ?? defaultPluginData.deviceName,
   };
+  if (stored.advancedSettingsOpen === true) data.advancedSettingsOpen = true;
   const refreshToken = text("refreshToken");
   if (refreshToken !== undefined && refreshToken !== "")
     data.refreshToken = refreshToken;

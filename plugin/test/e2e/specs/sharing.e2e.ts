@@ -3,7 +3,7 @@ import { browser, expect } from "@wdio/globals";
 import type VaultSyncPlugin from "../../../src/main";
 import { VaultRole } from "../../../src/gen/vaultsync/v1/types_pb";
 import { e2eEnvironment, pluginId } from "../environment";
-import { answerModal, clickButton, notices, openSettings, recordNotices, type, type SettingsApp } from "../settings-ui";
+import { answerModal, clickButton, modals, notices, openSettings, recordNotices, type, type SettingsApp } from "../settings-ui";
 import { configure, signInAs } from "../signin";
 
 // The settings' Sharing section and joining by invite code (#34), driven
@@ -16,6 +16,7 @@ import { configure, signInAs } from "../signin";
 const ownerSubject = "plugin-e2e-sharing-owner";
 const joinerSubject = "plugin-e2e-sharing-joiner";
 const vaultName = "e2e sharing";
+const convertedVaultName = "e2e converted";
 
 interface Row {
   name: string;
@@ -277,4 +278,79 @@ describe("sharing a vault from the settings", function () {
     expect((await connectedVault())?.name).toBe(vaultName);
     expect(await remoteVaultIds()).toEqual([]);
   });
+
+  it("keeps an encrypted vault's key actions in Advanced under the vault's name", async function () {
+    // The joiner, in the second Obsidian vault, sets up encryption and owns a new plaintext vault.
+    await browser.executeObsidian(async ({ app }, id) => {
+      const target = (app as unknown as { plugins: { plugins: Record<string, VaultSyncPlugin> } }).plugins.plugins[id];
+      if (target === undefined) throw new Error("vault-sync is not loaded");
+      await target.disconnectVault();
+      await target.enableEncryption("correct horse battery staple e2e");
+    }, pluginId);
+    await createAndConnect(convertedVaultName);
+    await waitForIdle();
+    await openSettings();
+
+    // A plaintext vault's owner: Convert is in Sharing, and Advanced holds no vault actions.
+    await browser.waitUntil(async () => (await rows(".vault-sync-members")).length === 1, { timeoutMsg: "the member list never showed" });
+    expect((await rows(".vault-sync-sharing")).map((row) => row.name)).toContain("Convert to end-to-end encryption");
+    expect(await rows(".vault-sync-vault-actions")).toEqual([]);
+    expect(await advancedOpen()).toBe(false);
+
+    await clickRowButton("Convert to end-to-end encryption", "Convert…");
+    await browser.waitUntil(async () => (await modals("Convert to end-to-end encryption?")).some((text) => text.includes("I compared every member's fingerprint")), { timeoutMsg: "the conversion modal never listed the members" });
+    await browser.executeObsidian(({ app }) => {
+      const shownIn = (app as unknown as SettingsApp).setting.activeTab?.containerEl.ownerDocument ?? document;
+      const modal = [...shownIn.querySelectorAll(".modal")].find((candidate) => candidate.querySelector(".modal-title")?.textContent === "Convert to end-to-end encryption?");
+      const row = [...(modal?.querySelectorAll(".setting-item") ?? [])].find((item) => item.querySelector(".setting-item-name")?.textContent === "I compared every member's fingerprint with them");
+      const toggle = row?.querySelector<HTMLElement>(".checkbox-container");
+      if (toggle === null || toggle === undefined) throw new Error("the conversion modal has no comparison toggle");
+      toggle.click();
+      const convert = [...(modal?.querySelectorAll<HTMLButtonElement>("button") ?? [])].find((button) => button.textContent === "Convert");
+      if (convert === undefined || convert.disabled) throw new Error("the conversion modal's Convert button is not enabled");
+      convert.click();
+    });
+
+    await browser.waitUntil(async () => (await modals("Convert to end-to-end encryption?")).length === 0, { timeout: 60_000, timeoutMsg: "the conversion never finished" });
+    // The encrypted vault's owner: Rotate key and Re-encrypt history are in Advanced, under the vault's name.
+    await renderSettings();
+    await toggleAdvanced();
+    expect(await advancedOpen()).toBe(true);
+    await browser.waitUntil(async () => (await rows(".vault-sync-vault-actions")).length === 3, { timeoutMsg: "the encrypted vault's key actions never showed in Advanced" });
+    expect((await rows(".vault-sync-vault-actions")).map((row) => [row.name, row.buttons])).toEqual([
+      [`Vault “\u2068${convertedVaultName}\u2069”`, []],
+      ["Rotate key", ["Rotate key"]],
+      ["Re-encrypt history", ["Re-encrypt history"]],
+    ]);
+    expect((await rows(".vault-sync-sharing")).map((row) => row.name)).not.toContain("Rotate key");
+  });
 });
+
+/** Whether the open settings tab's Advanced group is open. */
+function advancedOpen() {
+  return browser.executeObsidian(({ app }) => (app as unknown as SettingsApp).setting.activeTab?.containerEl.querySelector<HTMLDetailsElement>("details.vault-sync-advanced")?.open ?? null);
+}
+
+/** Clicks the open settings tab's Advanced toggle, as the user opens or closes the group. */
+function toggleAdvanced() {
+  return browser.executeObsidian(({ app }) => {
+    const summary = (app as unknown as SettingsApp).setting.activeTab?.containerEl.querySelector<HTMLElement>("details.vault-sync-advanced > summary");
+    if (summary === null || summary === undefined) throw new Error("the settings tab has no Advanced group");
+    summary.click();
+  });
+}
+
+/** Clicks the button labelled `label` in the open settings tab's row named `name`. */
+function clickRowButton(name: string, label: string) {
+  return browser.executeObsidian(
+    ({ app }, rowName, text) => {
+      const items = (app as unknown as SettingsApp).setting.activeTab?.containerEl.querySelectorAll(".setting-item") ?? [];
+      const item = [...items].find((candidate) => candidate.querySelector(".setting-item-name")?.textContent === rowName);
+      const button = [...(item?.querySelectorAll<HTMLButtonElement>(".setting-item-control button") ?? [])].find((candidate) => candidate.textContent === text);
+      if (button === undefined) throw new Error(`no ${text} button in the ${rowName} row`);
+      button.click();
+    },
+    name,
+    label,
+  );
+}

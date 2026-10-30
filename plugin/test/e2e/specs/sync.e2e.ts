@@ -104,8 +104,12 @@ function settingsFieldsDisabled(display = false) {
       const tab = (plugin as unknown as { settingTab?: { containerEl: HTMLElement; display(): void } } | undefined)?.settingTab;
       if (tab === undefined) throw new Error("vault-sync has no settings tab");
       if (build) tab.display();
-      // Server URL, OIDC issuer URL, OIDC client ID: the first three text fields.
-      return [...tab.containerEl.querySelectorAll<HTMLInputElement>("input[type=text]")].slice(0, 3).map((input) => input.disabled);
+      // Server URL, then the OIDC issuer URL and client ID in the Advanced group.
+      return [".vault-sync-server-url", ".vault-sync-oidc-issuer", ".vault-sync-oidc-client-id"].map((row) => {
+        const input = tab.containerEl.querySelector<HTMLInputElement>(`${row} input[type=text]`);
+        if (input === null) throw new Error(`the settings tab has no ${row} field`);
+        return input.disabled;
+      });
     },
     pluginId,
     display,
