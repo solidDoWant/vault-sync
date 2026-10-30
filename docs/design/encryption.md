@@ -120,6 +120,36 @@ Operator decisions of 2026-10-29, from the questions on #1206, #1207, #1210 and 
 
 **Keys on the device.** The unlocked user private key and the epoch keys live in Obsidian's per-device local storage (`App.saveLocalStorage`), like the refresh token. They are never in `data.json`, which sits inside the vault folder and is copied by any other sync or backup tool.
 
+## Interaction matrix
+
+Every state change below runs on the server under the vault row lock as a compare-and-set, or, for escrow re-wrapping, as a conditional replace of one row. Concurrent changes therefore happen in some sequential order. A device reacts to a finite set of outcomes, so this table is the complete list of interactions between encryption and sync. Each row has a test. A case missing from it is a design gap and goes to the operator.
+
+**What a device does with each outcome.** These apply in every row below:
+- **`EPOCH_NOT_CURRENT`:** sync keys, re-seal under the current epoch, recompute `blob_id` and upload if needed, then retry.
+- **`VAULT_ENCRYPTED`:** reload, unlock (prompting the user if needed), sync keys, re-encrypt, then retry. Until the user unlocks, the vault pauses and its files stay.
+- **`ABORTED` on a log append:** re-read the log, rebuild the entry on the new head, then retry.
+- **`NOT_FOUND` on a blob:** re-read the revision, then retry once.
+- **`PERMISSION_DENIED`, or `NOT_FOUND` on the vault:** the rules of `docs/design/sharing.md` apply. The device stops syncing and keeps its files.
+- **A revision whose epoch key the device lacks after a key sync:** that document waits, and the device retries at the next sync.
+- **Any verification failure:** a hard stop.
+
+| Server change | Devices with work in flight | Test |
+|---|---|---|
+| Rotate (manual or escrow on/off), E → E+1 | A push or blob upload under E gets `EPOCH_NOT_CURRENT`. The orphaned blob goes to unreferenced-blob cleanup. A pull reads E+1 revisions after a key sync. A concurrent rotation loses the compare-and-set and adopts the winner. A running re-key job restarts with E+1 as its target. | P4-08 |
+| Remove member | As rotate, for the other members. The removed device gets `PERMISSION_DENIED` and stops. An owner's concurrent log append gets `ABORTED`. | P4-07 |
+| Leave | A log append. The rotation is marked pending, and an owner device's next sync performs it (the rotate row). | P4-07 (leave case) |
+| Invite / revoke / expire | A log append. A concurrent rotation must include the pending invitation, because its recipient check sees it. A redeem racing a revoke is serialized, and the loser gets `NOT_FOUND`. | P4-05, P4-06 |
+| Redeem | The newcomer's slots for every epoch land in one transaction. If a rotation came between `GetInvitationSlots` and `RedeemInvitation`, the redeem is refused. The newcomer re-reads the invitation's slots, which now include the new epoch, and retries. | P4-05 |
+| Set role | A log append. A device demoted to viewer gets `PERMISSION_DENIED` on its next commit. A demoted owner's rotation or append fails the signer check, so it re-reads the log. | P3 role tests plus a demoted-signer case |
+| Grant missing slots | Idempotent: an existing slot is kept. Concurrent grants converge. | P4-05 |
+| Re-key rewrite of one revision | Only if the revision is still at `from_epoch` and `to_epoch` is current; otherwise skipped, and a later pass retries. Plaintext and which revision is current are unchanged, so the engine sees nothing. A device reading the old blob after cleanup re-reads and retries. | P4-09 |
+| Retire an epoch (not 1, unused) | Slots deleted, record and commitment kept. No revision uses the epoch, so no read needs it. It is never current, so no commit targets it. | P4-09 |
+| Convert | Plaintext commits in flight get `VAULT_ENCRYPTED`. Readers treat epoch-0 revisions from before the conversion's sequence number as plaintext and refuse later ones. The re-key job then encrypts history. | P4-10 |
+| Escrow re-wrap | A conditional replace of one escrow slot. A slot written to a retiring key during the switch is caught by the repeat pass. Devices never read escrow slots. | P4-12 |
+| Escrow key change | Devices follow chained statements only. Anything else is a hard stop at vault creation and at rotation. | P4-22 |
+| Delete / undelete vault | Existing sharing rules. Key operations get `VAULT_DELETED`. Escrow re-wrapping still covers vaults deleted within 30 days. | P3, P4-12 |
+| Another device's commit | `engine.md`'s decision table, on plaintext. Encryption only seals and opens. | P4-02 |
+
 ## Import
 
 `#1199`: a client-side tool. It encrypts with the vault's current key, unwrapped through the escrow identity or the user's passphrase.
