@@ -64,6 +64,8 @@ type BlobService struct {
 	Store   *store.Store
 	Objects *blobstore.Objects
 	Limits  BlobLimits
+	// Metrics, if set, counts the blob bytes clients upload and download.
+	Metrics *blobstore.Metrics
 	// Logger receives internal errors, which are not returned to callers.
 	Logger *slog.Logger
 }
@@ -256,6 +258,8 @@ func (service BlobService) PutBlobChunk(ctx context.Context, request *connect.Re
 
 		return nil, service.internal(ctx, "cannot record chunk", err)
 	}
+
+	service.Metrics.AddUploaded(len(data))
 
 	return connect.NewResponse(&vaultsyncv1.PutBlobChunkResponse{ReceivedSize: uint64(received)}), nil
 }
@@ -517,6 +521,8 @@ func (service BlobService) DownloadBlob(ctx context.Context, request *connect.Re
 	if err != nil {
 		return nil, service.internal(ctx, "cannot read blob", err)
 	}
+
+	service.Metrics.AddDownloaded(len(data))
 
 	return connect.NewResponse(&vaultsyncv1.DownloadBlobResponse{Data: data, Size: uint64(blob.Size)}), nil
 }

@@ -8,8 +8,11 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 
+	"github.com/solidDoWant/vault-sync/internal/auth"
+	"github.com/solidDoWant/vault-sync/internal/blobstore"
 	"github.com/solidDoWant/vault-sync/internal/realtime"
 	"github.com/solidDoWant/vault-sync/internal/retention"
+	"github.com/solidDoWant/vault-sync/internal/store"
 )
 
 // rpcMetrics records per-procedure request counts and latencies. Procedures
@@ -38,14 +41,40 @@ func (metrics *rpcMetrics) collectors() []prometheus.Collector {
 	return []prometheus.Collector{metrics.requests, metrics.duration}
 }
 
+// DependencyMetrics are the metrics of the services the server depends on.
+type DependencyMetrics struct {
+	Database    *store.Metrics
+	ObjectStore *blobstore.Metrics
+	OIDC        *auth.Metrics
+}
+
+func (dependencies DependencyMetrics) collectors() []prometheus.Collector {
+	var collected []prometheus.Collector
+	if dependencies.Database != nil {
+		collected = append(collected, dependencies.Database.Collectors()...)
+	}
+
+	if dependencies.ObjectStore != nil {
+		collected = append(collected, dependencies.ObjectStore.Collectors()...)
+	}
+
+	if dependencies.OIDC != nil {
+		collected = append(collected, dependencies.OIDC.Collectors()...)
+	}
+
+	return collected
+}
+
 // serverCollectors returns every vault_sync_* collector the server
 // registers. Every such metric must be registered through this function:
 // the Metrics table in docs/configuration.md is checked against it.
-func serverCollectors(hub *realtime.Hub, rpc *rpcMetrics, concurrency *concurrencyMetrics, retained *retention.Metrics) []prometheus.Collector {
+func serverCollectors(hub *realtime.Hub, rpc *rpcMetrics, concurrency *concurrencyMetrics, retained *retention.Metrics, dependencies DependencyMetrics) []prometheus.Collector {
 	collected := append(rpc.collectors(), concurrency.collectors()...)
 	if retained != nil {
 		collected = append(collected, retained.Collectors()...)
 	}
+
+	collected = append(collected, dependencies.collectors()...)
 
 	if hub != nil {
 		collected = append(collected, hub.Collectors()...)

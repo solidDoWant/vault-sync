@@ -98,6 +98,11 @@ func New(cfg Config) (*Objects, error) {
 	return newObjects(cfg)
 }
 
+// NewWithMetrics is New, recording every S3 operation in metrics.
+func NewWithMetrics(cfg Config, metrics *Metrics) (*Objects, error) {
+	return newObjects(cfg, metrics.instrument)
+}
+
 func newObjects(cfg Config, optFns ...func(*s3.Options)) (*Objects, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err

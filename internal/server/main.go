@@ -52,6 +52,9 @@ func Main(ctx context.Context, args []string, lookup func(string) (string, bool)
 	logger := slog.New(slog.NewJSONHandler(stderr, &slog.HandlerOptions{Level: cfg.LogLevel}))
 	logger.InfoContext(ctx, "starting vault-sync-server", "version", version.String())
 
+	dependencies := DependencyMetrics{Database: store.NewMetrics(), ObjectStore: blobstore.NewMetrics(), OIDC: auth.NewMetrics()}
+	cfg.Database.Metrics = dependencies.Database
+
 	pool, err := store.Open(ctx, cfg.Database)
 	if err != nil {
 		logger.ErrorContext(ctx, "cannot open database", "error", err)
@@ -79,11 +82,12 @@ func Main(ctx context.Context, args []string, lookup func(string) (string, bool)
 		IssuerURL: cfg.OIDC.IssuerURL,
 		Audience:  cfg.OIDC.Audience,
 		Logger:    logger,
+		Metrics:   dependencies.OIDC,
 	})
 
 	retained := retention.NewMetrics()
 
-	blobs, err := startBlobs(ctx, cfg, queries, retained, logger)
+	blobs, err := startBlobs(ctx, cfg, queries, retained, dependencies.ObjectStore, logger)
 	if err != nil {
 		logger.ErrorContext(ctx, "cannot use the S3 object store", "error", err)
 
@@ -143,6 +147,7 @@ func Main(ctx context.Context, args []string, lookup func(string) (string, bool)
 		Blobs:                    blobs,
 		Realtime:                 hub,
 		Retention:                retained,
+		Dependencies:             dependencies,
 		Logger:                   logger,
 	})
 
@@ -161,14 +166,14 @@ const s3CheckTimeout = 30 * time.Second
 // startBlobs connects to the object store, checks that the bucket is
 // reachable and starts the upload cleanup routine and the retention job,
 // which stop with ctx. It returns nil when no object store is configured.
-func startBlobs(ctx context.Context, cfg config.Config, queries *store.Store, retained *retention.Metrics, logger *slog.Logger) (*api.BlobService, error) {
+func startBlobs(ctx context.Context, cfg config.Config, queries *store.Store, retained *retention.Metrics, objectMetrics *blobstore.Metrics, logger *slog.Logger) (*api.BlobService, error) {
 	if cfg.S3 == nil {
 		logger.WarnContext(ctx, "no S3 object store is configured (VAULT_SYNC_S3_*); blob uploads and downloads are disabled")
 
 		return nil, nil
 	}
 
-	objects, err := blobstore.New(*cfg.S3)
+	objects, err := blobstore.NewWithMetrics(*cfg.S3, objectMetrics)
 	if err != nil {
 		return nil, err
 	}
@@ -201,6 +206,7 @@ func startBlobs(ctx context.Context, cfg config.Config, queries *store.Store, re
 		Store:   queries,
 		Objects: objects,
 		Limits:  blobLimits(cfg.Blobs),
+		Metrics: objectMetrics,
 		Logger:  logger,
 	}, nil
 }
