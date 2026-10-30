@@ -154,7 +154,9 @@ describe("Escrow reset", function () {
   before(async function () {
     // The escrow server is not reachable from the Android emulator: the
     // Android config maps only the main server's and the issuer's ports.
-    if (e2eEnvironment.android) this.skip();
+    // The export job runs only on Linux (its atomic directory swap uses
+    // renameat2), and the driver runs it on the test host.
+    if (e2eEnvironment.android || process.platform !== "linux") this.skip();
     device = await currentDevice("Owner laptop");
     await configure(escrowServerUrl());
     expect(await signInAs(ownerSubject)).toBe(true);
@@ -166,7 +168,7 @@ describe("Escrow reset", function () {
   });
 
   after(async function () {
-    if (e2eEnvironment.android) return;
+    if (e2eEnvironment.android || process.platform !== "linux") return;
     await closeSettings();
   });
 
