@@ -12,7 +12,7 @@ import { createProtocolClient } from "../protocol/client";
 import { createEncryptedVault, EscrowKeyChangedError, escrowOffer, MemoryEscrowPin, type EscrowKey } from "./encrypted-vault";
 import { MemoryVaultKeyServer } from "./memory-vault-keys";
 import { MemoryVerifiedLogStore } from "./verified-log";
-import { MemoryEpochKeyStore } from "./vault-keys";
+import { MemoryEpochKeyStore, VaultKeyManager } from "./vault-keys";
 
 const serverVaultId = "0190a5b4-0000-7000-8000-000000000001";
 const ownerId = "0190a5b4-0000-7000-8000-000000000101";
@@ -300,5 +300,44 @@ describe("escrowOffer pins the escrow key", () => {
     const pin = new MemoryEscrowPin(first.recipient.bundle);
     expect((await escrowOffer(serverInfo(third, first.encodedBundle, rotations), pin)).recipient).toEqual(third.recipient);
     expect(pin.bundle).toEqual(third.recipient.bundle);
+  });
+});
+
+describe("an owner rotating an escrowed vault's key", () => {
+  /** The owner's key manager for `vault`, holding `escrow` as the deployment's escrow key. */
+  function manager(created: Awaited<ReturnType<typeof create>>, escrow: EscrowKey) {
+    const { client, owner, store, vault } = created;
+    return new VaultKeyManager({
+      vaultId: vault.id,
+      userKey: owner,
+      owner: true,
+      keys: client.vaultKeys,
+      membership: client.membership,
+      store,
+      escrow,
+      trust: { userKey: owner, log: client.vaultKeys, anchors: client.userKeys, verifiedLogs: new MemoryVerifiedLogStore() },
+    });
+  }
+
+  it("[P4-22] refuses to rotate to an escrow key other than the one the vault's log names, and wraps the key to no one", async () => {
+    const created = await create(escrowKey(9).recipient);
+    const swapped = escrowKey(10);
+    const rotations = created.server.count("RotateEpoch");
+
+    await expect(manager(created, swapped.recipient).rotate()).rejects.toThrow(/names another escrow key/);
+
+    expect(created.server.count("RotateEpoch")).toBe(rotations);
+    expect(created.server.currentEpoch).toBe(1);
+    expect(created.server.slotsOf(2)).toEqual([]);
+  });
+
+  it("rotates to the escrow key the vault's log names", async () => {
+    const escrow = escrowKey(9);
+    const created = await create(escrow.recipient);
+
+    await manager(created, escrow.recipient).rotate();
+
+    expect(created.server.currentEpoch).toBe(2);
+    expect(created.server.slotsOf(2).filter((slot) => slot.recipientKind === KeyRecipientKind.ESCROW).map((slot) => slot.recipientId)).toEqual([escrow.recipient.keyId]);
   });
 });

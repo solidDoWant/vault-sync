@@ -73,7 +73,7 @@ function signedAfter(vaultId: string, log: readonly Entry[], type: number, paylo
 }
 
 describe("a newcomer verifying the vault's membership log from its invite link", () => {
-  it("refuses a log that starts from another genesis, before redeeming or anchoring it", async () => {
+  it("[P4-21] a newcomer refuses a forged membership log that starts from another genesis, before redeeming or anchoring it", async () => {
     const { server, vault, redeemer, invite } = await aliceVault();
     const { link } = await invite();
     const invite_ = server.log.at(-1);
@@ -91,7 +91,7 @@ describe("a newcomer verifying the vault's membership log from its invite link",
     expect(newcomer.checkpoints.size).toBe(0);
   });
 
-  it("refuses an entry the server injected into the real log", async () => {
+  it("[P4-21] a newcomer refuses a forged membership log with an entry the server injected", async () => {
     const { server, vault, redeemer, invite } = await aliceVault();
     const { link } = await invite();
     // An owner entry signed by a non-owner: the server makes bob an owner.
@@ -115,7 +115,7 @@ describe("a newcomer verifying the vault's membership log from its invite link",
 });
 
 describe("a user's other device verifying the log from the user's anchor list", () => {
-  it("refuses an anchor list of a lower version than it has seen", async () => {
+  it("[P4-21] a second device refuses a rolled-back anchor list of a lower version than it has seen", async () => {
     const { server, context } = await aliceVault();
     const secondDevice = new MemoryVerifiedLogStore();
     const version1 = server.anchorLists.get(alice.userId);

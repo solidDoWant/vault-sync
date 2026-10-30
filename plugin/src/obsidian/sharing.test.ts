@@ -435,7 +435,7 @@ describe("key fingerprints in an encrypted vault", () => {
     return formatFingerprint(fingerprint(bundleOf({ kemSeed: key.privateKey, signSeed: key.signSeed }, key.userId)));
   }
 
-  it("shows every member's key fingerprint and the vault fingerprint to an owner", async () => {
+  it("[P4-23] shows every member's key fingerprint in the member list, and the vault fingerprint, to an owner", async () => {
     const { id, client, trust, owner, genesis } = await encryptedVault("owner");
 
     const sharing = owned(await loadSharing(client, id, formatDate, trust));
@@ -477,7 +477,7 @@ describe("what the member list says about keys", () => {
   const member = { userId: ownerId, label: "Ada", role: VaultRole.OWNER, description: "Owner." };
   const verified = { kind: "verified", vaultFingerprint: "0008 1018" } as const;
 
-  it("shows a member's fingerprint, says when the verified log names no key, and says nothing in a plaintext vault or without a verified log", () => {
+  it("[P4-23] shows a member's fingerprint in the member list, says when the verified log names no key, and says nothing in a plaintext vault or without a verified log", () => {
     expect(memberKeyText({ ...member, fingerprint: "ABCD EFGH" }, verified)).toBe("Key fingerprint: ABCD EFGH");
     expect(memberKeyText(member, verified)).toBe("No key for this member in the verified membership log.");
     expect(memberKeyText({ ...member, fingerprint: "ABCD EFGH" }, undefined)).toBeUndefined();
