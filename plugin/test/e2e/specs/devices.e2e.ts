@@ -96,10 +96,10 @@ async function confirmRemove(): Promise<void> {
  */
 function recordNotices() {
   return browser.executeObsidian(({ app }) => {
-    const state = window as unknown as { vaultSyncNotices?: Set<Element> };
-    if (state.vaultSyncNotices !== undefined) return;
-    const shown = new Set<Element>();
-    state.vaultSyncNotices = shown;
+    // Each time the settings open they may be in a new document: its notices are recorded from then on too.
+    const state = window as unknown as { vaultSyncNotices?: Set<Element>; vaultSyncNoticeDocuments?: WeakSet<Document> };
+    const shown = (state.vaultSyncNotices ??= new Set<Element>());
+    const observed = (state.vaultSyncNoticeDocuments ??= new WeakSet<Document>());
     // Kept as elements, read when checked: a notice's text may be set after it is added.
     const observer = new MutationObserver((records) => {
       for (const record of records) {
@@ -110,7 +110,11 @@ function recordNotices() {
         }
       }
     });
-    for (const shownIn of new Set([document, (app as unknown as { setting: { activeTab?: { containerEl: HTMLElement } } }).setting.activeTab?.containerEl.ownerDocument ?? document])) observer.observe(shownIn.body, { childList: true, subtree: true });
+    for (const shownIn of new Set([document, (app as unknown as { setting: { activeTab?: { containerEl: HTMLElement } } }).setting.activeTab?.containerEl.ownerDocument ?? document])) {
+      if (observed.has(shownIn)) continue;
+      observed.add(shownIn);
+      observer.observe(shownIn.body, { childList: true, subtree: true });
+    }
   });
 }
 
@@ -118,6 +122,35 @@ function recordNotices() {
 async function removalFailedNotices(): Promise<number> {
   const shown = await browser.executeObsidian(() => [...((window as unknown as { vaultSyncNotices?: Set<Element> }).vaultSyncNotices ?? [])].map((notice) => notice.textContent));
   return shown.filter((notice) => notice.includes("could not remove the device")).length;
+}
+
+/** Types `name` into the Device name setting one character at a time, as the user does. */
+function typeDeviceName(name: string) {
+  return browser.executeObsidian(({ app }, text) => {
+    const items = (app as unknown as { setting: { activeTab?: { containerEl: HTMLElement } } }).setting.activeTab?.containerEl.querySelectorAll(".setting-item") ?? [];
+    const input = [...items].find((item) => item.querySelector(".setting-item-name")?.textContent === "Device name")?.querySelector<HTMLInputElement>("input");
+    if (input === undefined || input === null) throw new Error("the settings have no Device name field");
+    for (let length = 1; length <= text.length; length++) {
+      input.value = text.slice(0, length);
+      input.dispatchEvent(new Event("input"));
+    }
+  }, name);
+}
+
+/** The Device name field's value, and the setting in plugin data. */
+function deviceNameShown() {
+  return browser.executeObsidian(({ app }, id) => {
+    const items = (app as unknown as { setting: { activeTab?: { containerEl: HTMLElement } } }).setting.activeTab?.containerEl.querySelectorAll(".setting-item") ?? [];
+    const input = [...items].find((item) => item.querySelector(".setting-item-name")?.textContent === "Device name")?.querySelector<HTMLInputElement>("input");
+    const plugin = (app as unknown as { plugins: { plugins: Record<string, VaultSyncPlugin> } }).plugins.plugins[id];
+    return { field: input?.value ?? null, setting: plugin?.data.deviceName ?? null };
+  }, pluginId);
+}
+
+/** The notices shown since recordNotices that say this device could not be renamed. */
+async function renameFailedNotices(): Promise<number> {
+  const shown = await browser.executeObsidian(() => [...((window as unknown as { vaultSyncNotices?: Set<Element> }).vaultSyncNotices ?? [])].map((notice) => notice.textContent));
+  return shown.filter((notice) => notice.includes("could not rename this device")).length;
 }
 
 /** Renders vault-sync's settings tab again, as a status change does. */
@@ -298,5 +331,31 @@ describe("the settings device list", function () {
       { deviceId: stale, forwarded: true },
       { deviceId: closed, forwarded: true },
     ]);
+  });
+
+  // Runs after the tests above, signed in with this device the only one.
+  it("renames this device once the Device name edit settles, and puts the setting back when the rename fails", async function () {
+    await callHarness("interceptRemoveDevice");
+    await openSettings();
+    await browser.waitUntil(async () => (await deviceRows()).length === 1, { timeoutMsg: "the device list never showed this device" });
+    await recordNotices();
+    const renamesBefore = (await callHarness("renameDeviceCalls")).length;
+
+    // Typed one keystroke at a time: one RenameDevice, with the whole name.
+    const renamed = "e2e renamed device";
+    await typeDeviceName(renamed);
+    await browser.waitUntil(async () => (await rowNamed(renamed)) !== undefined, { timeoutMsg: "the device list never showed the new name" });
+    expect((await callHarness("renameDeviceCalls")).slice(renamesBefore)).toEqual([renamed]);
+    expect(await callHarness("serverDeviceNames")).toEqual([renamed]);
+    expect(await deviceNameShown()).toEqual({ field: renamed, setting: renamed });
+
+    // A failed rename: a notice, and the setting shows the name the server accepted.
+    await callHarness("failNextRenameDevice");
+    await typeDeviceName("e2e refused name");
+    await browser.waitUntil(async () => (await callHarness("renameDeviceCalls")).length === renamesBefore + 2, { timeoutMsg: "the refused name was never sent" });
+    await browser.waitUntil(async () => (await renameFailedNotices()) === 1, { timeoutMsg: "no notice said this device could not be renamed" });
+    expect(await deviceNameShown()).toEqual({ field: renamed, setting: renamed });
+    expect((await callHarness("renameDeviceCalls")).slice(renamesBefore)).toEqual([renamed, "e2e refused name"]);
+    expect(await callHarness("serverDeviceNames")).toEqual([renamed]);
   });
 });

@@ -51,3 +51,42 @@ export class DeviceNameError extends Error {
     super(`The server refused this device's name (${serverMessage}). Change the Device name setting in Vault Sync's settings; sync registers the device with the new name when it tries again.`);
   }
 }
+
+/** How long the Device name setting must stay unedited before the device is renamed to it. */
+export const deviceNameSettleMs = 1000;
+
+/**
+ * Edits of the Device name setting, debounced: `rename` runs once the
+ * setting has not been edited for `settleMs`, not on every keystroke, and
+ * renames run one at a time. `rename` hears the setting as it was before the
+ * first edit of the burst, and handles its own errors.
+ */
+export class DeviceNameEdits {
+  private timer: ReturnType<typeof setTimeout> | undefined;
+  private before: string | undefined;
+  private renames: Promise<void> = Promise.resolve();
+
+  constructor(
+    private readonly settleMs: number,
+    private readonly rename: (before: string) => Promise<void>,
+  ) {}
+
+  /** The setting was edited; `before` is its value before this edit. */
+  edited(before: string): void {
+    this.before ??= before;
+    if (this.timer !== undefined) clearTimeout(this.timer);
+    this.timer = setTimeout(() => {
+      this.timer = undefined;
+      const settled = this.before ?? before;
+      this.before = undefined;
+      this.renames = this.renames.then(() => this.rename(settled)).catch(() => undefined);
+    }, this.settleMs);
+  }
+
+  /** Drops an edit that has not settled yet. */
+  cancel(): void {
+    if (this.timer !== undefined) clearTimeout(this.timer);
+    this.timer = undefined;
+    this.before = undefined;
+  }
+}
