@@ -130,6 +130,9 @@ DEFAULT_CONFIG = {
         "reserved_slot": True,
     },
     "ci_auto_rerun": True,
+    # Deterministic jobs: a failure in one of these goes straight to the worker,
+    # because re-running cannot turn it green (only flaky test jobs are re-run).
+    "no_rerun_jobs": ["lint"],
     "failure_backoff_s": 120,
     "failure_backoff_max_s": 1800,
     "max_consecutive_failures": 3,
@@ -725,7 +728,8 @@ def build_plan(snap: Snapshot, state: dict, cfg: dict, holds: dict, now: dt.date
             elif pr.check == "failure":
                 reruns = state.get("ci_reruns", {}).get(str(pr.number), {})
                 failed = ", ".join(f"{f['name']} ({f['url']})" for f in pr.failed_runs) or "see the checks tab"
-                if cfg["ci_auto_rerun"] and reruns.get("sha") != pr.head_sha and pr.failed_runs:
+                deterministic = any(f["name"] in cfg["no_rerun_jobs"] for f in pr.failed_runs)
+                if cfg["ci_auto_rerun"] and reruns.get("sha") != pr.head_sha and pr.failed_runs and not deterministic:
                     plan.reruns.append((pr.number, sorted({f["run_id"] for f in pr.failed_runs if f["run_id"]}),
                                         [f["name"] for f in pr.failed_runs]))
                 else:

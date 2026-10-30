@@ -110,6 +110,13 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(keys(plan), ["worker:2"])
         self.assertIn("unit (https://x/1)", plan.jobs[0].trigger)
 
+    def test_armed_lint_failure_goes_to_the_worker_without_a_rerun(self):
+        failed = [{"name": "lint", "url": "https://x/1", "run_id": 99}, {"name": "unit", "url": "https://x/2", "run_id": 99}]
+        plan = plan_for(snap([issue(2, status="status:in-review")], [pr(10, 2, check="failure", auto=True, failed=failed)]))
+        self.assertEqual(plan.reruns, [])
+        self.assertEqual(keys(plan), ["worker:2"])
+        self.assertIn("lint (https://x/1)", plan.jobs[0].trigger)
+
     def test_red_unarmed_pr_goes_to_reviewer(self):
         plan = plan_for(snap([issue(2, status="status:in-review")], [pr(10, 2, check="failure")]))
         self.assertEqual(keys(plan), ["reviewer:pr-10"])
