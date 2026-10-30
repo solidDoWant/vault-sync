@@ -26,7 +26,7 @@ import (
 const (
 	// MaxMembersPerVault bounds a vault's members, so ListMembers needs no
 	// pagination.
-	MaxMembersPerVault = 100
+	MaxMembersPerVault = e2ee.MaxVaultMembers
 	// MaxPendingInvitationsPerVault bounds a vault's pending invitations.
 	MaxPendingInvitationsPerVault = 100
 	// DefaultInvitationTTL is how long an invitation stays redeemable when

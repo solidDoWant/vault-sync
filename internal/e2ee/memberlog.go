@@ -22,6 +22,13 @@ const (
 	// genesis with an escrow bundle.
 	MaxEntryPayloadSize = BundleSize + 1 + len(escrowBundleLabel) + SignPublicKeySize + 4 + MaxEscrowRecipientSize
 
+	// MaxVaultMembers bounds a vault's members (SPEC.md §9.2).
+	MaxVaultMembers = 100
+
+	// MaxMembersPayloadSize bounds the payload of a members entry, which
+	// lists every member of a converted vault except its creator.
+	MaxMembersPayloadSize = 2 + (MaxVaultMembers-1)*(BundleSize+1)
+
 	invitePayloadSize = 16 + 1 + SignPublicKeySize + PublicKeySize
 )
 
@@ -42,7 +49,11 @@ const (
 	EntryLeave            EntryType = 0x06
 	EntrySetRole          EntryType = 0x07
 	EntryEscrow           EntryType = 0x08
+	EntryMembers          EntryType = 0x09
 )
+
+// membersEntrySeq is the only position of a members entry: directly after genesis.
+const membersEntrySeq = 2
 
 // Role is a member's or an invitation's role.
 type Role byte
@@ -80,7 +91,7 @@ func (entry Entry) Body() ([]byte, error) {
 		return nil, errors.New("e2ee: prev hash of the wrong size")
 	}
 
-	if len(entry.Payload) > MaxEntryPayloadSize {
+	if len(entry.Payload) > maxPayloadSize(entry.Type) {
 		return nil, errors.New("e2ee: log entry payload too large")
 	}
 
@@ -89,6 +100,14 @@ func (entry Entry) Body() ([]byte, error) {
 	body = append(body, byte(entry.Type))
 
 	return append(body, lengthPrefixed(entry.Payload)...), nil
+}
+
+func maxPayloadSize(entryType EntryType) int {
+	if entryType == EntryMembers {
+		return MaxMembersPayloadSize
+	}
+
+	return MaxEntryPayloadSize
 }
 
 // Hash returns SHA-256 of the entry body.
@@ -181,6 +200,60 @@ func SetRolePayload(userID string, role Role) ([]byte, error) {
 	return append(user, byte(role)), nil
 }
 
+// MembersPayload returns count (u16) || (bundle || role)*, the payload of a
+// members entry listing every member of a converted vault except its creator.
+func MembersPayload(members []Member) ([]byte, error) {
+	if len(members) > MaxVaultMembers-1 {
+		return nil, errors.New("e2ee: too many members")
+	}
+
+	payload := binary.BigEndian.AppendUint16(nil, uint16(len(members))) //nolint:gosec // bounded above.
+
+	for _, member := range members {
+		if !member.Role.valid() {
+			return nil, errors.New("e2ee: unknown role")
+		}
+
+		bundle, err := member.Bundle.Encode()
+		if err != nil {
+			return nil, err
+		}
+
+		payload = append(append(payload, bundle...), byte(member.Role))
+	}
+
+	return payload, nil
+}
+
+func parseMembersPayload(payload []byte) ([]Member, error) {
+	if len(payload) < 2 {
+		return nil, errors.New("malformed members")
+	}
+
+	count := int(binary.BigEndian.Uint16(payload))
+	if len(payload) != 2+count*(BundleSize+1) {
+		return nil, errors.New("malformed members")
+	}
+
+	members := make([]Member, 0, count)
+
+	for offset := 2; offset < len(payload); offset += BundleSize + 1 {
+		bundle, err := ParseBundle(payload[offset : offset+BundleSize])
+		if err != nil {
+			return nil, err
+		}
+
+		role := Role(payload[offset+BundleSize])
+		if !role.valid() {
+			return nil, errors.New("unknown role")
+		}
+
+		members = append(members, Member{Bundle: bundle, Role: role})
+	}
+
+	return members, nil
+}
+
 // EscrowPayload returns 0x00 for no escrow, or 0x01 || escrow bundle.
 func EscrowPayload(escrow *EscrowBundle) ([]byte, error) {
 	if escrow == nil {
@@ -254,6 +327,19 @@ func (state LogState) ownerSigned(body, signature []byte) bool {
 	}
 
 	return false
+}
+
+// creator returns the only member of a log whose single entry is genesis.
+func (state LogState) creator() (Bundle, bool) {
+	if state.Seq != 1 || len(state.Members) != 1 {
+		return Bundle{}, false
+	}
+
+	for _, member := range state.Members {
+		return member.Bundle, true
+	}
+
+	return Bundle{}, false
 }
 
 func (state LogState) hasOwner() bool {
@@ -498,6 +584,29 @@ func applyEntry(vaultID string, state LogState, used map[string]bool, entry Entr
 		next.Escrow = escrow
 		if escrow != nil {
 			next.lastEscrow = escrow
+		}
+	case EntryMembers:
+		if entry.Seq != membersEntrySeq {
+			return LogState{}, errors.New("members entry not directly after genesis")
+		}
+
+		listed, err := parseMembersPayload(payload)
+		if err != nil {
+			return LogState{}, err
+		}
+
+		// At seq 2 the genesis creator is the only member.
+		creator, ok := state.creator()
+		if !ok || !verifySignature(creator.SignPub, body, signature) {
+			return LogState{}, errors.New("wrong signer")
+		}
+
+		for _, member := range listed {
+			if _, ok := next.Members[member.Bundle.UserID]; ok {
+				return LogState{}, errors.New("members entry lists the creator or a user twice")
+			}
+
+			next.Members[member.Bundle.UserID] = member
 		}
 	default:
 		return LogState{}, errors.New("unknown entry type")

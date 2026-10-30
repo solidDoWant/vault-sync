@@ -28,7 +28,7 @@ import {
   signPublicKey,
   verifyEscrowChain,
 } from "./identity";
-import { type Entry, entryHash, epochRecordBody, type EpochRecord, EpochRecordError, LogError, type LogState, replayLog, signEntry, signEpochRecord, verifyEpochRecord } from "./memberlog";
+import { type Entry, entryHash, epochRecordBody, type EpochRecord, EpochRecordError, LogError, type LogState, replayLog, Role, signEntry, signEpochRecord, verifyEpochRecord } from "./memberlog";
 
 const vectors = shared.identity_keys;
 
@@ -178,6 +178,40 @@ describe("identity keys match the shared vectors", () => {
     }
     for (const vector of vectors.rejected_escrow_chains) {
       expect(() => verifyEscrowChain(parseEscrowBundle(hexToBytes(vector.pinned)), rotationsOf(vector.rotations)), vector.name).toThrow(SignatureError);
+    }
+  });
+});
+
+describe("the log of a converted vault matches the shared vectors", () => {
+  const log = vectors.converted_log;
+  const entries = entriesOf(log.vault_id, log.entries);
+
+  it("replays genesis and the members entry to the same members and roles", () => {
+    const first = log.entries[0];
+    const states = replayLog(log.vault_id, entries, first === undefined ? {} : { genesisHash: hexToBytes(first.hash) });
+    expect(states.map(stateJson)).toEqual(log.states);
+    expect(Object.fromEntries([...(states[1]?.members ?? new Map<string, { role: number }>())].map(([userId, member]) => [userId, member.role]))).toEqual({
+      [vectors.identity[0]?.user_id ?? ""]: Role.owner,
+      [vectors.identity[1]?.user_id ?? ""]: Role.editor,
+      [vectors.identity[2]?.user_id ?? ""]: Role.viewer,
+    });
+  });
+
+  it("signs every entry and verifies the epoch record at the members entry", () => {
+    entries.forEach((entry, index) => {
+      const vector = log.entries[index];
+      expect(vector).toBeDefined();
+      if (vector === undefined) return;
+      expect(signEntry(entry, ...vector.signer_seeds.map((seed) => hexToBytes(seed))).signatures.map((signature) => bytesToHex(signature))).toEqual(vector.signatures);
+      expect(bytesToHex(entryHash(entry))).toBe(vector.hash);
+    });
+    const states = replayLog(log.vault_id, entries);
+    expect(log.epoch_records.map((vector) => vector.log_seq)).toEqual([2]);
+    for (const vector of log.epoch_records) {
+      const record = recordOf(log.vault_id, vector);
+      expect(bytesToHex(epochRecordBody(record)), vector.name).toBe(vector.body);
+      expect(bytesToHex(signEpochRecord(record, hexToBytes(vector.signer_seed)).signature), vector.name).toBe(vector.signature);
+      expect(() => { verifyEpochRecord(log.vault_id, states, record); }, vector.name).not.toThrow();
     }
   });
 });
