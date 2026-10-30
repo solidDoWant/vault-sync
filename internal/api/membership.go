@@ -409,6 +409,25 @@ func (service MembershipService) RemoveMember(ctx context.Context, request *conn
 		return nil, err
 	}
 
+	membership, _ := authz.MembershipFromContext(ctx)
+
+	if request.Msg.GetRecord() != nil && next == nil {
+		return nil, invalidArgument("record is only taken with next_epoch")
+	}
+
+	if next != nil {
+		signed, err := parseRemovalEpoch(membership.VaultID, request.Msg.GetRecord(), entry)
+		if err != nil {
+			return nil, err
+		}
+
+		if next.Record, err = encodeEpochRecord(signed.record); err != nil {
+			return nil, service.internal(ctx, "cannot remove member", err)
+		}
+
+		next.Check = signed.check(*next)
+	}
+
 	if err := vault.RemoveMember(ctx, owner.ID, userID, next, entry); err != nil {
 		return nil, service.memberChangeError(ctx, "cannot remove member", err)
 	}

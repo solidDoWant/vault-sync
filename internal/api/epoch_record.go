@@ -26,11 +26,16 @@ const (
 	epochRecipientInvitation = 0x03
 )
 
-// signedEpoch is a RotateEpoch's record and escrow entry, bounds-checked.
+// signedEpoch is a new epoch's record and the membership log entry
+// appended with it (a RotateEpoch's escrow entry or a RemoveMember's
+// remove-member entry), bounds-checked.
 type signedEpoch struct {
 	vaultID     uuid.UUID
 	record      *vaultsyncv1.EpochRecord
 	escrowEntry *store.LogEntry
+	// position is the seq of the entry appended with the epoch, which the
+	// record must name as its log position; 0 when there is none.
+	position uint64
 }
 
 // parseSignedEpoch checks the bounds of a RotateEpoch's record and escrow
@@ -58,6 +63,23 @@ func parseSignedEpoch(vaultID uuid.UUID, record *vaultsyncv1.EpochRecord, escrow
 			Payload:    escrowEntry.GetPayload(),
 			Signatures: escrowEntry.GetSignatures(),
 		}
+		signed.position = escrowEntry.GetSeq()
+	}
+
+	return signed, nil
+}
+
+// parseRemovalEpoch checks the bounds of a RemoveMember's record; entry is
+// the remove-member entry (nil in a plaintext vault), the record's log
+// position. The store runs the check once entry is in the log.
+func parseRemovalEpoch(vaultID uuid.UUID, record *vaultsyncv1.EpochRecord, entry *store.LogAppend) (signedEpoch, error) {
+	signed, err := parseSignedEpoch(vaultID, record, nil)
+	if err != nil {
+		return signedEpoch{}, err
+	}
+
+	if entry != nil {
+		signed.position = uint64(max(entry.Entry.Seq, 0))
 	}
 
 	return signed, nil
@@ -68,7 +90,8 @@ func refuseEpoch(reason string) error {
 }
 
 // check returns the store.EpochCheck of next: the log must replay, the
-// escrow entry (if any) must be the position the record names, the record
+// entry appended with the epoch (if any) must be the position the record
+// names, the record
 // must verify there (e2ee.VerifyEpochRecord, signed over next's epoch and
 // commitment and the current epoch's commitment), and next's user and
 // escrow slots must be exactly the record's user and escrow recipients.
@@ -92,11 +115,11 @@ func (signed signedEpoch) check(next store.NextEpoch) store.EpochCheck {
 
 		states, err := e2ee.ReplayLog(signed.vaultID.String(), entries, e2ee.ReplayOptions{})
 		if err != nil {
-			return false, refuseEpoch("the membership log does not verify with escrow_entry")
+			return false, refuseEpoch("the membership log does not verify with the entry appended with the epoch")
 		}
 
-		if signed.escrowEntry != nil && signed.record.GetLogSeq() != uint64(signed.escrowEntry.Seq) { //nolint:gosec // positive, see parseSignedEpoch.
-			return false, refuseEpoch("the record's log position must be escrow_entry")
+		if signed.position != 0 && signed.record.GetLogSeq() != signed.position {
+			return false, refuseEpoch("the record's log position must be the entry appended with the epoch")
 		}
 
 		if prevCommitment == nil {

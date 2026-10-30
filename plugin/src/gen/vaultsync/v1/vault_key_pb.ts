@@ -114,7 +114,7 @@ export type KeyEpoch = Message<"vaultsync.v1.KeyEpoch"> & {
 
   /**
    * The owner's signed epoch record (docs/design/crypto.md), as RotateEpoch
-   * stored it. Unset for an epoch created without one (a member removal).
+   * or RemoveMember stored it. Unset for an epoch created without one.
    *
    * @generated from field: vaultsync.v1.EpochRecord record = 5;
    */
