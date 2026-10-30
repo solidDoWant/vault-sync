@@ -12,6 +12,7 @@ import type { UserKeyService } from "../../gen/vaultsync/v1/user_key_pb";
 import { anchorKey, openAnchorList, sealAnchorList, type Anchor } from "../e2ee/identity";
 import { equalBytes } from "@noble/ciphers/utils.js";
 import type { UserKeyPair } from "./user-key";
+import { LogVerificationError, type VerifiedLogStore } from "./verified-log";
 
 /** The UserKeyService calls that read and write the anchor list (ProtocolClient.userKeys). */
 export type AnchorListClient = Pick<Client<typeof UserKeyService>, "getAnchorList" | "putAnchorList">;
@@ -19,12 +20,27 @@ export type AnchorListClient = Pick<Client<typeof UserKeyService>, "getAnchorLis
 /** Attempts when other devices keep writing the list first. */
 const MAX_PUT_ATTEMPTS = 5;
 
-/** The user's anchors as stored now, with the version they were sealed at (0 for none). */
-export async function readAnchorList(client: AnchorListClient, userKey: UserKeyPair): Promise<{ version: number; anchors: Anchor[] }> {
+/**
+ * The user's anchors as stored now, with the version they were sealed at (0
+ * for none). A version lower than the highest this device has seen (`seen`)
+ * is a rolled-back list and refused; a higher one is recorded once it opens.
+ */
+export async function readAnchorList(client: AnchorListClient, userKey: UserKeyPair, seen: VerifiedLogStore): Promise<{ version: number; anchors: Anchor[] }> {
   const response = await client.getAnchorList({});
   const version = Number(response.version);
-  if (version === 0) return { version, anchors: [] };
-  return { version, anchors: openAnchorList(anchorKey(userKey.privateKey), response.sealedList, userKey.userId, version) };
+  const highest = await seen.anchorListVersion();
+  if (version < highest) throw new LogVerificationError(undefined, "the user's anchor list is older than one this device has seen");
+  const anchors = version === 0 ? [] : openList(userKey, response.sealedList, version);
+  if (version > highest) await seen.saveAnchorListVersion(version);
+  return { version, anchors };
+}
+
+function openList(userKey: UserKeyPair, sealed: Uint8Array, version: number): Anchor[] {
+  try {
+    return openAnchorList(anchorKey(userKey.privateKey), sealed, userKey.userId, version);
+  } catch (error) {
+    throw new LogVerificationError(undefined, "the user's anchor list does not open", { cause: error });
+  }
 }
 
 /**
@@ -33,9 +49,9 @@ export async function readAnchorList(client: AnchorListClient, userKey: UserKeyP
  * anchor naming the vault with another genesis hash is refused: a vault's
  * anchor never changes.
  */
-export async function addAnchor(client: AnchorListClient, userKey: UserKeyPair, anchor: Anchor): Promise<void> {
+export async function addAnchor(client: AnchorListClient, userKey: UserKeyPair, seen: VerifiedLogStore, anchor: Anchor): Promise<void> {
   for (let attempt = 1; ; attempt++) {
-    const { version, anchors } = await readAnchorList(client, userKey);
+    const { version, anchors } = await readAnchorList(client, userKey, seen);
     const existing = anchors.find((stored) => stored.vaultId === anchor.vaultId);
     if (existing !== undefined) {
       if (equalBytes(existing.genesisHash, anchor.genesisHash)) return;
@@ -44,6 +60,7 @@ export async function addAnchor(client: AnchorListClient, userKey: UserKeyPair, 
     const next = version + 1;
     try {
       await client.putAnchorList({ version: BigInt(next), sealedList: sealAnchorList(anchorKey(userKey.privateKey), userKey.userId, next, [...anchors, anchor]) });
+      await seen.saveAnchorListVersion(next);
       return;
     } catch (error) {
       if (!(error instanceof ConnectError && error.code === Code.FailedPrecondition) || attempt >= MAX_PUT_ATTEMPTS) throw error;

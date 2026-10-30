@@ -20,6 +20,7 @@ import { sha256Hex } from "../hash";
 import { addAnchor, type AnchorListClient } from "./anchor-list";
 import { genesisEntry, toLogEntry } from "./member-log";
 import type { UserKeyPair } from "./user-key";
+import type { VerifiedLogStore } from "./verified-log";
 import { VaultKeyManager, vaultKeyStatusMessage, type EpochKeyStore, type EscrowRecipient, type MemberKeyClient, type VaultKeyClient } from "./vault-keys";
 
 /** The VaultService call creating a vault (ProtocolClient.vaults). */
@@ -71,6 +72,8 @@ export interface CreateEncryptedVaultOptions {
   vaults: VaultCreateClient;
   /** Where the user's sealed anchor list is kept. */
   anchors: AnchorListClient;
+  /** What this device has verified: the new vault's genesis is its first verified position. */
+  verifiedLogs: VerifiedLogStore;
   keys: VaultKeyClient;
   membership: MemberKeyClient;
   /** Where this device keeps the new vault's epoch keys. */
@@ -92,7 +95,8 @@ export async function createEncryptedVault(options: CreateEncryptedVaultOptions)
   const vaultId = crypto.randomUUID();
   const creator = bundleOf({ kemSeed: userKey.privateKey, signSeed: userKey.signSeed }, userKey.userId);
   const genesis = genesisEntry(vaultId, genesisPayload(creator, escrow?.bundle), userKey.signSeed);
-  await addAnchor(options.anchors, userKey, { vaultId, genesisHash: entryHash(genesis) });
+  const genesisHash = entryHash(genesis);
+  await addAnchor(options.anchors, userKey, options.verifiedLogs, { vaultId, genesisHash });
   const response = await options.vaults.createVault({
     name: options.name,
     encryption: VaultEncryption.E2EE,
@@ -103,6 +107,7 @@ export async function createEncryptedVault(options: CreateEncryptedVaultOptions)
   const vault = response.vault;
   if (vault === undefined) throw new Error("the server created the vault but returned none");
   if (vault.id !== vaultId) throw new Error("the server created the vault under another id");
+  await options.verifiedLogs.saveCheckpoint(vaultId, { seq: 1, hash: genesisHash });
   const manager = new VaultKeyManager({
     vaultId: vault.id,
     userKey: options.userKey,

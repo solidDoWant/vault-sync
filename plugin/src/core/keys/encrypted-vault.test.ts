@@ -11,6 +11,7 @@ import { openKeySlot, verifyKeyCommitment } from "../e2ee/keyslot";
 import { createProtocolClient } from "../protocol/client";
 import { createEncryptedVault, escrowOffer, type EscrowKey } from "./encrypted-vault";
 import { MemoryVaultKeyServer } from "./memory-vault-keys";
+import { MemoryVerifiedLogStore } from "./verified-log";
 import { MemoryEpochKeyStore } from "./vault-keys";
 
 const serverVaultId = "0190a5b4-0000-7000-8000-000000000001";
@@ -39,6 +40,7 @@ async function create(escrow: EscrowKey | undefined) {
     userKey: owner,
     vaults: client.vaults,
     anchors: client.userKeys,
+    verifiedLogs: new MemoryVerifiedLogStore(),
     keys: client.vaultKeys,
     membership: client.membership,
     store: () => store,

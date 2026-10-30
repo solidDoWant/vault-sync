@@ -46,6 +46,7 @@ import {
 import {
   EntryType,
   entryHash,
+  type Entry,
   idPayload,
   invitePayload,
   redeemPayload,
@@ -55,10 +56,15 @@ import { addAnchor, type AnchorListClient } from "./anchor-list";
 import {
   appendLogEntry,
   nextEntry,
-  readLog,
   toLogEntry,
   type LogReadClient,
 } from "./member-log";
+import {
+  readMemberLog,
+  readVerifiedLog,
+  type LogTrust,
+  type VerifiedLogStore,
+} from "./verified-log";
 import type { UserKeyPair } from "./user-key";
 import { isEpochNotCurrent } from "./vault-keys";
 
@@ -68,12 +74,19 @@ export type EncryptedMembershipClient = Pick<
   "createInvitation" | "revokeInvitation" | "updateMemberRole" | "leaveVault"
 >;
 
-/** What a membership change of an encrypted vault needs: the vault, the user's key that signs, and the calls. */
-export interface EncryptedMembershipContext {
+/**
+ * What a membership change of an encrypted vault needs: the vault, the
+ * user's key that signs, the calls, and what the log the entry is placed on
+ * is verified with.
+ */
+export interface EncryptedMembershipContext extends LogTrust {
   vaultId: string;
-  userKey: UserKeyPair;
   membership: EncryptedMembershipClient;
-  log: LogReadClient;
+}
+
+/** The verified log of the context's vault, as {@link appendLogEntry} reads it. */
+function verifiedEntries(context: EncryptedMembershipContext): () => Promise<readonly Entry[]> {
+  return async () => (await readMemberLog(context, context.vaultId)).entries;
 }
 
 /** The bytes of an invitation code's `<id>` and of its `<secret>`. */
@@ -152,7 +165,7 @@ export async function createEncryptedInvitation(
   );
   let anchor: Uint8Array = new Uint8Array();
   const response = await appendLogEntry(
-    context.log,
+    verifiedEntries(context),
     vaultId,
     (log) => {
       const genesis = log[0];
@@ -201,7 +214,7 @@ export async function revokeEncryptedInvitation(
 ): Promise<void> {
   const { vaultId } = context;
   await appendLogEntry(
-    context.log,
+    verifiedEntries(context),
     vaultId,
     () => ({
       type: EntryType.revokeInvitation,
@@ -221,7 +234,7 @@ export async function setEncryptedMemberRole(
 ): Promise<void> {
   const { vaultId } = context;
   await appendLogEntry(
-    context.log,
+    verifiedEntries(context),
     vaultId,
     () => ({
       type: EntryType.setRole,
@@ -239,7 +252,7 @@ export async function leaveEncryptedVault(
 ): Promise<void> {
   const { vaultId, userKey } = context;
   await appendLogEntry(
-    context.log,
+    verifiedEntries(context),
     vaultId,
     () => ({
       type: EntryType.leave,
@@ -294,6 +307,8 @@ export interface RedeemContext {
   >;
   log: LogReadClient;
   anchors: AnchorListClient;
+  /** What this device has verified; the vault's log is verified from the invite link's anchor. */
+  verifiedLogs: VerifiedLogStore;
 }
 
 /** An invite link whose anchor does not belong to the invitation the server holds under its `<id>`. */
@@ -312,10 +327,11 @@ const MAX_REDEEM_ATTEMPTS = 3;
 /**
  * Redeems an invitation to an encrypted vault with its link: reads the
  * invitation's slots (GetInvitationSlots), checks the link's anchor against
- * the invitation and adds the vault's genesis hash to the user's anchor
- * list, opens every epoch key with the invitation's key and wraps it to the
+ * the invitation, verifies the vault's log (read with the invitation's
+ * `<id>`) from the anchor's genesis hash, and adds that hash to the user's
+ * anchor list, opens every epoch key with the invitation's key and wraps it to the
  * user's own key, and sends RedeemInvitation with the redeem entry, placed
- * on the log head read with the invitation's `<id>` and signed by the
+ * on the verified log's head and signed by the
  * invitation's key and then by the user. When the log or the epochs moved
  * meanwhile (ABORTED, or EPOCH_NOT_CURRENT), starts again from a fresh read.
  * Resolves with the vault joined.
@@ -341,7 +357,14 @@ export async function redeemEncryptedInvitation(
     } catch {
       throw new InviteAnchorError();
     }
-    await addAnchor(context.anchors, userKey, {
+    const { entries: log } = await readVerifiedLog(
+      context.log,
+      context.verifiedLogs,
+      vaultId,
+      anchor.genesisHash,
+      link.id,
+    );
+    await addAnchor(context.anchors, userKey, context.verifiedLogs, {
       vaultId,
       genesisHash: anchor.genesisHash,
     });
@@ -378,7 +401,6 @@ export async function redeemEncryptedInvitation(
         }),
       });
     }
-    const log = await readLog(context.log, vaultId, link.id);
     const entry = nextEntry(vaultId, log, {
       type: EntryType.redeem,
       payload: redeemPayload(

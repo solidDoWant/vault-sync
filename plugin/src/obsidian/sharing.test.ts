@@ -13,6 +13,7 @@ import { createEncryptedVault } from "../core/keys/encrypted-vault";
 import { MemoryVaultKeyServer } from "../core/keys/memory-vault-keys";
 import type { UserKeyPair } from "../core/keys/user-key";
 import { MemoryEpochKeyStore } from "../core/keys/vault-keys";
+import { MemoryVerifiedLogStore } from "../core/keys/verified-log";
 import {
   AlreadyMemberError,
   createInvitation,
@@ -367,10 +368,11 @@ describe("joining with an invite code (#34)", () => {
     server.userKeys.set(joiner.userId, joiner.publicKey);
     const ownerClient = createProtocolClient({ transport: server.transport(owner.userId) });
     const store = new MemoryEpochKeyStore();
-    const vault = await createEncryptedVault({ name: "Secret", escrow: undefined, userKey: owner, vaults: ownerClient.vaults, anchors: ownerClient.userKeys, keys: ownerClient.vaultKeys, membership: ownerClient.membership, store: () => store });
-    const created = await createEncryptedInvitation({ vaultId: vault.id, userKey: owner, membership: ownerClient.membership, log: ownerClient.vaultKeys, currentEpoch: 1, epochKey: (epoch) => store.keys.get(epoch) }, VaultRole.EDITOR, 0);
+    const ownerLogs = new MemoryVerifiedLogStore();
+    const vault = await createEncryptedVault({ name: "Secret", escrow: undefined, userKey: owner, vaults: ownerClient.vaults, anchors: ownerClient.userKeys, verifiedLogs: ownerLogs, keys: ownerClient.vaultKeys, membership: ownerClient.membership, store: () => store });
+    const created = await createEncryptedInvitation({ vaultId: vault.id, userKey: owner, membership: ownerClient.membership, log: ownerClient.vaultKeys, anchors: ownerClient.userKeys, verifiedLogs: ownerLogs, currentEpoch: 1, epochKey: (epoch) => store.keys.get(epoch) }, VaultRole.EDITOR, 0);
     const client = createProtocolClient({ transport: server.transport(joiner.userId) });
-    const redeemer = () => Promise.resolve({ userKey: joiner, membership: client.membership, log: client.vaultKeys, anchors: client.userKeys });
+    const redeemer = () => Promise.resolve({ userKey: joiner, membership: client.membership, log: client.vaultKeys, anchors: client.userKeys, verifiedLogs: new MemoryVerifiedLogStore() });
 
     await expect(joinVault(client, ` ${created.link}\n`, redeemer)).resolves.toMatchObject({ id: vault.id, role: VaultRole.EDITOR });
     expect(server.members.get(joiner.userId)?.role).toBe(VaultRole.EDITOR);
