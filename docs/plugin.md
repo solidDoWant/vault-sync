@@ -1,5 +1,7 @@
 # Obsidian plugin
 
+The user guide for the plugin is now in [`docs/user/`](user/getting-started.md). This page stays until the admin and developer rewrites move its last sections.
+
 This page covers the vault-sync plugin's settings, how it signs in, how a vault is connected, and what the sync status means. The server's configuration is in `docs/configuration.md`.
 
 ## Settings

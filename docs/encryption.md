@@ -1,5 +1,7 @@
 # How encryption works
 
+The user's view of encryption is now in [`docs/user/encryption.md`](user/encryption.md). This page stays until the admin rewrite moves its operator sections.
+
 This page explains vault-sync's end-to-end encryption for users and operators: what it protects, what you have to keep safe, and how an operator recovers an encrypted vault. The design is `docs/design/encryption.md` and the byte formats are `docs/design/crypto.md`. Where this page and those documents disagree, they win.
 
 End-to-end encryption is being built in Phase 4. Until the Phase 4 release, the server refuses to create an encrypted vault, and the plugin can only set up and unlock your encryption key (see [plugin.md](plugin.md#end-to-end-encryption)). This page describes encryption as it works once Phase 4 ships.
