@@ -122,6 +122,31 @@ func runRotateEscrow(t *testing.T, env map[string]string, serverURL string, targ
 	return code, summary
 }
 
+// startEscrowJob serves the escrow job service on jobStore and returns its
+// URL and the job's environment holding both escrow keys, from and to.
+func startEscrowJob(t *testing.T, deployment *deployment, jobStore api.EscrowJobStore, from, to deploymentEscrowKey) (string, map[string]string) {
+	t.Helper()
+
+	token := strings.Repeat("j", 44)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	path, handler := vaultsyncv1connect.NewEscrowJobServiceHandler(
+		api.EscrowJobService{Store: jobStore, Logger: logger},
+		connect.WithInterceptors(auth.NewJobTokenInterceptor([]byte(token))))
+
+	mux := http.NewServeMux()
+	mux.Handle(path, handler)
+
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	env := deployment.env()
+	env[config.EscrowIdentityFileEnv] = writeLines(t, "escrow.key", "# old", from.identity, "# new", to.identity)
+	env[config.EscrowSigningKeyFileEnv] = writeLines(t, "escrow-signing.key", signingSeed(from.signing), signingSeed(to.signing))
+	env[config.EscrowJobTokenFileEnv] = writeLines(t, "job.token", token)
+
+	return server.URL, env
+}
+
 func TestEscrowRotationAgainstPostgreSQL(t *testing.T) {
 	t.Run("[P4-12] the export job re-wraps every escrow slot, deleted vaults included, catches a slot wrapped to the old key during the switch, and the age tool opens a slot with the new key", func(t *testing.T) {
 		deployment := newDeployment(t)
@@ -141,27 +166,12 @@ func TestEscrowRotationAgainstPostgreSQL(t *testing.T) {
 		deployment.rotate(t, deleted, oldKey.public, nil)
 		require.NoError(t, deployment.store.DeleteVault(t.Context(), deleted.id))
 
-		token := strings.Repeat("j", 44)
 		job := &switchingJobStore{Store: deployment.store, vaultID: live.id}
 		job.hook = func() { deployment.rotate(t, live, oldKey.public, nil) }
 
-		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-		path, handler := vaultsyncv1connect.NewEscrowJobServiceHandler(
-			api.EscrowJobService{Store: job, Logger: logger},
-			connect.WithInterceptors(auth.NewJobTokenInterceptor([]byte(token))))
+		serverURL, env := startEscrowJob(t, deployment, job, oldKey, newKey)
 
-		mux := http.NewServeMux()
-		mux.Handle(path, handler)
-
-		server := httptest.NewServer(mux)
-		t.Cleanup(server.Close)
-
-		env := deployment.env()
-		env[config.EscrowIdentityFileEnv] = writeLines(t, "escrow.key", "# old", oldKey.identity, "# new", newKey.identity)
-		env[config.EscrowSigningKeyFileEnv] = writeLines(t, "escrow-signing.key", signingSeed(oldKey.signing), signingSeed(newKey.signing))
-		env[config.EscrowJobTokenFileEnv] = writeLines(t, "job.token", token)
-
-		code, first := runRotateEscrow(t, env, server.URL, newKey)
+		code, first := runRotateEscrow(t, env, serverURL, newKey)
 		assert.Equal(t, 1, code, "a slot left on the old key fails the run")
 		assert.Equal(t, export.StatusFailed, first.Status, first.Error)
 		assert.True(t, first.AppendedStatement)
@@ -169,7 +179,7 @@ func TestEscrowRotationAgainstPostgreSQL(t *testing.T) {
 		assert.Equal(t, 1, first.OldKeySlots, "the slot a device wrapped to the old key during the run is caught")
 		assert.Equal(t, 2, first.Vaults)
 
-		code, second := runRotateEscrow(t, env, server.URL, newKey)
+		code, second := runRotateEscrow(t, env, serverURL, newKey)
 		assert.Equal(t, 0, code)
 		assert.Equal(t, export.StatusOK, second.Status, second.Error)
 		assert.False(t, second.AppendedStatement)
@@ -180,7 +190,7 @@ func TestEscrowRotationAgainstPostgreSQL(t *testing.T) {
 		env[config.EscrowIdentityFileEnv] = writeLines(t, "escrow.key", newKey.identity)
 		env[config.EscrowSigningKeyFileEnv] = writeLines(t, "escrow-signing.key", signingSeed(newKey.signing))
 
-		code, retired := runRotateEscrow(t, env, server.URL, newKey)
+		code, retired := runRotateEscrow(t, env, serverURL, newKey)
 		assert.Equal(t, 0, code)
 		assert.Equal(t, export.StatusOK, retired.Status, retired.Error)
 		assert.Equal(t, 0, retired.Rewrapped)
@@ -218,5 +228,44 @@ func TestEscrowRotationAgainstPostgreSQL(t *testing.T) {
 				assert.Equal(t, vault.keys[slot.Epoch], output[:e2ee.KeySize], "vault %s epoch %d", vault.id, slot.Epoch)
 			}
 		}
+	})
+
+	t.Run("[P4-22] the export job's escrow rotation writes a rotation statement signed by the previous escrow key, which chains only from that key", func(t *testing.T) {
+		deployment := newDeployment(t)
+		oldKey, newKey := newDeploymentEscrowKey(t), newDeploymentEscrowKey(t)
+
+		root, err := oldKey.bundle.Encode()
+		require.NoError(t, err)
+
+		_, err = deployment.store.EscrowChain(t.Context(), root)
+		require.NoError(t, err)
+
+		deployment.createEscrowedVault(t, "Escrowed")
+
+		serverURL, env := startEscrowJob(t, deployment, deployment.store, oldKey, newKey)
+
+		code, summary := runRotateEscrow(t, env, serverURL, newKey)
+		require.Equal(t, 0, code, summary.Error)
+		require.True(t, summary.AppendedStatement)
+
+		chain, err := deployment.store.EscrowChain(t.Context(), nil)
+		require.NoError(t, err)
+		assert.Equal(t, root, chain.Root)
+		require.Len(t, chain.Rotations, 1)
+
+		rotations := make([]e2ee.EscrowRotation, 0, len(chain.Rotations))
+		for _, stored := range chain.Rotations {
+			bundle, err := e2ee.ParseEscrowBundle(stored.NewBundle)
+			require.NoError(t, err)
+
+			rotations = append(rotations, e2ee.EscrowRotation{OldBundleHash: stored.OldBundleHash, NewBundle: bundle, Signature: stored.Signature})
+		}
+
+		head, err := e2ee.VerifyEscrowChain(oldKey.bundle, rotations)
+		require.NoError(t, err, "a device that pinned the previous escrow key accepts the new one")
+		assert.Equal(t, newKey.bundle, head)
+
+		_, err = e2ee.VerifyEscrowChain(newDeploymentEscrowKey(t).bundle, rotations)
+		require.ErrorIs(t, err, e2ee.ErrSignature, "a device that pinned another escrow key refuses it")
 	})
 }
