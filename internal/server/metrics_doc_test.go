@@ -43,7 +43,7 @@ func registeredMetrics(t *testing.T) map[string]documentedMetric {
 		var kind string
 
 		// Gauge before Counter: a Gauge also satisfies the Counter interface.
-		switch collector.(type) {
+		switch typed := collector.(type) {
 		case prometheus.Gauge, *prometheus.GaugeVec:
 			kind = "gauge"
 		case prometheus.Counter, *prometheus.CounterVec:
@@ -53,7 +53,7 @@ func registeredMetrics(t *testing.T) map[string]documentedMetric {
 		case prometheus.Metric:
 			// A GaugeFunc or CounterFunc: both have the same methods, so
 			// its type is read from the metric it writes.
-			kind = funcMetricKind(t, collector.(prometheus.Metric))
+			kind = funcMetricKind(t, typed)
 		default:
 			require.Failf(t, "unknown collector type", "%T", collector)
 		}
