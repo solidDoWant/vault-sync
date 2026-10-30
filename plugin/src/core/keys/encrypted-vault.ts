@@ -9,6 +9,8 @@
  * the operator configured otherwise), and the owner can turn it off.
  */
 import type { Client } from "@connectrpc/connect";
+import { equalBytes } from "@noble/ciphers/utils.js";
+import { sha256 } from "@noble/hashes/sha2.js";
 
 import type { GetServerInfoResponse } from "../../gen/vaultsync/v1/server_info_pb";
 import { VaultEncryption, type Vault } from "../../gen/vaultsync/v1/types_pb";
@@ -18,6 +20,7 @@ import {
   bundleOf,
   escrowEqual,
   escrowKeyId,
+  encodeEscrowBundle,
   escrowPublicKey,
   escrowReachable,
   parseEscrowBundle,
@@ -68,11 +71,27 @@ export interface EscrowPin {
   loadDeclined(): Promise<EscrowBundle | undefined>;
   /** Remembers that the user declined `bundle`; the pin stays. */
   saveDeclined(bundle: EscrowBundle): Promise<void>;
+  /** The escrow chain this device last verified, or undefined before the first. */
+  loadChain(): Promise<EscrowChainPin | undefined>;
+  /** Records the escrow chain this device verified. */
+  saveChain(chain: EscrowChainPin): Promise<void>;
+  /** The SHA-256 of the bundle the user accepted in the escrow reset prompt last, if any. A first-sight pin is never an acceptance. */
+  loadAccepted(): Promise<Uint8Array | undefined>;
+  /** Records that the user accepted the bundle with SHA-256 `bundleHash`. */
+  saveAccepted(bundleHash: Uint8Array): Promise<void>;
+}
+
+/** The escrow chain a device verified (docs/design/encryption.md, "The chain pin"): its length and the SHA-256 of its head bundle. */
+export interface EscrowChainPin {
+  length: number;
+  headHash: Uint8Array;
 }
 
 /** An {@link EscrowPin} in memory, for tests. */
 export class MemoryEscrowPin implements EscrowPin {
   declined: EscrowBundle | undefined;
+  chain: EscrowChainPin | undefined;
+  accepted: Uint8Array | undefined;
 
   constructor(public bundle?: EscrowBundle) {}
 
@@ -94,12 +113,30 @@ export class MemoryEscrowPin implements EscrowPin {
     this.declined = bundle;
     return Promise.resolve();
   }
+
+  loadChain(): Promise<EscrowChainPin | undefined> {
+    return Promise.resolve(this.chain);
+  }
+
+  saveChain(chain: EscrowChainPin): Promise<void> {
+    this.chain = chain;
+    return Promise.resolve();
+  }
+
+  loadAccepted(): Promise<Uint8Array | undefined> {
+    return Promise.resolve(this.accepted);
+  }
+
+  saveAccepted(bundleHash: Uint8Array): Promise<void> {
+    this.accepted = bundleHash;
+    return Promise.resolve();
+  }
 }
 
 /** The server published an escrow chain that does not verify: a verification failure, so nothing is escrowed to its keys. */
 export class EscrowChainError extends Error {
   constructor() {
-    super("the server's escrow chain does not verify: a rotation statement is not signed by the escrow key it replaces; nothing was escrowed to it");
+    super("the server's escrow chain does not verify, or does not extend the chain this device verified before; nothing was escrowed to it");
     this.name = "EscrowChainError";
   }
 }
@@ -135,6 +172,7 @@ export function publishedEscrowRotations(info: Pick<GetServerInfoResponse, "escr
     oldBundleHash: statement.oldBundleHash,
     newBundle: parsedBundle(statement.newBundle),
     signature: statement.signature,
+    reset: statement.reset,
   }));
 }
 
@@ -167,6 +205,7 @@ export async function escrowOffer(info: EscrowInfo, pin: EscrowPin): Promise<Esc
   } catch {
     throw new EscrowChainError();
   }
+  const pinChain = await checkChainPin(pin, root, rotations);
   const pinned = await pin.load();
   if (pinned === undefined) {
     await pin.save(bundle);
@@ -174,20 +213,46 @@ export async function escrowOffer(info: EscrowInfo, pin: EscrowPin): Promise<Esc
     if (escrowReachable(pinned, bundle, rotations) !== undefined) {
       const declined = await pin.loadDeclined();
       const change = { pinned, offered: bundle, declined: declined !== undefined && escrowEqual(declined, bundle) };
+      await pinChain();
       return { recipient: escrowKeyOf(pinned), byDefault: info.escrowDefault, change };
     }
     await pin.save(bundle);
   }
-  return { recipient: { keyId: info.escrowKeyId, publicKey: info.escrowPublicKey, bundle }, byDefault: info.escrowDefault };
+  await pinChain();
+  const accepted = await pin.loadAccepted();
+  const recipient: EscrowKey = { keyId: info.escrowKeyId, publicKey: info.escrowPublicKey, bundle };
+  // The pin is the head here; an owner device adopts it only if the user accepted it.
+  if (accepted !== undefined && equalBytes(accepted, sha256(encodeEscrowBundle(bundle)))) recipient.adopt = true;
+  return { recipient, byDefault: info.escrowDefault };
+}
+
+/**
+ * Checks that the published chain extends the chain this device verified
+ * last (at least as long, and the same bundle at the pinned head's
+ * position), and returns what pins the published one. Otherwise throws
+ * {@link EscrowChainError}: a hard stop for escrow.
+ */
+async function checkChainPin(pin: EscrowPin, root: EscrowBundle, rotations: readonly EscrowRotation[]): Promise<() => Promise<void>> {
+  const chain = [root, ...rotations.map((rotation) => rotation.newBundle)];
+  const pinned = await pin.loadChain();
+  if (pinned !== undefined) {
+    const atPin = chain[pinned.length - 1];
+    if (pinned.length < 1 || atPin === undefined || !equalBytes(sha256(encodeEscrowBundle(atPin)), pinned.headHash)) throw new EscrowChainError();
+  }
+  const head = chain[chain.length - 1] ?? root;
+  const headHash = sha256(encodeEscrowBundle(head));
+  const changed = pinned === undefined || pinned.length !== chain.length || !equalBytes(pinned.headHash, headHash);
+  return () => (changed ? pin.saveChain({ length: chain.length, headHash }) : Promise.resolve());
 }
 
 function escrowKeyOf(bundle: EscrowBundle): EscrowKey {
   return { keyId: escrowKeyId(bundle), publicKey: escrowPublicKey(bundle), bundle };
 }
 
-/** The user accepted `change` on this device: the pin moves to the offered bundle. */
-export function acceptEscrowChange(pin: EscrowPin, change: EscrowChange): Promise<void> {
-  return pin.save(change.offered);
+/** The user accepted `change` on this device: the pin moves to the offered bundle, and the acceptance is recorded with its hash. */
+export async function acceptEscrowChange(pin: EscrowPin, change: EscrowChange): Promise<void> {
+  await pin.save(change.offered);
+  await pin.saveAccepted(sha256(encodeEscrowBundle(change.offered)));
 }
 
 /** The user declined `change` on this device: the pin stays, and the prompt opens by itself again only for another bundle. */

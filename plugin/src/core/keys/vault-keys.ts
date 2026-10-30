@@ -24,8 +24,8 @@ import type { MembershipService } from "../../gen/vaultsync/v1/membership_pb";
 import { KeyRecipientKind, type EpochRecordSchema, type KeySlotSchema, type NextEpochSchema, type VaultKeyService } from "../../gen/vaultsync/v1/vault_key_pb";
 import { DecryptError, generateKey } from "../e2ee/e2ee";
 import { KeyCommitmentError, keyCommitment, openKeySlot, sealKeySlot, verifyKeyCommitment } from "../e2ee/keyslot";
-import { EntryType, epochRecipients, escrowPayload, idPayload, replayLog, signEpochRecord, type Entry, type LogState } from "../e2ee/memberlog";
-import { escrowEqual, escrowReachable, type EscrowBundle } from "../e2ee/identity";
+import { EntryType, epochRecipients, escrowPayload, escrowResetPayload, idPayload, replayLog, signEpochRecord, type Entry, type LogState } from "../e2ee/memberlog";
+import { escrowEqual, escrowKeyId, escrowPublicKey, escrowReachable, type EscrowBundle } from "../e2ee/identity";
 import { nextEntry, toLogEntry } from "./member-log";
 import type { UserKeyPair } from "./user-key";
 import { epochRecordMessage, NO_PREVIOUS_COMMITMENT, verifyEpochs } from "./verified-epochs";
@@ -84,8 +84,14 @@ export interface EscrowRecipient {
   keyId: string;
   /** The hybrid ML-KEM-768 + X25519 public key (1216 bytes). */
   publicKey: Uint8Array;
-  /** The pinned escrow bundle naming this key, which the vault's log must name too. */
+  /** The escrow bundle this device pinned, naming this key. */
   bundle?: EscrowBundle;
+  /**
+   * Whether an owner device adopts the pinned bundle with an escrow reset
+   * entry: the pin is the server's escrow chain head, as read in the same
+   * sync, and the user accepted it in the escrow reset prompt.
+   */
+  adopt?: boolean;
 }
 
 /** A key slot this device refused: it did not open with the user key, or its key does not match the epoch's commitment. */
@@ -148,6 +154,8 @@ const MAX_PAGES = 10_000;
 const MAX_ADDED_SLOTS = 1000;
 /** RemoveMember attempts when another epoch change keeps winning the race. */
 const MAX_REMOVE_ATTEMPTS = 3;
+/** Attempts of a rotation that carries an escrow entry when another log append or rotation keeps winning the race. */
+const MAX_ESCROW_MOVE_ATTEMPTS = 3;
 
 type SlotInit = MessageInitShape<typeof KeySlotSchema>;
 type NextEpochInit = MessageInitShape<typeof NextEpochSchema>;
@@ -155,11 +163,16 @@ type EpochRecordInit = MessageInitShape<typeof EpochRecordSchema>;
 
 /** Whether `error` is the server's refusal of a stale expected_epoch: another epoch change won. */
 export function isEpochNotCurrent(error: unknown): boolean {
-  return (
-    error instanceof ConnectError &&
-    error.code === Code.FailedPrecondition &&
-    error.findDetails(ErrorDetailSchema).some((detail) => detail.reason === ErrorReason.EPOCH_NOT_CURRENT)
-  );
+  return failedPrecondition(error, ErrorReason.EPOCH_NOT_CURRENT);
+}
+
+/** Whether `error` is the server's refusal of an escrow bundle that is not its escrow chain's head. */
+export function isEscrowNotCurrent(error: unknown): boolean {
+  return failedPrecondition(error, ErrorReason.ESCROW_NOT_CURRENT);
+}
+
+function failedPrecondition(error: unknown, reason: ErrorReason): boolean {
+  return error instanceof ConnectError && error.code === Code.FailedPrecondition && error.findDetails(ErrorDetailSchema).some((detail) => detail.reason === reason);
 }
 
 interface EpochView {
@@ -171,6 +184,8 @@ interface EpochView {
   log: Entry[];
   /** The membership after the verified log's last entry. */
   head: LogState;
+  /** The membership after each entry of the verified log. */
+  states: LogState[];
 }
 
 export class VaultKeyManager {
@@ -218,10 +233,21 @@ export class VaultKeyManager {
    * epoch first, adopts that one instead of creating another.
    */
   async sync(): Promise<VaultKeyState> {
-    const view = await this.read();
-    if (this.options.owner && view.rotationPending) return this.rotateFrom(view);
+    let view = await this.read();
+    let rotated = false;
+    if (this.options.owner && view.rotationPending) {
+      // A removal or leave rotation runs first and never waits for an adoption.
+      const pending = await this.rotateFrom(view, false);
+      view = await this.read();
+      if (this.escrowMove(view, true) === undefined) return pending;
+      rotated = pending.rotated;
+    }
+    if (this.options.owner && this.escrowMove(view, true) !== undefined) {
+      const adopted = await this.rotateFrom(view, true);
+      return { ...adopted, rotated: adopted.rotated || rotated };
+    }
     const granted = this.options.owner ? await this.grantMissing(view.head) : 0;
-    return this.state(view, false, granted);
+    return this.state(view, rotated, granted);
   }
 
   /**
@@ -237,23 +263,41 @@ export class VaultKeyManager {
    */
   async rotate(): Promise<VaultKeyState> {
     if (!this.options.owner) throw new Error("only an owner can rotate the vault key");
-    return this.rotateFrom(await this.read());
+    return this.rotateFrom(await this.read(), true);
   }
 
-  /** Creates the epoch after `view`'s current one, or adopts the one that won the race, then grants missing slots. */
-  private async rotateFrom(view: EpochView): Promise<VaultKeyState> {
+  /**
+   * Creates the epoch after `view`'s current one, or adopts the one that won
+   * the race, then grants missing slots. With `adopt`, the rotation also
+   * adopts an accepted escrow reset ({@link escrowMove}). A rotation that
+   * carries an escrow entry and loses to another log append or rotation is
+   * rebuilt on the winner's log and epoch; when the winner already moved the
+   * log to the pinned bundle, nothing is sent. An escrow entry the server
+   * refuses as not naming its escrow chain's head is not sent again in this
+   * sync.
+   */
+  private async rotateFrom(first: EpochView, adopt: boolean): Promise<VaultKeyState> {
     const { vaultId } = this.options;
-    const move = this.escrowMove(view);
-    const at = move === undefined ? view.head : this.replay([...view.log, move]).at(-1);
-    if (at === undefined) throw new Error("the membership log is empty");
-    const escrowEntry = move === undefined ? {} : { escrowEntry: toLogEntry(move) };
+    let view = first;
     let rotated = false;
-    try {
-      await this.createEpoch(view, at, (nextEpoch, record) => this.options.keys.rotateEpoch({ vaultId, nextEpoch, record, ...escrowEntry }));
-      rotated = true;
-    } catch (error) {
-      // Another owner device won the rotation: adopt its epoch.
-      if (!isEpochNotCurrent(error)) throw error;
+    for (let attempt = 1; ; attempt++) {
+      const move = this.escrowMove(view, adopt);
+      if (move === undefined && attempt > 1) break;
+      const at = move === undefined ? view.head : this.replay([...view.log, move]).at(-1);
+      if (at === undefined) throw new Error("the membership log is empty");
+      const escrowEntry = move === undefined ? {} : { escrowEntry: toLogEntry(move) };
+      try {
+        await this.createEpoch(view, at, (nextEpoch, record) => this.options.keys.rotateEpoch({ vaultId, nextEpoch, record, ...escrowEntry }));
+        rotated = true;
+        break;
+      } catch (error) {
+        if (move !== undefined && isEscrowNotCurrent(error)) break;
+        const raced = isEpochNotCurrent(error) || (move !== undefined && error instanceof ConnectError && error.code === Code.Aborted);
+        if (!raced) throw error;
+        // Another owner device won the rotation: adopt its epoch.
+        if (move === undefined || attempt >= MAX_ESCROW_MOVE_ATTEMPTS) break;
+        view = await this.read();
+      }
     }
     const after = await this.read();
     const granted = await this.grantMissing(after.head);
@@ -269,13 +313,22 @@ export class VaultKeyManager {
    * names none, or names a key the chain does not link to it, which
    * {@link buildEpoch} refuses.
    */
-  private escrowMove(view: EpochView): Entry | undefined {
+  private escrowMove(view: EpochView, adopt: boolean): Entry | undefined {
     const { vaultId, userKey } = this.options;
-    const pinned = this.options.escrow?.bundle;
+    const escrow = this.options.escrow;
+    const pinned = escrow?.bundle;
     const named = view.head.escrow;
     if (named === undefined || pinned === undefined || escrowEqual(named, pinned)) return undefined;
-    if (escrowReachable(named, pinned, this.options.trust.escrowRotations ?? []) !== undefined) return undefined;
-    return nextEntry(vaultId, view.log, { type: EntryType.escrow, payload: escrowPayload(pinned), signSeeds: [userKey.signSeed] });
+    if (escrowReachable(named, pinned, this.options.trust.escrowRotations ?? []) === undefined) {
+      return nextEntry(vaultId, view.log, { type: EntryType.escrow, payload: escrowPayload(pinned), signSeeds: [userKey.signSeed] });
+    }
+    // An escrow reset the user accepted (docs/design/encryption.md, "When
+    // the owner's device adopts"): only while the pin is the server's head,
+    // and at most once for each vault and accepted bundle.
+    if (!adopt || escrow?.adopt !== true) return undefined;
+    if (view.states.some((state) => state.lastEscrow !== undefined && escrowEqual(state.lastEscrow, pinned))) return undefined;
+    const last = view.head.lastEscrow ?? named;
+    return nextEntry(vaultId, view.log, { type: EntryType.escrowReset, payload: escrowResetPayload(last, pinned), signSeeds: [userKey.signSeed] });
   }
 
   /** Replays `log` as this device verifies it, following the published escrow chain. */
@@ -299,7 +352,7 @@ export class VaultKeyManager {
     if (!this.options.owner) throw new Error("only an owner can remove a member");
     const { vaultId, userKey } = this.options;
     const first = await this.read();
-    if (this.escrowMove(first) !== undefined) await this.rotateFrom(first);
+    if (this.escrowMove(first, false) !== undefined) await this.rotateFrom(first, false);
     for (let attempt = 1; ; attempt++) {
       const view = await this.read();
       const { entries: log } = await readMemberLog(this.options.trust, vaultId);
@@ -429,7 +482,7 @@ export class VaultKeyManager {
     }
     if (changed) await this.options.store.save(keys);
     this.refusedEpochs = new Set(refused.map((error) => error.epoch));
-    return { currentEpoch, rotationPending, commitments, refused, log, head };
+    return { currentEpoch, rotationPending, commitments, refused, log, head, states };
   }
 
   private state(view: EpochView, rotated: boolean, granted: number): VaultKeyState {
@@ -467,7 +520,7 @@ export interface BuildEpochOptions {
   expected: number;
   /** The current epoch's commitment ({@link NO_PREVIOUS_COMMITMENT} for the first). */
   prevCommitment: Uint8Array;
-  /** The pinned escrow key, which the log at `at` must name if it names one. */
+  /** The pinned escrow key: an escrowed vault is not rotated without one. The escrow slot is wrapped to the bundle the log names at `at`. */
   escrow: EscrowRecipient | undefined;
 }
 
@@ -499,15 +552,16 @@ export async function buildEpoch(options: BuildEpochOptions): Promise<BuiltEpoch
     });
   }
   if (at.escrow !== undefined) {
-    const { escrow } = options;
-    if (escrow?.bundle === undefined || !escrowEqual(escrow.bundle, at.escrow)) {
-      throw new Error("the vault's membership log names another escrow key than the one this device pinned, so it does not rotate");
-    }
+    // The escrow slot goes to the bundle the verified log names at `at`
+    // (docs/design/encryption.md, "Until the owner adopts"), never to a key
+    // the server adds or swaps.
+    if (options.escrow === undefined) throw new Error("the server published no escrow key, so this device does not rotate an escrowed vault");
+    const keyId = escrowKeyId(at.escrow);
     slots.push({
       epoch,
       recipientKind: KeyRecipientKind.ESCROW,
-      recipientId: escrow.keyId,
-      wrappedKey: await sealKeySlot(escrow.publicKey, epochKey, { vaultId, epoch, recipientKind: "escrow", recipientId: escrow.keyId }),
+      recipientId: keyId,
+      wrappedKey: await sealKeySlot(escrowPublicKey(at.escrow), epochKey, { vaultId, epoch, recipientKind: "escrow", recipientId: keyId }),
     });
   }
   const commitment = keyCommitment(epochKey, vaultId, epoch);

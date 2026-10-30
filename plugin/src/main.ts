@@ -31,6 +31,7 @@ import {
   deleteVault,
   joinVault,
   leaveVault,
+  escrowResetText,
   loadSharing,
   removeMember,
   reencryptVaultHistory,
@@ -501,14 +502,22 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
    * an owner, the user's role otherwise, and in an encrypted vault the
    * fingerprints from its verified membership log.
    */
-  loadSharing(): Promise<Sharing> {
-    return loadSharing(
-      this.protocolClient(),
-      this.sharedVaultId(),
-      formatDate,
-      () => this.logTrust(),
-      () => this.escrowPin().load(),
-    );
+  async loadSharing(): Promise<Sharing> {
+    const vaultId = this.sharedVaultId();
+    const sharing = await loadSharing(this.protocolClient(), vaultId, formatDate, () => this.logTrust(), () => this.escrowPin().load());
+    await this.noticeEscrowReset(vaultId, sharing);
+    return sharing;
+  }
+
+  /** Shows once for each owner's escrow reset entry the notice that an owner accepted a new escrow key; it does not stop sync. */
+  private async noticeEscrowReset(vaultId: string, sharing: Sharing): Promise<void> {
+    const reset = sharing.kind === "not-member" || sharing.keys?.kind !== "verified" ? undefined : sharing.keys.escrowReset;
+    if (reset === undefined) return;
+    const key = `${vaultId}/${String(reset.seq)}`;
+    if (this.data.escrowResetsNoticed?.includes(key) === true) return;
+    new Notice(`Vault Sync: ${escrowResetText(reset)}`, 0);
+    this.data.escrowResetsNoticed = [...(this.data.escrowResetsNoticed ?? []), key];
+    await this.saveSettings();
   }
 
   /** What this device verifies an encrypted vault's membership log with: the unlocked user key (an error while it is locked). */

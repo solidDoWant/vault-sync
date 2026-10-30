@@ -18,7 +18,8 @@ import { MemoryEpochKeyStore } from "../core/keys/vault-keys";
 import { MemoryVerifiedLogStore, type LogTrust } from "../core/keys/verified-log";
 import { addAnchor } from "../core/keys/anchor-list";
 import { bundleOf, encodeEscrowBundle, escrowFingerprint, fingerprint, formatFingerprint, signPublicKey } from "../core/e2ee/identity";
-import { entryHash } from "../core/e2ee/memberlog";
+import { entryHash, EntryType, escrowResetPayload } from "../core/e2ee/memberlog";
+import { nextEntry } from "../core/keys/member-log";
 import {
   AlreadyMemberError,
   createInvitation,
@@ -37,6 +38,7 @@ import {
   conversionConfirmable,
   conversionMemberText,
   vaultFingerprint,
+  escrowResetText,
   vaultKeysText,
   newVaultEscrowText,
   type Sharing,
@@ -427,7 +429,7 @@ describe("key fingerprints in an encrypted vault", () => {
       membership: { ...base.membership, listInvitations: () => Promise.resolve(create(ListInvitationsResponseSchema, {})) },
     };
     const trust = (): Promise<LogTrust> => Promise.resolve({ userKey: callerKey, log: client.vaultKeys, anchors: client.userKeys, verifiedLogs: new MemoryVerifiedLogStore() });
-    return { id: vault.id, client, trust, owner, genesis: genesisHashOf(server) };
+    return { id: vault.id, client, trust, owner, server, genesis: genesisHashOf(server) };
   }
 
   function genesisHashOf(server: MemoryVaultKeyServer): Uint8Array {
@@ -488,6 +490,26 @@ describe("key fingerprints in an encrypted vault", () => {
     const text = sharing.keys === undefined ? "" : vaultKeysText(sharing.keys);
     expect(text).toContain(`Escrow key fingerprint of this vault: ${shownEscrowFingerprint(escrow)}.`);
     expect(text).toContain(`Escrow key fingerprint pinned on this device: ${shownEscrowFingerprint(pinned)}.`);
+  });
+
+  it("shows a member the notice that an owner accepted a new escrow key, with both fingerprints and the owner", async () => {
+    const old = escrowKey(5);
+    const adopted = escrowKey(6);
+    const { id, client, trust, owner, server } = await encryptedVault("editor", old.recipient);
+    server.log.push(nextEntry(id, server.log, { type: EntryType.escrowReset, payload: escrowResetPayload(old.recipient.bundle, adopted.recipient.bundle), signSeeds: [owner.signSeed] }));
+
+    const sharing = await loadSharing(client, id, formatDate, trust, () => Promise.resolve(old.recipient.bundle));
+
+    const keys = sharing.kind === "member" ? sharing.keys : undefined;
+    const reset = keys?.kind === "verified" ? keys.escrowReset : undefined;
+    expect(reset).toMatchObject({ seq: server.log.length, previous: shownEscrowFingerprint(old), adopted: shownEscrowFingerprint(adopted) });
+    if (reset === undefined) throw new Error("no escrow reset");
+    const text = escrowResetText(reset);
+    expect(text).toContain("An owner of this vault accepted a new escrow key");
+    expect(text).toContain(shownEscrowFingerprint(old));
+    expect(text).toContain(shownEscrowFingerprint(adopted));
+    expect(text).toContain(reset.owner);
+    expect(vaultKeysText(keys ?? { kind: "unavailable", reason: "" })).toContain(text);
   });
 
   it("shows no escrow fingerprint for a vault without escrow", async () => {

@@ -371,9 +371,11 @@ export class MemoryVaultKeyServer {
               this.checkRecord(nextEpoch, request.record, this.log, undefined);
             } else {
               // The escrow entry is appended with the epoch, whose record names it.
+              // An escrow entry (0x08), or an escrow reset entry (0x0A) that adopts a reset.
               const escrowEntry = request.escrowEntry;
               const previous = this.escrow;
-              const after = this.appendEntryChecked(escrowEntry, EntryType.escrow, () => true, () => {
+              const type = escrowEntry.type === EntryType.escrowReset ? EntryType.escrowReset : EntryType.escrow;
+              const after = this.appendEntryChecked(escrowEntry, type, () => true, () => {
                 const entry = fromLogEntry(this.vaultId, escrowEntry);
                 this.escrow = replayLog(this.vaultId, [...this.log, entry], this.replayOptions()).at(-1)?.escrow !== undefined;
                 try {
