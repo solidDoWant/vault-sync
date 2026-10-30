@@ -130,9 +130,9 @@ DEFAULT_CONFIG = {
         "reserved_slot": True,
     },
     "ci_auto_rerun": True,
-    # Deterministic jobs: a failure in one of these goes straight to the worker,
-    # because re-running cannot turn it green (only flaky test jobs are re-run).
-    "no_rerun_jobs": ["lint"],
+    # Jobs whose failures are almost always real: they go straight to the worker
+    # instead of costing a full CI re-run first (the e2e jobs are still re-run once).
+    "no_rerun_jobs": ["lint", "unit", "integration"],
     "failure_backoff_s": 120,
     "failure_backoff_max_s": 1800,
     "max_consecutive_failures": 3,
@@ -737,7 +737,7 @@ def build_plan(snap: Snapshot, state: dict, cfg: dict, holds: dict, now: dt.date
                             f"CI failed on PR #{pr.number} at {pr.head_sha[:10]} after auto-merge was armed"
                             f"{' and a re-run' if reruns.get('sha') == pr.head_sha else ''}. Failed jobs: {failed}. "
                             "If it is a flake, file it as a `bug` issue with the evidence and re-run the job; otherwise "
-                            "fix it and push (auto-merge is disarmed by your push rules).",
+                            "reproduce the failing tests locally (only those), fix them, and push once they pass (auto-merge is disarmed by your push rules).",
                             issue, pr.number, claims))
             elif pr.check == "success":
                 plan.notes.append(f"PR #{pr.number} armed, checks green, not merged (mergeStateStatus {pr.merge_state})")
@@ -768,8 +768,8 @@ def build_plan(snap: Snapshot, state: dict, cfg: dict, holds: dict, now: dt.date
                 failed = ", ".join(f"{f['name']} ({f['url']})" for f in pr.failed_runs) or "see the checks tab"
                 add(Job(worker_key, "issue-worker", 2, sort, "CI failed on the PR",
                         f"CI failed on your PR #{pr.number} at {pr.head_sha[:10]}. Failed jobs: {failed}. If it is a "
-                        "flake, file it as a `bug` issue with the evidence and re-run the job; otherwise fix it, push, "
-                        "and arm auto-merge on the new head.", issue, pr.number, claims))
+                        "flake, file it as a `bug` issue with the evidence and re-run the job; otherwise reproduce the "
+                        "failing tests locally (only those), fix them, push once they pass, and arm auto-merge on the new head.", issue, pr.number, claims))
             elif pr.check == "success" and worker_key not in running:
                 plan.arms.append((pr.number, pr.head_sha))
             else:

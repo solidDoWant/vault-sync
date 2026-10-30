@@ -100,15 +100,15 @@ class PlanTest(unittest.TestCase):
         self.assertIn(("PR #13", "CI pending"), plan.skipped)
 
     def test_armed_ci_failure_reruns_once_then_worker(self):
-        failed = [{"name": "unit", "url": "https://x/1", "run_id": 99}]
+        failed = [{"name": "plugin-e2e (ubuntu-latest)", "url": "https://x/1", "run_id": 99}]
         sn = snap([issue(2, status="status:in-review")], [pr(10, 2, check="failure", auto=True, failed=failed)])
         plan = plan_for(sn)
-        self.assertEqual(plan.reruns, [(10, [99], ["unit"])])
+        self.assertEqual(plan.reruns, [(10, [99], ["plugin-e2e (ubuntu-latest)"])])
         self.assertEqual(keys(plan), [])
-        plan = plan_for(sn, {"ci_reruns": {"10": {"sha": "h" * 40, "jobs": ["unit"]}}})
+        plan = plan_for(sn, {"ci_reruns": {"10": {"sha": "h" * 40, "jobs": ["plugin-e2e (ubuntu-latest)"]}}})
         self.assertEqual(plan.reruns, [])
         self.assertEqual(keys(plan), ["worker:2"])
-        self.assertIn("unit (https://x/1)", plan.jobs[0].trigger)
+        self.assertIn("plugin-e2e (ubuntu-latest) (https://x/1)", plan.jobs[0].trigger)
 
     def test_armed_lint_failure_goes_to_the_worker_without_a_rerun(self):
         failed = [{"name": "lint", "url": "https://x/1", "run_id": 99}, {"name": "unit", "url": "https://x/2", "run_id": 99}]
@@ -116,6 +116,10 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(plan.reruns, [])
         self.assertEqual(keys(plan), ["worker:2"])
         self.assertIn("lint (https://x/1)", plan.jobs[0].trigger)
+        self.assertIn("reproduce the failing tests locally", plan.jobs[0].trigger)
+        failed = [{"name": "integration", "url": "https://x/3", "run_id": 98}]
+        plan = plan_for(snap([issue(2, status="status:in-review")], [pr(10, 2, check="failure", auto=True, failed=failed)]))
+        self.assertEqual((plan.reruns, keys(plan)), ([], ["worker:2"]))
 
     def test_red_unarmed_pr_goes_to_reviewer(self):
         plan = plan_for(snap([issue(2, status="status:in-review")], [pr(10, 2, check="failure")]))
