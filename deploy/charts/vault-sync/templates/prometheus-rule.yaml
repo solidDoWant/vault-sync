@@ -1,5 +1,5 @@
 {{/* The PrometheusRule (config.alerts.prometheusRule.enabled), rendered from
-   the packaged rule file alerts/vault-sync.rules.yaml (docs/alerts.md). */}}
+   the packaged rule file alerts/vault-sync.rules.yaml (docs/admin/alerts.md). */}}
 {{- $alerts := .Values.config.alerts | default dict -}}
 {{- $prometheusRule := $alerts.prometheusRule | default dict -}}
 {{- $overrides := $alerts.rules | default dict -}}
@@ -15,7 +15,7 @@
 {{- end -}}
 {{- range $name, $_ := $overrides -}}
   {{- if not (hasKey $known $name) -}}
-    {{- fail (printf "config.alerts.rules.%s: no such alert (see docs/alerts.md)" $name) -}}
+    {{- fail (printf "config.alerts.rules.%s: no such alert (see docs/admin/alerts.md)" $name) -}}
   {{- end -}}
 {{- end -}}
 

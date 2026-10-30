@@ -353,7 +353,7 @@ The route has two rules, both to port `http`:
 | `config.grafana.dashboards.configMaps.annotations` | `{}` | Annotations of each ConfigMap, for example the sidecar's `folderAnnotation` to choose a folder. |
 ### Alerts
 
-`config.alerts` renders the packaged alerting rules (`deploy/charts/vault-sync/alerts/vault-sync.rules.yaml`) as a prometheus-operator `PrometheusRule` (`monitoring.coreos.com/v1`). [alerts.md](alerts.md) lists every alert with its threshold, the reasoning behind it, and a runbook section saying what to check and what to do; each alert's `runbook_url` points there. To enable the rules:
+`config.alerts` renders the packaged alerting rules (`deploy/charts/vault-sync/alerts/vault-sync.rules.yaml`) as a prometheus-operator `PrometheusRule` (`monitoring.coreos.com/v1`). [admin/alerts.md](admin/alerts.md) lists every alert with its threshold, the reasoning behind it, and a runbook section saying what to check and what to do; each alert's `runbook_url` points there. To enable the rules:
 
 ```yaml
 config:
@@ -377,8 +377,8 @@ The service-wide alerts (retention, export, backlogs) read the service-wide metr
 | `config.alerts.prometheusRule.annotations` | `{}` | Annotations of the PrometheusRule. |
 | `config.alerts.prometheusRule.selector.namespace` | `null` | The `namespace` matcher added to every expression. `null` uses the release namespace; an empty string leaves the matcher out. |
 | `config.alerts.prometheusRule.selector.job` | `null` | The `job` matcher added to every expression that reads vault-sync's own metrics. `null` uses the Service name (the release name, the ServiceMonitor's `job` label); an empty string leaves the matcher out. The kube-state-metrics alerts match the namespace and the Deployment name instead. |
-| `config.alerts.runbookUrlBase` | `https://github.com/solidDoWant/vault-sync/blob/master/docs/alerts.md` | Each alert's `runbook_url` annotation is this followed by `#` and the alert's name in lower case. Empty leaves `runbook_url` out. |
-| `config.alerts.rules` | `{}` | Per-alert overrides keyed by alert name, each with `enabled`, `for` (a Prometheus duration), `severity` (`critical` or `warning`) and `threshold` (for alerts that have one; see [alerts.md](alerts.md)). A disabled alert is dropped from the rendered rules, and an unknown name fails the render. `VaultSyncNoReplicaReady` and `VaultSyncReplicasUnavailable` need kube-state-metrics and are off unless enabled here; `VaultSyncExportNotSucceeding` is on while `config.export.enabled`. |
+| `config.alerts.runbookUrlBase` | `https://github.com/solidDoWant/vault-sync/blob/master/docs/admin/alerts.md` | Each alert's `runbook_url` annotation is this followed by `#` and the alert's name in lower case. Empty leaves `runbook_url` out. |
+| `config.alerts.rules` | `{}` | Per-alert overrides keyed by alert name, each with `enabled`, `for` (a Prometheus duration), `severity` (`critical` or `warning`) and `threshold` (for alerts that have one; see [admin/alerts.md](admin/alerts.md)). A disabled alert is dropped from the rendered rules, and an unknown name fails the render. `VaultSyncNoReplicaReady` and `VaultSyncReplicasUnavailable` need kube-state-metrics and are off unless enabled here; `VaultSyncExportNotSucceeding` is on while `config.export.enabled`. |
 
 For example, to page on slow syncs only after 30 minutes above 5 seconds, and to turn on the kube-state-metrics alerts:
 

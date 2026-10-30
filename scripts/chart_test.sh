@@ -28,7 +28,8 @@
 #   - the PrometheusRule (config.alerts) renders only on request, with its
 #     matchers, per-alert overrides and runbook links; promtool accepts it and
 #     its unit tests (ci/alerts-test.yaml) pass; every metric it reads is in
-#     docs/configuration.md and every alert has a docs/alerts.md section;
+#     docs/configuration.md and every alert has a docs/admin/alerts.md section
+#     (and a heading in the docs/alerts.md stub);
 #   - every VAULT_SYNC_* variable in docs/configuration.md can be set through
 #     the chart, and every config value is documented in docs/deployment.md.
 #
@@ -494,8 +495,8 @@ render --set config.alerts.prometheusRule.enabled=true --set-string config.alert
 check "an enabled PrometheusRule is named after the release, in its namespace, with the extra labels and annotations" \
 	"$prometheus_rules | length == 1 and .[0].apiVersion == \"monitoring.coreos.com/v1\" and .[0].metadata.name == \"$release\" and .[0].metadata.namespace == \"sync\" and .[0].metadata.labels.release == \"prometheus\" and .[0].metadata.annotations.team == \"sync\""
 check "every alert has a severity of critical or warning" "$alert_rules | length > 0 and all(.labels.severity == \"critical\" or .labels.severity == \"warning\")"
-check "every alert's runbook_url is the docs/alerts.md anchor of its name" \
-	"$alert_rules | all(.annotations.runbook_url == \"https://github.com/solidDoWant/vault-sync/blob/master/docs/alerts.md#\" + (.alert | ascii_downcase))"
+check "every alert's runbook_url is the docs/admin/alerts.md anchor of its name" \
+	"$alert_rules | all(.annotations.runbook_url == \"https://github.com/solidDoWant/vault-sync/blob/master/docs/admin/alerts.md#\" + (.alert | ascii_downcase))"
 check "every vault_sync expression matches the release's namespace and job" \
 	"$alert_rules | map(select(.expr | test(\"vault_sync_\"))) | length > 0 and all(.expr | [scan(\"vault_sync_[a-z0-9_]+[{][^}]*[}]\")] | length > 0 and all(test(\"namespace=\\\"sync\\\", job=\\\"$release\\\"\")))"
 check "kube-state-metrics alerts are off by default" \
@@ -537,7 +538,9 @@ rejects "values.schema.json rejects a bad for duration" "for" \
 
 # Every metric an expression reads is in docs/configuration.md's Metrics
 # tables (histogram series by their base name), and every alert has a
-# runbook section in docs/alerts.md.
+# runbook section in docs/admin/alerts.md. The old docs/alerts.md keeps a
+# heading per alert, so runbook_url links of released charts still land on
+# the alert.
 documented_metrics="$(grep -oE '^\| `vault_sync_[a-z0-9_]+`' "$repo_root/docs/configuration.md" | tr -d '|` ' | sort -u)"
 for metric in $(grep -oE 'vault_sync_[a-z0-9_]+' "$rules_file" | sed -E 's/_(bucket|sum|count)$//' | sort -u); do
 	if grep -qxF -- "$metric" <<<"$documented_metrics"; then
@@ -547,11 +550,13 @@ for metric in $(grep -oE 'vault_sync_[a-z0-9_]+' "$rules_file" | sed -E 's/_(buc
 	fi
 done
 for name in $all_alerts; do
-	if grep -qxF -- "### $name" "$repo_root/docs/alerts.md"; then
-		pass "docs/alerts.md has a runbook section for $name"
-	else
-		fail "docs/alerts.md has a runbook section for $name"
-	fi
+	for page in docs/admin/alerts.md docs/alerts.md; do
+		if grep -qxF -- "### $name" "$repo_root/$page"; then
+			pass "$page has a section for $name"
+		else
+			fail "$page has a section for $name"
+		fi
+	done
 done
 
 # promtool: the rendered rules are valid (with and without matchers), and
