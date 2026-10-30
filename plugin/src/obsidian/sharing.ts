@@ -4,7 +4,7 @@ import { timestampDate } from "@bufbuild/protobuf/wkt";
 import type { Invitation, Member } from "../gen/vaultsync/v1/membership_pb";
 import { VaultRole, type Vault } from "../gen/vaultsync/v1/types_pb";
 import type { ProtocolClient } from "../core/protocol/client";
-import { createEncryptedInvitation, leaveEncryptedVault, revokeEncryptedInvitation, setEncryptedMemberRole, type EncryptedMembershipContext } from "../core/keys/encrypted-membership";
+import { createEncryptedInvitation, leaveEncryptedVault, parseInviteLink, redeemEncryptedInvitation, revokeEncryptedInvitation, setEncryptedMemberRole, type EncryptedMembershipContext, type RedeemContext } from "../core/keys/encrypted-membership";
 import type { VaultKeyManager } from "../core/keys/vault-keys";
 import { listRemoteVaults } from "./controller";
 import { isolated, shownName } from "./display-text";
@@ -237,14 +237,20 @@ export class AlreadyMemberError extends Error {
  * user joined. An empty code is refused without a request. The server
  * answers every unusable code with one NOT_FOUND, and so does this
  * (InviteCodeError); an existing membership is AlreadyMemberError. The code
- * is never part of an error.
+ * is never part of an error. An encrypted vault's link `<id>.<secret>.<anchor>`
+ * is redeemed with the user's key from `redeemer`, which wraps the vault's
+ * keys to it and signs the redeem entry.
  */
-export async function joinVault(client: ProtocolClient, code: string): Promise<Vault> {
+export async function joinVault(client: ProtocolClient, code: string, redeemer?: () => Promise<RedeemContext>): Promise<Vault> {
   const trimmed = code.trim();
   if (trimmed === "") throw new InviteCodeError();
+  const link = parseInviteLink(trimmed);
   let vault: Vault | undefined;
   try {
-    vault = (await client.membership.redeemInvitation({ code: trimmed })).vault;
+    if (link !== undefined) {
+      if (redeemer === undefined) throw new Error("this device cannot join an end-to-end encrypted vault");
+      vault = await redeemEncryptedInvitation(await redeemer(), link);
+    } else vault = (await client.membership.redeemInvitation({ code: trimmed })).vault;
   } catch (error) {
     if (error instanceof ConnectError && error.code === Code.NotFound) throw new InviteCodeError();
     if (error instanceof ConnectError && error.code === Code.AlreadyExists) throw new AlreadyMemberError();

@@ -494,7 +494,13 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
 
   /** Redeems an invite code; resolves with the vault joined, which the caller then connects. */
   joinVault(code: string): Promise<Vault> {
-    return joinVault(this.protocolClient(), code);
+    const client = this.protocolClient();
+    return joinVault(client, code, async () => ({
+      userKey: await unlockedUserKey(this.encryptionOptions()),
+      membership: client.membership,
+      log: client.vaultKeys,
+      anchors: client.userKeys,
+    }));
   }
 
   /** The connected vault's id, for the Sharing section, which is shown only while one is connected. */

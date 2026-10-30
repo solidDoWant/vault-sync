@@ -23,7 +23,10 @@ import { VaultService } from "../../gen/vaultsync/v1/vault_pb";
 import { KeyRecipientKind, VaultKeyService, type NextEpoch } from "../../gen/vaultsync/v1/vault_key_pb";
 import type { LogEntry } from "../../gen/vaultsync/v1/types_pb";
 import { equalBytes, randomBytes } from "@noble/ciphers/utils.js";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { base64urlnopad } from "@scure/base";
 import { bundleOf, invitationKeyPair, inviteSignSeed, signPublicKey, uuidString } from "../e2ee/identity";
+import { uuidBytes } from "../e2ee/keyslot";
 import { EntryType, LogError, genesisPayload, idPayload, invitePayload, redeemPayload, replayLog, type Entry, type LogState } from "../e2ee/memberlog";
 import { logRole } from "./encrypted-membership";
 import { fromLogEntry, genesisEntry, nextEntry, toLogEntry } from "./member-log";
@@ -234,7 +237,7 @@ export class MemoryVaultKeyServer {
         });
         service(VaultKeyService, {
           listLogEntries: (request) => {
-            this.member(userId, request.vaultId);
+            if (!(request.vaultId === this.vaultId && this.members.has(userId))) this.invitationHeldBy(request.invitationId);
             const { items, next } = this.page(this.log, request.pageToken);
             return { entries: items.map(toLogEntry), nextPageToken: next };
           },
@@ -364,6 +367,39 @@ export class MemoryVaultKeyServer {
             member.role = request.role;
             return { member: { userId: request.userId, role: request.role } };
           },
+          getInvitationSlots: (request) => {
+            const [invitationId, invitation] = this.invitationHeldBy(request.id);
+            return {
+              invitationId,
+              vaultId: this.vaultId,
+              role: invitation.role,
+              slots: [...invitation.slots].sort((a, b) => a.epoch - b.epoch).map((slot) => ({ epoch: slot.epoch, recipientKind: slot.recipientKind, recipientId: slot.recipientId, wrappedKey: slot.wrappedKey, creatorUserId: slot.creator })),
+              epochs: this.epochs.map((epoch) => ({ epoch: epoch.epoch, commitment: epoch.commitment, creatorUserId: epoch.creator })),
+              inviteAnchor: invitation.anchor,
+            };
+          },
+          redeemInvitation: (request) => {
+            const [invitationId, invitation] = this.invitationHeldBy(request.code.split(".")[0] ?? "");
+            if (this.members.has(userId)) throw new ConnectError("already a member of this vault", Code.AlreadyExists);
+            const publicKey = this.userKeys.get(userId);
+            if (publicKey === undefined) throw new ConnectError("the caller has no user key", Code.InvalidArgument);
+            this.appendEntryChecked(
+              request.logEntry,
+              EntryType.redeem,
+              (entry, before, after) => equalBytes(entry.payload.subarray(0, 16), uuidBytes("invitation id", invitationId)) && !before.members.has(userId) && after.members.get(userId)?.role === logRole(invitation.role),
+              () => {
+                // The caller's own slots: exactly one per epoch.
+                const epochs = request.slots.map((slot) => slot.epoch).sort((a, b) => a - b);
+                if (epochs.length !== this.currentEpoch || epochs.some((epoch, index) => epoch !== index + 1)) throw new ConnectError("one slot per epoch", Code.InvalidArgument);
+                if (request.slots.some((slot) => slot.recipientKind !== KeyRecipientKind.USER || slot.recipientId !== userId)) throw new ConnectError("slots wrapped to the caller only", Code.InvalidArgument);
+                for (const slot of request.slots) checkWrappedKey(slot.wrappedKey);
+              },
+            );
+            for (const slot of request.slots) this.slots.push({ epoch: slot.epoch, recipientKind: KeyRecipientKind.USER, recipientId: userId, wrappedKey: slot.wrappedKey, creator: userId });
+            this.addMember(userId, invitation.role, publicKey);
+            this.invitations.delete(invitationId);
+            return { vault: { id: this.vaultId, role: invitation.role, encryption: VaultEncryption.E2EE } };
+          },
           leaveVault: (request) => {
             this.member(userId, request.vaultId);
             this.appendEntry(request.logEntry, EntryType.leave, (_entry, before, after) => before.members.has(userId) && !after.members.has(userId));
@@ -381,6 +417,20 @@ export class MemoryVaultKeyServer {
     const member = vaultId === this.vaultId ? this.members.get(userId) : undefined;
     if (member === undefined) throw new ConnectError("vault not found", Code.NotFound);
     return member;
+  }
+
+  /** The pending invitation whose code's `<id>` is `id`; NOT_FOUND for any other id, as the server answers. */
+  private invitationHeldBy(id: string): [string, { idHash: Uint8Array; role: VaultRole; slots: StoredSlot[]; anchor: Uint8Array }] {
+    let raw: Uint8Array | undefined;
+    try {
+      raw = base64urlnopad.decode(id);
+    } catch {
+      raw = undefined;
+    }
+    const hash = raw?.length === 16 ? sha256(raw) : undefined;
+    const found = hash === undefined ? undefined : [...this.invitations].find(([, invitation]) => equalBytes(invitation.idHash, hash));
+    if (found === undefined) throw new ConnectError("invitation not found", Code.NotFound);
+    return found;
   }
 
   private owner(userId: string, vaultId: string): void {

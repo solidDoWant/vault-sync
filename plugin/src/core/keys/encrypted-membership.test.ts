@@ -15,11 +15,15 @@ import {
 import { openKeySlot, verifyKeyCommitment } from "../e2ee/keyslot";
 import { Role, entryHash, replayLog } from "../e2ee/memberlog";
 import { createProtocolClient } from "../protocol/client";
+import { readAnchorList } from "./anchor-list";
 import { createEncryptedVault } from "./encrypted-vault";
 import {
   createEncryptedInvitation,
   leaveEncryptedVault,
+  parseInviteLink,
+  redeemEncryptedInvitation,
   revokeEncryptedInvitation,
+  type RedeemContext,
   setEncryptedMemberRole,
   type EncryptedMembershipContext,
 } from "./encrypted-membership";
@@ -80,11 +84,37 @@ async function aliceVault() {
       log: own.vaultKeys,
     };
   };
+  const redeemer = (key: UserKeyPair): RedeemContext => {
+    const own = createProtocolClient({
+      transport: server.transport(key.userId),
+    });
+    return {
+      userKey: key,
+      membership: own.membership,
+      log: own.vaultKeys,
+      anchors: own.userKeys,
+    };
+  };
+  const keyManager = (key: UserKeyPair) => {
+    const own = createProtocolClient({
+      transport: server.transport(key.userId),
+    });
+    return new VaultKeyManager({
+      vaultId: vault.id,
+      userKey: key,
+      owner: false,
+      keys: own.vaultKeys,
+      membership: own.membership,
+      store: new MemoryEpochKeyStore(),
+    });
+  };
   return {
     server,
     vault,
     manager,
     context,
+    redeemer,
+    keyManager,
     epochKey: (epoch: number) => manager.epochKey(epoch),
   };
 }
@@ -158,8 +188,19 @@ describe("membership changes of an encrypted vault", () => {
     }).not.toThrow();
   });
 
-  it("is accepted for invite, revoke, role change, removal and leave, and the log replays to the expected members", async () => {
-    const { server, vault, manager, context, epochKey } = await aliceVault();
+  it("is accepted for invite, revoke, redeem, role change, removal and leave, and the log replays to the expected members", async () => {
+    const { server, vault, manager, context, redeemer, epochKey } =
+      await aliceVault();
+    const invite = async (role: VaultRole) => {
+      const created = await createEncryptedInvitation(
+        { ...context(alice), currentEpoch: 1, epochKey },
+        role,
+        0,
+      );
+      const link = parseInviteLink(created.link);
+      if (link === undefined) throw new Error("malformed link");
+      return link;
+    };
 
     const revoked = await createEncryptedInvitation(
       { ...context(alice), currentEpoch: 1, epochKey },
@@ -170,9 +211,17 @@ describe("membership changes of an encrypted vault", () => {
     expect(replayLog(vault.id, server.log).at(-1)?.invitations.size).toBe(0);
     expect(server.invitations.has(revoked.invitation.id)).toBe(false);
 
-    // bob and carol join as if they had redeemed alice's invitations.
-    server.seedMember(bob, VaultRole.EDITOR, alice);
-    server.seedMember(carol, VaultRole.EDITOR, alice);
+    const forBob = await invite(VaultRole.EDITOR);
+    const forCarol = await invite(VaultRole.EDITOR);
+    const joined = await redeemEncryptedInvitation(redeemer(bob), forBob);
+    expect(joined).toMatchObject({ id: vault.id, role: VaultRole.EDITOR });
+    await redeemEncryptedInvitation(redeemer(carol), forCarol);
+    expect(server.members.get(bob.userId)?.role).toBe(VaultRole.EDITOR);
+    expect(members(server)).toEqual({
+      [alice.userId]: Role.owner,
+      [bob.userId]: Role.editor,
+      [carol.userId]: Role.editor,
+    });
     await manager.sync();
 
     await setEncryptedMemberRole(context(alice), bob.userId, VaultRole.OWNER);
@@ -217,6 +266,86 @@ describe("membership changes of an encrypted vault", () => {
     expect(replayLog(server.vaultId, server.log).at(-1)?.invitations.size).toBe(
       1,
     );
+  });
+
+  it("redeems a link into the epoch keys and the anchor of the vault's genesis", async () => {
+    const { server, vault, context, redeemer, keyManager, epochKey } =
+      await aliceVault();
+    const created = await createEncryptedInvitation(
+      { ...context(alice), currentEpoch: 1, epochKey },
+      VaultRole.VIEWER,
+      0,
+    );
+    const link = parseInviteLink(created.link);
+    if (link === undefined) throw new Error("malformed link");
+
+    await redeemEncryptedInvitation(redeemer(bob), link);
+
+    const bobs = keyManager(bob);
+    await bobs.sync();
+    expect(bobs.epochKey(1)).toEqual(epochKey(1));
+    const genesis = server.log[0];
+    if (genesis === undefined) throw new Error("no genesis");
+    const { anchors } = await readAnchorList(redeemer(bob).anchors, bob);
+    expect(anchors).toEqual([
+      { vaultId: vault.id, genesisHash: entryHash(genesis) },
+    ]);
+    expect(server.invitations.has(created.invitation.id)).toBe(false);
+  });
+
+  it("refuses a link whose anchor was changed, before redeeming", async () => {
+    const { server, context, redeemer, epochKey } = await aliceVault();
+    const created = await createEncryptedInvitation(
+      { ...context(alice), currentEpoch: 1, epochKey },
+      VaultRole.VIEWER,
+      0,
+    );
+    const link = parseInviteLink(created.link);
+    if (link === undefined) throw new Error("malformed link");
+    const anchor = link.anchor.slice();
+    anchor[0] = (anchor[0] ?? 0) ^ 1;
+
+    await expect(
+      redeemEncryptedInvitation(redeemer(bob), { ...link, anchor }),
+    ).rejects.toThrow(/does not match the invitation/);
+    expect(server.members.has(bob.userId)).toBe(false);
+  });
+
+  it("redeems on top of the new head when another change took the log's next position", async () => {
+    const { server, context, redeemer, epochKey } = await aliceVault();
+    const created = await createEncryptedInvitation(
+      { ...context(alice), currentEpoch: 1, epochKey },
+      VaultRole.EDITOR,
+      0,
+    );
+    const link = parseInviteLink(created.link);
+    if (link === undefined) throw new Error("malformed link");
+    const head = server.log.length;
+
+    // alice's role change lands between bob's read of the log and his request.
+    const bobs = redeemer(bob);
+    const racing: RedeemContext = {
+      ...bobs,
+      log: {
+        listLogEntries: async (request) => {
+          const response = await bobs.log.listLogEntries(request);
+          if (response.nextPageToken === "" && server.log.length === head)
+            await setEncryptedMemberRole(
+              context(alice),
+              alice.userId,
+              VaultRole.OWNER,
+            );
+          return response;
+        },
+      },
+    };
+    await redeemEncryptedInvitation(racing, link);
+
+    expect(server.log).toHaveLength(head + 2);
+    expect(members(server)).toEqual({
+      [alice.userId]: Role.owner,
+      [bob.userId]: Role.editor,
+    });
   });
 
   it("is refused without its entry", async () => {

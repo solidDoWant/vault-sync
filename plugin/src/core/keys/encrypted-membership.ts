@@ -15,7 +15,7 @@
  * The code and the secret never appear in an error.
  */
 import type { MessageInitShape } from "@bufbuild/protobuf";
-import type { Client } from "@connectrpc/connect";
+import { Code, ConnectError, type Client } from "@connectrpc/connect";
 import { randomBytes } from "@noble/ciphers/utils.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { base64urlnopad } from "@scure/base";
@@ -24,7 +24,7 @@ import type {
   Invitation,
   MembershipService,
 } from "../../gen/vaultsync/v1/membership_pb";
-import { VaultRole } from "../../gen/vaultsync/v1/types_pb";
+import { VaultRole, type Vault } from "../../gen/vaultsync/v1/types_pb";
 import {
   KeyRecipientKind,
   type KeySlotSchema,
@@ -36,17 +36,31 @@ import {
   inviteSignSeed,
   makeInviteAnchor,
   signPublicKey,
+  verifyInviteAnchor,
 } from "../e2ee/identity";
-import { sealKeySlot } from "../e2ee/keyslot";
+import {
+  openKeySlot,
+  sealKeySlot,
+  verifyKeyCommitment,
+} from "../e2ee/keyslot";
 import {
   EntryType,
   entryHash,
   idPayload,
   invitePayload,
+  redeemPayload,
   setRolePayload,
 } from "../e2ee/memberlog";
-import { appendLogEntry, type LogReadClient } from "./member-log";
+import { addAnchor, type AnchorListClient } from "./anchor-list";
+import {
+  appendLogEntry,
+  nextEntry,
+  readLog,
+  toLogEntry,
+  type LogReadClient,
+} from "./member-log";
 import type { UserKeyPair } from "./user-key";
+import { isEpochNotCurrent } from "./vault-keys";
 
 /** The MembershipService calls that change an encrypted vault's membership (ProtocolClient.membership). */
 export type EncryptedMembershipClient = Pick<
@@ -234,4 +248,165 @@ export async function leaveEncryptedVault(
     }),
     (logEntry) => context.membership.leaveVault({ vaultId, logEntry }),
   );
+}
+
+/** The parts of an encrypted vault's invite link `<id>.<secret>.<anchor>`. */
+export interface InviteLink {
+  /** `<id>`, as the link carries it: what the server knows the invitation by. */
+  id: string;
+  /** `<id>.<secret>`, the code RedeemInvitation takes. */
+  code: string;
+  secret: Uint8Array;
+  anchor: Uint8Array;
+}
+
+/**
+ * The parts of an encrypted vault's invite link, or undefined when `link`
+ * is not one (a plaintext vault's code, or a malformed link).
+ */
+export function parseInviteLink(link: string): InviteLink | undefined {
+  const parts = link.split(".");
+  if (parts.length !== 3) return undefined;
+  const [id, secretPart, anchorPart] = parts;
+  if (id === undefined || secretPart === undefined || anchorPart === undefined)
+    return undefined;
+  try {
+    if (base64urlnopad.decode(id).length !== CODE_PART_SIZE) return undefined;
+    const secret = base64urlnopad.decode(secretPart);
+    if (secret.length !== CODE_PART_SIZE) return undefined;
+    return {
+      id,
+      code: `${id}.${secretPart}`,
+      secret,
+      anchor: base64urlnopad.decode(anchorPart),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/** The calls a newcomer redeeming an invitation to an encrypted vault makes (ProtocolClient.membership, .vaultKeys and .userKeys). */
+export interface RedeemContext {
+  userKey: UserKeyPair;
+  membership: Pick<
+    Client<typeof MembershipService>,
+    "getInvitationSlots" | "redeemInvitation"
+  >;
+  log: LogReadClient;
+  anchors: AnchorListClient;
+}
+
+/** An invite link whose anchor does not belong to the invitation the server holds under its `<id>`. */
+export class InviteAnchorError extends Error {
+  override readonly name = "InviteAnchorError";
+  constructor() {
+    super(
+      "This invite link does not match the invitation on the server. Ask the vault's owner for a new one.",
+    );
+  }
+}
+
+/** Attempts when the vault's log or epochs keep changing between reading and redeeming. */
+const MAX_REDEEM_ATTEMPTS = 3;
+
+/**
+ * Redeems an invitation to an encrypted vault with its link: reads the
+ * invitation's slots (GetInvitationSlots), checks the link's anchor against
+ * the invitation and adds the vault's genesis hash to the user's anchor
+ * list, opens every epoch key with the invitation's key and wraps it to the
+ * user's own key, and sends RedeemInvitation with the redeem entry, placed
+ * on the log head read with the invitation's `<id>` and signed by the
+ * invitation's key and then by the user. When the log or the epochs moved
+ * meanwhile (ABORTED, or EPOCH_NOT_CURRENT), starts again from a fresh read.
+ * Resolves with the vault joined.
+ */
+export async function redeemEncryptedInvitation(
+  context: RedeemContext,
+  link: InviteLink,
+): Promise<Vault> {
+  const { userKey } = context;
+  for (let attempt = 1; ; attempt++) {
+    const invitation = await context.membership.getInvitationSlots({
+      id: link.id,
+    });
+    const { vaultId, invitationId } = invitation;
+    let anchor;
+    try {
+      anchor = verifyInviteAnchor(
+        link.secret,
+        vaultId,
+        invitationId,
+        link.anchor,
+      );
+    } catch {
+      throw new InviteAnchorError();
+    }
+    await addAnchor(context.anchors, userKey, {
+      vaultId,
+      genesisHash: anchor.genesisHash,
+    });
+    const invitationKey = invitationKeyPair(link.secret, vaultId, invitationId);
+    const slots: SlotInit[] = [];
+    for (const epoch of invitation.epochs) {
+      const slot = invitation.slots.find(
+        (candidate) => candidate.epoch === epoch.epoch,
+      );
+      if (slot === undefined)
+        throw new Error(
+          `the invitation has no key of epoch ${String(epoch.epoch)}`,
+        );
+      const epochKey = await openKeySlot(
+        invitationKey.privateKey,
+        slot.wrappedKey,
+        {
+          vaultId,
+          epoch: epoch.epoch,
+          recipientKind: "invitation",
+          recipientId: invitationId,
+        },
+      );
+      verifyKeyCommitment(epochKey, epoch.commitment, vaultId, epoch.epoch);
+      slots.push({
+        epoch: epoch.epoch,
+        recipientKind: KeyRecipientKind.USER,
+        recipientId: userKey.userId,
+        wrappedKey: await sealKeySlot(userKey.publicKey, epochKey, {
+          vaultId,
+          epoch: epoch.epoch,
+          recipientKind: "user",
+          recipientId: userKey.userId,
+        }),
+      });
+    }
+    const log = await readLog(context.log, vaultId, link.id);
+    const entry = nextEntry(vaultId, log, {
+      type: EntryType.redeem,
+      payload: redeemPayload(
+        invitationId,
+        bundleOf(
+          { kemSeed: userKey.privateKey, signSeed: userKey.signSeed },
+          userKey.userId,
+        ),
+      ),
+      signSeeds: [
+        inviteSignSeed(link.secret, vaultId, invitationId),
+        userKey.signSeed,
+      ],
+    });
+    try {
+      const response = await context.membership.redeemInvitation({
+        code: link.code,
+        logEntry: toLogEntry(entry),
+        slots,
+      });
+      if (response.vault === undefined)
+        throw new Error("the server accepted the invite code but returned no vault");
+      return response.vault;
+    } catch (error) {
+      const moved =
+        (error instanceof ConnectError && error.code === Code.Aborted) ||
+        isEpochNotCurrent(error);
+      if (!moved || attempt >= MAX_REDEEM_ATTEMPTS) throw error;
+    }
+  }
 }

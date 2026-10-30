@@ -45,12 +45,15 @@ export function toLogEntry(entry: Entry): LogEntryInit {
   return { seq: BigInt(entry.seq), prevHash: entry.prevHash, type: entry.type, payload: entry.payload, signatures: entry.signatures };
 }
 
-/** The vault's whole membership log as the server lists it, from genesis. */
-export async function readLog(client: LogReadClient, vaultId: string): Promise<Entry[]> {
+/**
+ * The vault's whole membership log as the server lists it, from genesis. A
+ * newcomer, not yet a member, reads it with the `<id>` of its invite code.
+ */
+export async function readLog(client: LogReadClient, vaultId: string, invitationId = ""): Promise<Entry[]> {
   const entries: Entry[] = [];
   let pageToken = "";
   for (let page = 0; page < MAX_PAGES; page++) {
-    const response = await client.listLogEntries({ vaultId, pageToken });
+    const response = await client.listLogEntries({ vaultId, pageToken, invitationId });
     for (const entry of response.entries) entries.push(fromLogEntry(vaultId, entry));
     if (response.nextPageToken === "") return entries;
     pageToken = response.nextPageToken;
