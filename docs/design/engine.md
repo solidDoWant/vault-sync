@@ -1,5 +1,7 @@
 # Sync engine design
 
+For: developers and agents. You know the architecture (`docs/dev/architecture.md`) and `SPEC.md`.
+
 Status: approved by the owner on 2026-10-29. It replaces `engine-path-ownership.md` and `verified-core.md`, and the parts of SPEC.md §6.3, §7 and §8 that described the old engine.
 
 This document is the whole design of the plugin's sync engine. Agents implement it; they do not change it. If it doesn't decide a case, ask on the issue. The operator answers from the owner's policy, or asks the owner when the question is about the product. The policy, in order: do what Obsidian Sync does; failing that, whatever loses the least data; failing that, whatever is simplest. **Every answer must keep the convergence argument in §11 true.**
@@ -202,7 +204,7 @@ These are the open questions from the review of the old engine's tests (`docs/de
 - **Which side stays in place** (C2): the server's version stays at the path, and the local version becomes the conflict copy.
 - **Rename identity** (R1, R7, R9, K4): a live rename event keeps the document; a path freed and reused by a new file is a new document; an offline rename is detected by hash where it matches one-to-one, and otherwise syncs as a delete plus a create.
 - **Two devices rename the same note** (R2): the server's path wins, and the content is merged.
-- **Non-Markdown text and canvas** (E7, C5): the newest wins, plus a conflict copy. Merging these is backlog #1105.
+- **Non-Markdown text and canvas** (E7, C5): the newest wins, plus a conflict copy. Merging these is in the backlog.
 - **Line endings** (C6): the content is equal after normalization, so take the remote version with no copy.
 - **Same path created on two devices** (C7): rule W. Same content is bound as one document; otherwise the local file becomes a conflict copy.
 - **Conflict copy name too long** (C9): shorten it; never drop the copy.

@@ -1,5 +1,7 @@
 # E2EE cipher suite 2
 
+For: developers and agents. You know the architecture (`docs/dev/architecture.md`) and `SPEC.md`. This page fixes the byte formats.
+
 This document fixes the byte formats of the end-to-end encryption primitives of `SPEC.md` §9.3. They are implemented twice, in `internal/e2ee` (Go, `golang.org/x/crypto`, the standard library and `filippo.io/age`) and `plugin/src/core/e2ee` (TypeScript, `@noble/ciphers`, `@noble/hashes`, `@noble/post-quantum` and `age-encryption`, the TypeScript age implementation, which is built on the same `@noble` packages), and both must pass every vector in `testdata/crypto/vectors.json`. Suite 2 replaces suite 1, whose key wrapping was a classic X25519 sealed box: every key wrapping is now hybrid post-quantum (ML-KEM-768 + X25519, `docs/design/encryption.md` *Suite 2*), and contents, paths and passphrase wrapping keep XChaCha20-Poly1305 and Argon2id. The key-slot and key-commitment formats of vault key epochs are fixed here too (Key slots and key commitments). The associated data of contents and paths, and invitation keys, are fixed here too. The rest of key management (storing epochs and slots, rotation, recovery) is in `docs/design/encryption.md`.
 
 ## Principles
@@ -50,7 +52,7 @@ commitment = HMAC-SHA256(key = epoch_key, "vault-sync/v1/key-commitment" || vaul
 - `vault_id` is the 16 bytes of the vault's UUID, which callers give in canonical lowercase form (`0190d6e4-8c1e-7a3b-9d2f-5e6a7b8c9d0e`). Any other spelling is refused before anything is sealed, opened or computed, so a slot has exactly one encoding.
 - `epoch` is an unsigned 64-bit integer. TypeScript accepts epochs up to `Number.MAX_SAFE_INTEGER` (2^53 − 1).
 - `recipient_kind` is `0x01` for `user`, `0x02` for `escrow` and `0x03` for `invitation`. No other value is defined.
-- `recipient_id` is the 16 bytes of the member's user id (a canonical lowercase UUID) for `user`, and of the invitation's id for `invitation`. For `escrow` it is the UTF-8 bytes of the escrow key's id, 1 to 255 bytes. #40 defines that id. The one-byte length prefix keeps the encoding unambiguous for both.
+- `recipient_id` is the 16 bytes of the member's user id (a canonical lowercase UUID) for `user`, and of the invitation's id for `invitation`. For `escrow` it is the UTF-8 bytes of the escrow key's id, 1 to 255 bytes. `SPEC.md` §9.4 defines that id. The one-byte length prefix keeps the encoding unambiguous for both.
 
 Opening a slot (`OpenKeySlot` / `openKeySlot`) opens the age file and fails with `ErrDecrypt` / `DecryptError` unless the payload is exactly 32 bytes followed by this slot's `slot_ad` (compared in constant time), so it refuses any other vault, epoch, recipient kind or recipient id, and a key of any other size. A user slot is about 1750 bytes; an escrow slot with a 255-byte id stays under the 2048-byte bound.
 

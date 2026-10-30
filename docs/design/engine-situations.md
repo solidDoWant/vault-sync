@@ -1,5 +1,7 @@
 # Sync situations to test (from the old engine's tests)
 
+For: developers and agents. You know the architecture (`docs/dev/architecture.md`) and `SPEC.md`. Read `engine.md` first.
+
 
 This list records which user-visible situations the old engine's tests covered. The new engine must handle every IN situation. The outcomes in `engine.md` §5 and §12 decide each one; where this list and `engine.md` differ, `engine.md` wins. The test file names refer to the old engine, which has been removed.
 Source: vault-sync `master` at `5abdf829` (2026-10-29). I skimmed the test names and scenario notes in `plugin/src/core/engine/*.test.ts`, `plugin/test/*.test.ts`, `plugin/test/e2e/specs/*.e2e.ts`, `sim/*-scenarios.ts`, `sim/scenarios.ts` and `sim/regressions/*.md`. Duplicates are merged. The test files are named relative to `plugin/src/core/engine/` unless a path is given (`e2e/` means `plugin/test/e2e/specs/`).

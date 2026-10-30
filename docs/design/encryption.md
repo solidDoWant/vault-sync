@@ -1,5 +1,7 @@
 # Encryption design (Phase 4)
 
+For: developers and agents. You know the architecture (`docs/dev/architecture.md`) and `SPEC.md`.
+
 Status: approved by the owner on 2026-10-29. It adds to `SPEC.md` §9.3–§9.4, and wherever they disagree it wins. Byte formats are in `docs/design/crypto.md`. Agents implement this design and do not change it; questions go to the operator.
 
 ## Model
@@ -149,7 +151,7 @@ A vault's log records its escrow bundle, so only the log can move a vault to the
 
 ## Formats and rules settled during implementation
 
-Operator decisions of 2026-10-29, from the questions on #1206, #1207, #1210 and #1227 and the Phase 4 design review. Byte formats are in `crypto.md`.
+Operator decisions of 2026-10-29, from the questions on this design and the Phase 4 design review. Byte formats are in `crypto.md`.
 
 **Contents and paths**
 - **Associated data.** A path binds the vault, the document and the epoch. Content binds the vault and the epoch only. Its `blob_id` is the SHA-256 of the sealed bytes, which the server verifies (`crypto.md`). This replaces `SPEC.md` §9.3's "the revision's document id … bound as associated data" for content.
@@ -212,7 +214,7 @@ Every state change below runs on the server under the vault row lock as a compar
 
 ## Import
 
-`#1199`: a client-side tool. It encrypts with the vault's current key, unwrapped through the escrow identity or the user's passphrase.
+A client-side tool. It encrypts with the vault's current key, unwrapped through the escrow identity or the user's passphrase.
 
 - **It needs two keys:** the current epoch's key and epoch 1's key, for `path_key_secret`. It signs in as a member with the `editor` or owner role.
 - **Escrow slots:** `ListKeySlots` takes an optional recipient kind, and returns the vault's escrow slots to editors and owners only. An escrow slot is useless without the escrow identity.

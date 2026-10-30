@@ -239,9 +239,9 @@ All sections stay and keep their rules: the engine design is fixed. The develope
 
 | Section | W | Class | Destination | Notes |
 |---|---|---|---|---|
-| [ ] `design/engine.md` (all) | 3,914 | keep | stays | Owner-fixed. Delete only issue numbers. |
+| [x] `design/engine.md` (all) | 3,914 | keep | stays | Owner-fixed. Delete only issue numbers. |
 | [ ] `design/engine.md` §10 Status and user interface | — | keep | stays; user view to `user/syncing.md` | User view done in `user/syncing.md`; the developer-reader pass on `docs/design/` is left. |
-| [ ] `design/engine-situations.md` (all) | 5,128 | keep | stays | Each situation has a decision-table test; the situations stay because they explain the rows. Delete only issue numbers. |
+| [x] `design/engine-situations.md` (all) | 5,128 | keep | stays | Each situation has a decision-table test; the situations stay because they explain the rows. Delete only issue numbers. |
 | [ ] `design/sharing.md` Roles, Losing access, Deleting a vault | 684 (file) | keep | stays; user view to `user/sharing.md` | User view done in `user/sharing.md`; the developer-reader pass on `docs/design/` is left. |
 | [ ] `design/encryption.md` Escrow, Protection against an active server | — | keep | stays; operator view in `admin/encryption.md`, `admin/security.md` | |
 | [ ] `design/encryption.md` Formats and rules settled during implementation | 800 | move | byte formats pinned by `testdata/crypto/vectors.json` and described in `design/crypto.md` | Delete the duplicates; move what remains to `design/crypto.md`. |

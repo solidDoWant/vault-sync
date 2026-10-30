@@ -1,5 +1,7 @@
 # Vault sharing design (Phase 3)
 
+For: developers and agents. You know the architecture (`docs/dev/architecture.md`) and `SPEC.md`. Read `engine.md` first.
+
 Status: approved by the owner on 2026-10-29. It adds to `engine.md`, and the same rules apply: agents implement it and do not change it. Questions go to the operator.
 
 ## Roles
