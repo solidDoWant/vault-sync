@@ -334,6 +334,24 @@ The route has two rules, both to port `http`:
 - `/v1/realtime`: `timeouts.request` and `timeouts.backendRequest` of `0s`, which disables them. It is a long-lived WebSocket, kept alive by the server's pings every 30 seconds, and a gateway's default request timeout would cut it off.
 - `/` (everything else): `timeouts.request` and `timeouts.backendRequest` of `15m`. A `CommitBlob` response starts only once the server has composed the whole blob, which may take up to 10 minutes (SPEC.md §6.2), and its response may then take up to `VAULT_SYNC_WRITE_TIMEOUT` (2 minutes by default) to write. Raise it with `resources.route.main.rules` if you raise the write timeout.
 
+### Grafana dashboards
+
+`config.grafana.dashboards` installs the [dashboards](#monitoring) as grafana-operator `GrafanaDashboard`s, as ConfigMaps for the Grafana chart's dashboard sidecar, or both. Both are off by default.
+
+| Value | Default | Description |
+|---|---|---|
+| `config.grafana.dashboards.enabled` | `false` | Render one `GrafanaDashboard` (`grafana.integreatly.org/v1beta1`) per dashboard, named `<release>-dashboard-<name>`. Needs the grafana-operator CRDs. |
+| `config.grafana.dashboards.instanceSelector` | `{}` | Label selector of the `Grafana` resources to import into, for example `{matchLabels: {dashboards: grafana}}`. Required while `config.grafana.dashboards.enabled`. |
+| `config.grafana.dashboards.folder` | empty | Title of the Grafana folder to put the dashboards in. At most one of `folder`, `folderRef` and `folderUID`; setting more fails the render. |
+| `config.grafana.dashboards.folderRef` | empty | Name of a `GrafanaFolder` in the release namespace to put the dashboards in. |
+| `config.grafana.dashboards.folderUID` | empty | UID of an existing Grafana folder to put the dashboards in. |
+| `config.grafana.dashboards.resyncPeriod` | null (the operator's default) | How often the operator re-applies the dashboards, for example `10m`. |
+| `config.grafana.dashboards.allowCrossNamespaceImport` | null (`false`) | Let `Grafana` instances in other namespaces import the dashboards. |
+| `config.grafana.dashboards.labels` | `{}` | Extra labels of each `GrafanaDashboard`. |
+| `config.grafana.dashboards.configMaps.enabled` | `false` | Render each dashboard as a ConfigMap `<release>-dashboard-<name>` holding `<name>.json`, for the Grafana chart's dashboard sidecar. Independent of `config.grafana.dashboards.enabled`. |
+| `config.grafana.dashboards.configMaps.label` | `grafana_dashboard` | Label the sidecar watches (the Grafana chart's `sidecar.dashboards.label`). |
+| `config.grafana.dashboards.configMaps.labelValue` | `"1"` | Value of that label (`sidecar.dashboards.labelValue`). |
+| `config.grafana.dashboards.configMaps.annotations` | `{}` | Annotations of each ConfigMap, for example the sidecar's `folderAnnotation` to choose a folder. |
 ### Alerts
 
 `config.alerts` renders the packaged alerting rules (`deploy/charts/vault-sync/alerts/vault-sync.rules.yaml`) as a prometheus-operator `PrometheusRule` (`monitoring.coreos.com/v1`). [alerts.md](alerts.md) lists every alert with its threshold, the reasoning behind it, and a runbook section saying what to check and what to do; each alert's `runbook_url` points there. To enable the rules:
@@ -401,6 +419,48 @@ resources:
       podDisruptionBudget:
         maxUnavailable: 1   # or minAvailable: 1, not both
 ```
+
+## Monitoring
+
+The server exposes per-instance metrics on port `metrics` (9090) and service-wide metrics on port `service-metrics` (9091), listed in [configuration.md](configuration.md#metrics). `config.server.metrics.serviceMonitor.enabled` scrapes the first with a prometheus-operator ServiceMonitor, and `config.server.metrics.serviceWide.enabled` adds the second (see [Server](#server)).
+
+The chart ships three Grafana dashboards (JSON in `deploy/charts/vault-sync/dashboards/`, packaged with the chart). Links in each lead to the others; their UIDs are stable, so links and bookmarks survive upgrades:
+
+| Dashboard | UID | What it is for |
+|---|---|---|
+| vault-sync / Overview | `vault-sync-overview` | The service-wide view: a row of alert states (stale service-wide metrics, commit listeners down, retention and OIDC key failures, RPC error ratio, S3 errors), users, devices and vaults (by encryption and sharing), stored blobs and bytes and their daily growth, documents and revisions, the upload, garbage collection, E2EE re-key and escrow re-wrap backlogs, the schema version, and when retention, the export and the service-wide metrics last succeeded. Needs the service-wide metrics. |
+| vault-sync / Server | `vault-sync-server` | Per instance (`pod` variable): RPC rate, errors by code and p50, p95 and p99 latency by procedure, RPCs and users in flight and per-user concurrency rejections, realtime connections, refused upgrades, disconnects, notifications and the commit listener's status and reconnects, blob transfer, retention work, and Go runtime and process memory, CPU, goroutines and file descriptors. |
+| vault-sync / Dependencies | `vault-sync-dependencies` | Per instance: PostgreSQL pool usage, acquire latency and query errors, the commit listener, S3 operation rates, outcomes and latency, and OIDC key set refresh failures and age. |
+
+Every dashboard has a `datasource` variable (any Prometheus data source) and `namespace` and `job` variables (the job is the Service name, which is the release name, for both endpoints of the ServiceMonitor), so one copy serves any release name and several deployments. Service-wide panels take the `max` over replicas, so they are right whether one replica or all of them are scraped.
+
+**With grafana-operator**, set `config.grafana.dashboards.enabled` and an `instanceSelector` matching your `Grafana` resource's labels; the operator imports one `GrafanaDashboard` per dashboard:
+
+```yaml
+config:
+  grafana:
+    dashboards:
+      enabled: true
+      instanceSelector:
+        matchLabels:
+          dashboards: grafana
+      folder: vault-sync
+      # allowCrossNamespaceImport: true   # when Grafana runs in another namespace
+```
+
+**With the Grafana chart's sidecar** (no operator), set `config.grafana.dashboards.configMaps.enabled`; the chart renders one ConfigMap per dashboard with the label the sidecar watches (`grafana_dashboard: "1"`, its default). If your sidecar searches only its own namespace, set its `sidecar.dashboards.searchNamespace` to `ALL` or to the release namespace:
+
+```yaml
+config:
+  grafana:
+    dashboards:
+      configMaps:
+        enabled: true
+        # label: grafana_dashboard
+        # labelValue: "1"
+```
+
+The dashboards come from the chart's own files. To import them by hand, upload the JSON files and pick the Prometheus data source in the `datasource` variable.
 
 ## Releasing
 

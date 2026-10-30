@@ -1,0 +1,84 @@
+{{/* Grafana dashboards (docs/deployment.md, Monitoring). Each file in
+   dashboards/ becomes one grafana-operator GrafanaDashboard
+   (config.grafana.dashboards.enabled) and/or one ConfigMap for the Grafana
+   chart's dashboard sidecar (config.grafana.dashboards.configMaps.enabled),
+   named <release>-dashboard-<file name>. The JSON is embedded unchanged, so
+   the dashboards keep their UIDs (vault-sync-overview, ...). */}}
+{{- $dashboards := .Values.config.grafana.dashboards -}}
+{{- $configMaps := $dashboards.configMaps -}}
+{{- $prefix := dig "fullnameOverride" "" (.Values.global | default dict) | default .Release.Name -}}
+{{- if $dashboards.enabled -}}
+  {{- if not $dashboards.instanceSelector -}}
+    {{- fail "config.grafana.dashboards.instanceSelector is required while config.grafana.dashboards.enabled is true (a label selector matching your Grafana resources, for example {matchLabels: {dashboards: grafana}})" -}}
+  {{- end -}}
+  {{- $folders := 0 -}}
+  {{- range $key := list "folder" "folderRef" "folderUID" -}}
+    {{- if index $dashboards $key -}}
+      {{- $folders = add1 $folders -}}
+    {{- end -}}
+  {{- end -}}
+  {{- if gt $folders 1 -}}
+    {{- fail "config.grafana.dashboards.folder, folderRef and folderUID are mutually exclusive; set at most one" -}}
+  {{- end -}}
+{{- end -}}
+{{- range $path, $_ := .Files.Glob "dashboards/*.json" }}
+{{- $name := printf "%s-dashboard-%s" $prefix (base $path | trimSuffix ".json") | trunc 63 | trimSuffix "-" -}}
+{{- $json := $.Files.Get $path -}}
+{{- if $dashboards.enabled }}
+---
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ $.Chart.Name }}
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/managed-by: {{ $.Release.Service }}
+    helm.sh/chart: {{ printf "%s-%s" $.Chart.Name $.Chart.Version | replace "+" "_" }}
+    {{- with $dashboards.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  instanceSelector:
+    {{- toYaml $dashboards.instanceSelector | nindent 4 }}
+  {{- with $dashboards.folder }}
+  folder: {{ . | quote }}
+  {{- end }}
+  {{- with $dashboards.folderRef }}
+  folderRef: {{ . | quote }}
+  {{- end }}
+  {{- with $dashboards.folderUID }}
+  folderUID: {{ . | quote }}
+  {{- end }}
+  {{- with $dashboards.resyncPeriod }}
+  resyncPeriod: {{ . | quote }}
+  {{- end }}
+  {{- if not (kindIs "invalid" $dashboards.allowCrossNamespaceImport) }}
+  allowCrossNamespaceImport: {{ $dashboards.allowCrossNamespaceImport }}
+  {{- end }}
+  json: |
+    {{- $json | nindent 4 }}
+{{- end }}
+{{- if $configMaps.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ $.Chart.Name }}
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/managed-by: {{ $.Release.Service }}
+    helm.sh/chart: {{ printf "%s-%s" $.Chart.Name $.Chart.Version | replace "+" "_" }}
+    {{ $configMaps.label }}: {{ $configMaps.labelValue | quote }}
+  {{- with $configMaps.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+data:
+  {{ base $path }}: |
+    {{- $json | nindent 4 }}
+{{- end }}
+{{- end }}
