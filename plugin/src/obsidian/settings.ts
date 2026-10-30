@@ -2,13 +2,14 @@ import { Modal, Notice, PluginSettingTab, Setting, type App, type ButtonComponen
 
 import { VaultRole, type Vault } from "../gen/vaultsync/v1/types_pb";
 import type { AuthState } from "../core/auth/tokens";
+import type { ConversionMember } from "../core/keys/convert-vault";
 import type { EscrowOffer } from "../core/keys/encrypted-vault";
 import type { RekeyResult } from "../core/sync/rekey";
 import { connectProblem } from "./controller";
 import { type ConnectedVault, type PluginData } from "./data";
 import { DeviceListLoads, DeviceRemovals, type DeviceRow } from "./devices";
 import { quotedVaultLabel, vaultLabel } from "./display-text";
-import { deleteConfirmed, memberKeyText, membershipErrorMessage, parseInvitationDays, vaultKeysText, roleDescription, roleName, roles, type CreatedInvitation, type MemberRow, type Sharing } from "./sharing";
+import { conversionConfirmable, conversionMemberText, deleteConfirmed, memberKeyText, membershipErrorMessage, parseInvitationDays, vaultKeysText, roleDescription, roleName, roles, type CreatedInvitation, type MemberRow, type Sharing } from "./sharing";
 import type { EncryptionState } from "./encryption";
 import { PassphraseModal, type PassphraseMode } from "./passphrase-modal";
 import { errorMessage, statusDescription, statusText, type SyncStatus } from "./status";
@@ -48,6 +49,10 @@ export interface SettingsHost extends Plugin {
   removeMember(userId: string): Promise<void>;
   /** Rotates the connected encrypted vault's key (owners only): the next epoch, for every current member. */
   rotateVaultKey(): Promise<void>;
+  /** The connected plaintext vault's members with the fingerprints of the keys the server reports, to compare before converting (owners only). */
+  conversionMembers(): Promise<ConversionMember[]>;
+  /** Converts the connected plaintext vault to end-to-end encryption with the fingerprints the owner compared (owners only). */
+  convertVault(compared: readonly ConversionMember[], escrow: boolean): Promise<void>;
   /** Re-encrypts the connected encrypted vault's history under its current key and retires the old keys (owners only). */
   reencryptHistory(): Promise<RekeyResult>;
   /** Leaves the connected vault; sync then stops with "no longer a member" and the files stay. */
@@ -481,6 +486,20 @@ export class VaultSyncSettingTab extends PluginSettingTab {
           });
       }
 
+      if (!sharing.encrypted) {
+        new Setting(section)
+          .setName("Convert to end-to-end encryption")
+          .setDesc("Encrypts this vault on the devices, keeping its members, notes and history. Every member must have set up end-to-end encryption, and pending invitations must be revoked first. You compare every member's key fingerprint before converting.")
+          .addButton((button) => {
+            button.setButtonText("Convert…").onClick(() => {
+              new ConvertVaultModal(this.app, host, () => {
+                new Notice("Vault Sync: the vault is now end-to-end encrypted. Run Re-encrypt history to encrypt its earlier versions.");
+                reload();
+              }).open();
+            });
+          });
+      }
+
       new Setting(section).setName("Invitations").setHeading();
       const invitations = section.createDiv({ cls: "vault-sync-invitations" });
       if (sharing.invitations.length === 0) new Setting(invitations).setDesc("No pending invitations.");
@@ -892,6 +911,91 @@ class ConfirmModal extends Modal {
   override onClose(): void {
     this.contentEl.empty();
     if (!this.confirmed) this.options.onCancel?.();
+  }
+}
+
+/**
+ * Converting the connected plaintext vault to end-to-end encryption
+ * (docs/design/encryption.md, "Converting a plaintext vault"): lists every
+ * member's key fingerprint as the server reports it, and sends the switch only
+ * after the owner confirmed they compared every one with its member outside
+ * Vault Sync.
+ */
+class ConvertVaultModal extends Modal {
+  constructor(
+    app: App,
+    private readonly host: SettingsHost,
+    private readonly onConverted: () => void,
+  ) {
+    super(app);
+    this.titleEl.setText("Convert to end-to-end encryption?");
+  }
+
+  override onOpen(): void {
+    const { contentEl, host } = this;
+    contentEl.empty();
+    const intro = contentEl.createEl("p", { text: "Loading the members' key fingerprints…" });
+    void Promise.all([host.conversionMembers(), host.escrowOffer()]).then(
+      ([members, offer]) => {
+        intro.setText(
+          "Compare each fingerprint below with that member over a channel you trust, such as in person or a call. The server reports these keys, and only a comparison shows that it did not swap one. Members, notes and history are kept; earlier versions stay readable and Re-encrypt history encrypts them afterwards.",
+        );
+        for (const member of members) new Setting(contentEl).setName(member.displayName === "" ? member.userId : member.displayName).setDesc(conversionMemberText(member));
+        let compared = false;
+        let escrow = offer.recipient !== undefined && offer.byDefault;
+        let convertButton: ButtonComponent | undefined;
+        if (offer.recipient !== undefined) {
+          new Setting(contentEl)
+            .setName("Escrow")
+            .setDesc("Also wrap the vault key to the server operator's escrow key, so that the vault can be recovered and exported without your passphrase.")
+            .addToggle((toggle) =>
+              toggle.setValue(escrow).onChange((value) => {
+                escrow = value;
+              }),
+            );
+        }
+        new Setting(contentEl).setName("I compared every member's fingerprint with them").addToggle((toggle) =>
+          toggle.setValue(false).onChange((value) => {
+            compared = value;
+            convertButton?.setDisabled(!conversionConfirmable(members, compared));
+          }),
+        );
+        new Setting(contentEl)
+          .addButton((button) =>
+            button.setButtonText("Cancel").onClick(() => {
+              this.close();
+            }),
+          )
+          .addButton((button) => {
+            convertButton = button;
+            button
+              .setButtonText("Convert")
+              .setCta()
+              .setDisabled(true)
+              .onClick(() => {
+                if (!conversionConfirmable(members, compared)) return;
+                button.setDisabled(true);
+                host.convertVault(members, escrow).then(
+                  () => {
+                    this.close();
+                    this.onConverted();
+                  },
+                  (error: unknown) => {
+                    new Notice(`Vault Sync: could not convert the vault: ${errorMessage(error)}`);
+                    this.close();
+                  },
+                );
+              });
+          });
+      },
+      (error: unknown) => {
+        intro.setText(`Could not load the members' key fingerprints: ${errorMessage(error)}`);
+      },
+    );
+  }
+
+  override onClose(): void {
+    this.contentEl.empty();
   }
 }
 

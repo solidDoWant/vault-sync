@@ -91,6 +91,7 @@ describe("SyncSession", () => {
         return Promise.reject(refused);
       },
       epochKey: () => undefined,
+      conversionSeq: () => 0n,
     };
     const { session, vault, statuses } = setup({ keys }, server);
     await vault.write("a.md", encoder.encode("kept"));

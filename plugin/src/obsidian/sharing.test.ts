@@ -32,6 +32,8 @@ import {
   revokeInvitation,
   setMemberRole,
   memberKeyText,
+  conversionConfirmable,
+  conversionMemberText,
   vaultFingerprint,
   vaultKeysText,
   type Sharing,
@@ -487,6 +489,23 @@ describe("what the member list says about keys", () => {
   it("shows the vault fingerprint, or why no fingerprints are shown", () => {
     expect(vaultKeysText(verified)).toContain("Vault fingerprint: 0008 1018.");
     expect(vaultKeysText({ kind: "unavailable", reason: "Unlock end-to-end encryption on this device first." })).toBe("Key fingerprints are not shown: Unlock end-to-end encryption on this device first.");
+  });
+});
+
+describe("converting a plaintext vault", () => {
+  const withKey = { userId: ownerId, displayName: "Ada", role: VaultRole.OWNER, fingerprint: "ABCD EFGH" };
+  const withoutKey = { userId: editorId, displayName: "Bo", role: VaultRole.EDITOR, fingerprint: undefined };
+
+  it("[P4-23] shows each member's fingerprint for comparison, and says who has no key yet", () => {
+    expect(conversionMemberText(withKey)).toBe("Key fingerprint: ABCD EFGH");
+    expect(conversionMemberText(withoutKey)).toBe("Has not set up end-to-end encryption yet, so the vault cannot be converted.");
+  });
+
+  it("[P4-23] converts only after the owner confirmed they compared every member's fingerprint", () => {
+    expect(conversionConfirmable([withKey], false)).toBe(false);
+    expect(conversionConfirmable([withKey], true)).toBe(true);
+    expect(conversionConfirmable([withKey, withoutKey], true)).toBe(false);
+    expect(conversionConfirmable([], true)).toBe(false);
   });
 });
 

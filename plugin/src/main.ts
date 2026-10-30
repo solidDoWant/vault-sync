@@ -14,6 +14,7 @@ import { oidcConfig, parsePluginData, persistRefreshToken, serialized, serverBas
 import { currentDeviceId, deviceRows, listDevices, removeOtherDevice, type DeviceRow } from "./obsidian/devices";
 import { discoverIdentityProvider } from "./obsidian/discovery";
 import { createEncryptedVault, escrowOffer, type EscrowOffer } from "./core/keys/encrypted-vault";
+import { conversionMembers, convertVault, type ConversionMember } from "./core/keys/convert-vault";
 import { changePassphraseOnDevice, enableOnDevice, encryptionState, forgetEncryptionKeys, pluginDataEpochKeyStore, pluginDataEscrowPin, unlockedUserKey, unlockOnDevice, type EncryptionOptions, type EncryptionState } from "./obsidian/encryption";
 import { HistoryModal } from "./obsidian/history-modal";
 import { requestUrlFetch, requestUrlHttpClient } from "./obsidian/http";
@@ -470,6 +471,39 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
 
   async rotateVaultKey(): Promise<void> {
     return rotateVaultKey(await this.encryptedSharing());
+  }
+
+  /** The connected plaintext vault's members with the fingerprints of the keys the server reports, for the owner to compare before converting. */
+  conversionMembers(): Promise<ConversionMember[]> {
+    return conversionMembers(this.protocolClient().membership, this.sharedVaultId());
+  }
+
+  /**
+   * Converts the connected plaintext vault to end-to-end encryption in
+   * place, with the members and fingerprints the owner compared: the
+   * unlocked user key signs its membership log and epoch 1, and this device
+   * keeps epoch 1's key.
+   */
+  async convertVault(compared: readonly ConversionMember[], escrow: boolean): Promise<void> {
+    const vaultId = this.sharedVaultId();
+    const client = this.protocolClient();
+    const options = this.encryptionOptions();
+    const userKey = await unlockedUserKey(options);
+    const account = await currentAccount(this.data, options.accessToken);
+    const recipient = escrow ? (await this.escrowOffer()).recipient : undefined;
+    if (escrow && recipient === undefined) throw new Error("this server has no escrow key");
+    await convertVault({
+      vaultId,
+      userKey,
+      compared,
+      escrow: recipient,
+      membership: client.membership,
+      sync: client.sync,
+      keys: client.vaultKeys,
+      anchors: client.userKeys,
+      verifiedLogs: deviceVerifiedLogStore(this.app, account),
+      store: pluginDataEpochKeyStore(this.data, () => this.saveSettings(), account, vaultId),
+    });
   }
 
   async reencryptHistory(): Promise<RekeyResult> {

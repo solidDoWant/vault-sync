@@ -82,9 +82,10 @@ After a rotation, older versions in the history are still encrypted under older 
 
 An owner can convert an existing plaintext vault to an encrypted one, keeping its history and members:
 
-1. Every member must have set up end-to-end encryption. Otherwise the conversion is refused and the plugin lists the members who still have to.
-2. The owner's device creates the first vault key and its key slots and switches the vault to encrypted in one step. From then on, the server refuses plaintext commits to the vault.
-3. The existing history is then re-encrypted in the background, like after a rotation. Until that finishes, the server still holds the old plaintext versions.
+1. Every member must have set up end-to-end encryption, and pending invitations must be revoked first. Otherwise the conversion is refused and the plugin lists the members who still have to set up encryption, or the invitations still pending.
+2. The plugin shows every member's key fingerprint, as the server reports it, and converts only after the owner confirms they compared them all with the members. If the server reports another member or key when the device converts, it refuses and the owner compares again.
+3. The owner's device creates the vault's membership log and the first vault key with its key slots, and switches the vault to encrypted in one step. From then on, the server refuses plaintext commits to the vault.
+4. The versions written before the conversion stay readable as plaintext, and devices refuse any plaintext version written after it. The owner then runs **Re-encrypt history**, which encrypts them like after a rotation. Until that finishes, the server still holds the old plaintext versions.
 
 Plaintext backups made before the conversion are not affected and remain plaintext.
 

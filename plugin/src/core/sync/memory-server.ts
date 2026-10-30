@@ -132,7 +132,11 @@ export class InMemoryServer {
   private readonly maxUploads: number;
   private readonly maxBlobBytes: number;
   private readonly uploadReclaimIdleMs: number;
-  readonly encrypted: boolean;
+  encrypted: boolean;
+  /** For a vault converted to encryption in place ({@link convert}), its head seq at the conversion; 0 otherwise. */
+  conversionSeq = 0n;
+  /** Whether the vault was converted to encryption in place. */
+  converted = false;
   /** The vault's current key epoch in an encrypted vault: commits must carry it (0 in a plaintext vault). */
   currentEpoch = 0;
   /** Epochs retired with RetireEpoch in an encrypted vault. */
@@ -637,8 +641,25 @@ export class InMemoryServer {
     return unreferenced.length;
   }
 
+  /**
+   * Converts a plaintext vault to encryption in place, as ConvertVault's
+   * switch does: the live documents take the path keys `pathKey` gives,
+   * the history stays at epoch 0 as plaintext, and the conversion records
+   * the head seq. The caller starts epoch 1 (`currentEpoch`).
+   */
+  convert(pathKey: (path: string) => Uint8Array): void {
+    if (this.encrypted) throw new Error("the vault is already encrypted");
+    for (const revision of this.liveHeads().values()) this.pathKeys.set(revision.id, bytesToHex(pathKey(this.reader(revision, undefined).path)));
+    this.encrypted = true;
+    this.converted = true;
+    this.conversionSeq = this.headSeq;
+  }
+
   /** An encrypted vault's commit rules: the current epoch, a sealed path, a 32-byte path_key unique among live documents. */
   private checkEncrypted(request: CommitRevisionRequest): void {
+    if (this.converted && request.epoch === 0) {
+      throw new ConnectError("the vault is end-to-end encrypted", Code.FailedPrecondition, undefined, [{ desc: ErrorDetailSchema, value: { reason: ErrorReason.VAULT_ENCRYPTED } }]);
+    }
     if (request.pathKey.length !== 32) throw new ConnectError("path_key must be 32 bytes in an encrypted vault", Code.InvalidArgument);
     if (request.path.length === 0) throw new ConnectError("path is empty", Code.InvalidArgument);
     if (request.epoch === 0) throw new ConnectError("epoch must be the vault's current key epoch", Code.InvalidArgument);

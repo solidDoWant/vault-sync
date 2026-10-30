@@ -125,6 +125,12 @@ export interface VaultKeyring {
   refresh(): Promise<number>;
   /** The key of `epoch`, if this device holds it and it matched the epoch's key commitment. */
   epochKey(epoch: number): Uint8Array | undefined;
+  /**
+   * For a vault converted to encryption in place, the vault's head seq at the
+   * conversion (as of the last refresh): epoch-0 revisions up to it are the
+   * vault's plaintext history. 0 for a vault never converted.
+   */
+  conversionSeq(): bigint;
 }
 
 /** This device does not hold a key it needs: an owner has not shared it yet, or it was refused. */
@@ -164,6 +170,8 @@ export class EncryptedCodec implements RevisionCodec {
   private currentEpoch = 0;
   /** The blob of each content (by SHA-256) seen or sealed in this run, the latest one. */
   private readonly sealedByHash = new Map<string, SealedBlob>();
+  /** Content hashes of plaintext history (epoch 0) seen in this run: their blob is the content itself. */
+  private readonly plaintextHashes = new Set<string>();
   /** The SHA-256 and plaintext size of each blob opened or sealed in this run. */
   private readonly plainByBlob = new Map<string, { hash: string; size: bigint }>();
   /** Plaintext of recently opened blobs, oldest first. */
@@ -196,7 +204,7 @@ export class EncryptedCodec implements RevisionCodec {
    */
   private async decodeRevision(revision: Revision, reread: boolean): Promise<IncomingRevision> {
     const epoch = revision.epoch;
-    if (epoch === 0) throw new RemoteContentError(`revision ${revision.id} of an encrypted vault is not encrypted`);
+    if (epoch === 0) return this.decodePlaintextHistory(revision);
     const key = await this.key(epoch);
     let path: string;
     try {
@@ -235,7 +243,31 @@ export class EncryptedCodec implements RevisionCodec {
     };
   }
 
+  /**
+   * A revision of a converted vault's plaintext history (epoch 0), which the
+   * re-key job has not encrypted yet: read as in a plaintext vault. Only
+   * revisions committed up to the conversion may be at epoch 0; a later one
+   * is refused (docs/design/encryption.md, "Epoch 0").
+   */
+  private decodePlaintextHistory(revision: Revision): IncomingRevision {
+    if (revision.seq > this.keys.conversionSeq()) throw new RemoteContentError(`revision ${revision.id} of an encrypted vault is not encrypted`);
+    const plain = toIncoming(revision);
+    if (revision.contentRef !== undefined) this.plaintextHashes.add(plain.remote.contentHash);
+    return plain;
+  }
+
   async download(contentHash: string, size: bigint, revisionId?: string): Promise<Uint8Array> {
+    if (this.plaintextHashes.has(contentHash) && !this.sealedByHash.has(contentHash)) {
+      try {
+        return await downloadContent(this.api, this.vaultId, contentHash, size);
+      } catch (error) {
+        if (revisionId === undefined || errorCode(error) !== Code.NotFound) throw error;
+        // The re-key job encrypted the revision and cleanup deleted its plaintext blob: read it as it is now.
+        if ((await this.decodeRevision(await this.reread(revisionId), true)).remote.contentHash !== contentHash || !this.sealedByHash.has(contentHash)) {
+          throw new RemoteContentError(`revision ${revisionId} no longer holds content ${contentHash}`);
+        }
+      }
+    }
     let blob = this.sealedByHash.get(contentHash);
     if (blob === undefined && revisionId !== undefined) {
       const revision = (await this.api.sync.getRevision({ vaultId: this.vaultId, revisionId })).revision;
