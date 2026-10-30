@@ -154,7 +154,11 @@ type GetUserKeyParamsResponse struct {
 	// The caller's server user id (Member.user_id), a canonical lowercase
 	// UUID: the id a signed log entry must name for the caller. The token's
 	// subject is the OIDC subject, not this id.
-	UserId        string `protobuf:"bytes,3,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	UserId string `protobuf:"bytes,3,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	// The caller's Ed25519 signing public key (32 bytes, docs/design/crypto.md
+	// bundle), or empty when their key was stored without one
+	// (AddSignPublicKey adds it).
+	SignPublicKey []byte `protobuf:"bytes,4,opt,name=sign_public_key,json=signPublicKey,proto3" json:"sign_public_key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -210,6 +214,13 @@ func (x *GetUserKeyParamsResponse) GetUserId() string {
 	return ""
 }
 
+func (x *GetUserKeyParamsResponse) GetSignPublicKey() []byte {
+	if x != nil {
+		return x.SignPublicKey
+	}
+	return nil
+}
+
 // CreateUserKeyRequest holds a new key pair, its private key wrapped.
 type CreateUserKeyRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -222,7 +233,10 @@ type CreateUserKeyRequest struct {
 	Params *PassphraseParams `protobuf:"bytes,3,opt,name=params,proto3" json:"params,omitempty"`
 	// The verifier derived from the passphrase: exactly 32 bytes. The server
 	// stores only its SHA-256.
-	AuthKey       []byte `protobuf:"bytes,4,opt,name=auth_key,json=authKey,proto3" json:"auth_key,omitempty"`
+	AuthKey []byte `protobuf:"bytes,4,opt,name=auth_key,json=authKey,proto3" json:"auth_key,omitempty"`
+	// The Ed25519 signing public key of the key pair (docs/design/crypto.md
+	// bundle): exactly 32 bytes.
+	SignPublicKey []byte `protobuf:"bytes,5,opt,name=sign_public_key,json=signPublicKey,proto3" json:"sign_public_key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -281,6 +295,13 @@ func (x *CreateUserKeyRequest) GetParams() *PassphraseParams {
 func (x *CreateUserKeyRequest) GetAuthKey() []byte {
 	if x != nil {
 		return x.AuthKey
+	}
+	return nil
+}
+
+func (x *CreateUserKeyRequest) GetSignPublicKey() []byte {
+	if x != nil {
+		return x.SignPublicKey
 	}
 	return nil
 }
@@ -387,7 +408,9 @@ type UnlockUserKeyResponse struct {
 	// The parameters of the wrapping.
 	Params *PassphraseParams `protobuf:"bytes,3,opt,name=params,proto3" json:"params,omitempty"`
 	// The caller's user id, as in GetUserKeyParamsResponse.
-	UserId        string `protobuf:"bytes,4,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	UserId string `protobuf:"bytes,4,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	// The caller's signing public key, as in GetUserKeyParamsResponse.
+	SignPublicKey []byte `protobuf:"bytes,5,opt,name=sign_public_key,json=signPublicKey,proto3" json:"sign_public_key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -450,6 +473,106 @@ func (x *UnlockUserKeyResponse) GetUserId() string {
 	return ""
 }
 
+func (x *UnlockUserKeyResponse) GetSignPublicKey() []byte {
+	if x != nil {
+		return x.SignPublicKey
+	}
+	return nil
+}
+
+// AddSignPublicKeyRequest holds the signing public key to add.
+type AddSignPublicKeyRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The verifier derived from the passphrase: exactly 32 bytes.
+	AuthKey []byte `protobuf:"bytes,1,opt,name=auth_key,json=authKey,proto3" json:"auth_key,omitempty"`
+	// The Ed25519 signing public key of the caller's key pair: exactly 32
+	// bytes.
+	SignPublicKey []byte `protobuf:"bytes,2,opt,name=sign_public_key,json=signPublicKey,proto3" json:"sign_public_key,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AddSignPublicKeyRequest) Reset() {
+	*x = AddSignPublicKeyRequest{}
+	mi := &file_vaultsync_v1_user_key_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AddSignPublicKeyRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AddSignPublicKeyRequest) ProtoMessage() {}
+
+func (x *AddSignPublicKeyRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_vaultsync_v1_user_key_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AddSignPublicKeyRequest.ProtoReflect.Descriptor instead.
+func (*AddSignPublicKeyRequest) Descriptor() ([]byte, []int) {
+	return file_vaultsync_v1_user_key_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *AddSignPublicKeyRequest) GetAuthKey() []byte {
+	if x != nil {
+		return x.AuthKey
+	}
+	return nil
+}
+
+func (x *AddSignPublicKeyRequest) GetSignPublicKey() []byte {
+	if x != nil {
+		return x.SignPublicKey
+	}
+	return nil
+}
+
+// AddSignPublicKeyResponse confirms the key is stored. It has no fields.
+type AddSignPublicKeyResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AddSignPublicKeyResponse) Reset() {
+	*x = AddSignPublicKeyResponse{}
+	mi := &file_vaultsync_v1_user_key_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AddSignPublicKeyResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AddSignPublicKeyResponse) ProtoMessage() {}
+
+func (x *AddSignPublicKeyResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_vaultsync_v1_user_key_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AddSignPublicKeyResponse.ProtoReflect.Descriptor instead.
+func (*AddSignPublicKeyResponse) Descriptor() ([]byte, []int) {
+	return file_vaultsync_v1_user_key_proto_rawDescGZIP(), []int{8}
+}
+
 // ChangePassphraseRequest re-wraps the caller's private key.
 type ChangePassphraseRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -469,7 +592,7 @@ type ChangePassphraseRequest struct {
 
 func (x *ChangePassphraseRequest) Reset() {
 	*x = ChangePassphraseRequest{}
-	mi := &file_vaultsync_v1_user_key_proto_msgTypes[7]
+	mi := &file_vaultsync_v1_user_key_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -481,7 +604,7 @@ func (x *ChangePassphraseRequest) String() string {
 func (*ChangePassphraseRequest) ProtoMessage() {}
 
 func (x *ChangePassphraseRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_vaultsync_v1_user_key_proto_msgTypes[7]
+	mi := &file_vaultsync_v1_user_key_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -494,7 +617,7 @@ func (x *ChangePassphraseRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChangePassphraseRequest.ProtoReflect.Descriptor instead.
 func (*ChangePassphraseRequest) Descriptor() ([]byte, []int) {
-	return file_vaultsync_v1_user_key_proto_rawDescGZIP(), []int{7}
+	return file_vaultsync_v1_user_key_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ChangePassphraseRequest) GetAuthKey() []byte {
@@ -541,7 +664,7 @@ type ChangePassphraseResponse struct {
 
 func (x *ChangePassphraseResponse) Reset() {
 	*x = ChangePassphraseResponse{}
-	mi := &file_vaultsync_v1_user_key_proto_msgTypes[8]
+	mi := &file_vaultsync_v1_user_key_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -553,7 +676,7 @@ func (x *ChangePassphraseResponse) String() string {
 func (*ChangePassphraseResponse) ProtoMessage() {}
 
 func (x *ChangePassphraseResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_vaultsync_v1_user_key_proto_msgTypes[8]
+	mi := &file_vaultsync_v1_user_key_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -566,7 +689,7 @@ func (x *ChangePassphraseResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChangePassphraseResponse.ProtoReflect.Descriptor instead.
 func (*ChangePassphraseResponse) Descriptor() ([]byte, []int) {
-	return file_vaultsync_v1_user_key_proto_rawDescGZIP(), []int{8}
+	return file_vaultsync_v1_user_key_proto_rawDescGZIP(), []int{10}
 }
 
 // GetAnchorListRequest has no fields: it names the caller's list.
@@ -578,7 +701,7 @@ type GetAnchorListRequest struct {
 
 func (x *GetAnchorListRequest) Reset() {
 	*x = GetAnchorListRequest{}
-	mi := &file_vaultsync_v1_user_key_proto_msgTypes[9]
+	mi := &file_vaultsync_v1_user_key_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -590,7 +713,7 @@ func (x *GetAnchorListRequest) String() string {
 func (*GetAnchorListRequest) ProtoMessage() {}
 
 func (x *GetAnchorListRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_vaultsync_v1_user_key_proto_msgTypes[9]
+	mi := &file_vaultsync_v1_user_key_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -603,7 +726,7 @@ func (x *GetAnchorListRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetAnchorListRequest.ProtoReflect.Descriptor instead.
 func (*GetAnchorListRequest) Descriptor() ([]byte, []int) {
-	return file_vaultsync_v1_user_key_proto_rawDescGZIP(), []int{9}
+	return file_vaultsync_v1_user_key_proto_rawDescGZIP(), []int{11}
 }
 
 // GetAnchorListResponse holds the caller's sealed anchor list.
@@ -620,7 +743,7 @@ type GetAnchorListResponse struct {
 
 func (x *GetAnchorListResponse) Reset() {
 	*x = GetAnchorListResponse{}
-	mi := &file_vaultsync_v1_user_key_proto_msgTypes[10]
+	mi := &file_vaultsync_v1_user_key_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -632,7 +755,7 @@ func (x *GetAnchorListResponse) String() string {
 func (*GetAnchorListResponse) ProtoMessage() {}
 
 func (x *GetAnchorListResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_vaultsync_v1_user_key_proto_msgTypes[10]
+	mi := &file_vaultsync_v1_user_key_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -645,7 +768,7 @@ func (x *GetAnchorListResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetAnchorListResponse.ProtoReflect.Descriptor instead.
 func (*GetAnchorListResponse) Descriptor() ([]byte, []int) {
-	return file_vaultsync_v1_user_key_proto_rawDescGZIP(), []int{10}
+	return file_vaultsync_v1_user_key_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *GetAnchorListResponse) GetVersion() uint64 {
@@ -676,7 +799,7 @@ type PutAnchorListRequest struct {
 
 func (x *PutAnchorListRequest) Reset() {
 	*x = PutAnchorListRequest{}
-	mi := &file_vaultsync_v1_user_key_proto_msgTypes[11]
+	mi := &file_vaultsync_v1_user_key_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -688,7 +811,7 @@ func (x *PutAnchorListRequest) String() string {
 func (*PutAnchorListRequest) ProtoMessage() {}
 
 func (x *PutAnchorListRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_vaultsync_v1_user_key_proto_msgTypes[11]
+	mi := &file_vaultsync_v1_user_key_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -701,7 +824,7 @@ func (x *PutAnchorListRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PutAnchorListRequest.ProtoReflect.Descriptor instead.
 func (*PutAnchorListRequest) Descriptor() ([]byte, []int) {
-	return file_vaultsync_v1_user_key_proto_rawDescGZIP(), []int{11}
+	return file_vaultsync_v1_user_key_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *PutAnchorListRequest) GetVersion() uint64 {
@@ -727,7 +850,7 @@ type PutAnchorListResponse struct {
 
 func (x *PutAnchorListResponse) Reset() {
 	*x = PutAnchorListResponse{}
-	mi := &file_vaultsync_v1_user_key_proto_msgTypes[12]
+	mi := &file_vaultsync_v1_user_key_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -739,7 +862,7 @@ func (x *PutAnchorListResponse) String() string {
 func (*PutAnchorListResponse) ProtoMessage() {}
 
 func (x *PutAnchorListResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_vaultsync_v1_user_key_proto_msgTypes[12]
+	mi := &file_vaultsync_v1_user_key_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -752,7 +875,7 @@ func (x *PutAnchorListResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PutAnchorListResponse.ProtoReflect.Descriptor instead.
 func (*PutAnchorListResponse) Descriptor() ([]byte, []int) {
-	return file_vaultsync_v1_user_key_proto_rawDescGZIP(), []int{12}
+	return file_vaultsync_v1_user_key_proto_rawDescGZIP(), []int{14}
 }
 
 var File_vaultsync_v1_user_key_proto protoreflect.FileDescriptor
@@ -769,28 +892,35 @@ const file_vaultsync_v1_user_key_proto_rawDesc = "" +
 	"iterations\x12 \n" +
 	"\vparallelism\x18\x04 \x01(\rR\vparallelism\x12\x12\n" +
 	"\x04salt\x18\x05 \x01(\fR\x04salt\"\x19\n" +
-	"\x17GetUserKeyParamsRequest\"\x8a\x01\n" +
+	"\x17GetUserKeyParamsRequest\"\xb2\x01\n" +
 	"\x18GetUserKeyParamsResponse\x12\x1d\n" +
 	"\n" +
 	"public_key\x18\x01 \x01(\fR\tpublicKey\x126\n" +
 	"\x06params\x18\x02 \x01(\v2\x1e.vaultsync.v1.PassphraseParamsR\x06params\x12\x17\n" +
-	"\auser_id\x18\x03 \x01(\tR\x06userId\"\xb8\x01\n" +
+	"\auser_id\x18\x03 \x01(\tR\x06userId\x12&\n" +
+	"\x0fsign_public_key\x18\x04 \x01(\fR\rsignPublicKey\"\xe0\x01\n" +
 	"\x14CreateUserKeyRequest\x12\x1d\n" +
 	"\n" +
 	"public_key\x18\x01 \x01(\fR\tpublicKey\x12.\n" +
 	"\x13wrapped_private_key\x18\x02 \x01(\fR\x11wrappedPrivateKey\x126\n" +
 	"\x06params\x18\x03 \x01(\v2\x1e.vaultsync.v1.PassphraseParamsR\x06params\x12\x19\n" +
-	"\bauth_key\x18\x04 \x01(\fR\aauthKey\"0\n" +
+	"\bauth_key\x18\x04 \x01(\fR\aauthKey\x12&\n" +
+	"\x0fsign_public_key\x18\x05 \x01(\fR\rsignPublicKey\"0\n" +
 	"\x15CreateUserKeyResponse\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\"1\n" +
 	"\x14UnlockUserKeyRequest\x12\x19\n" +
-	"\bauth_key\x18\x01 \x01(\fR\aauthKey\"\xb7\x01\n" +
+	"\bauth_key\x18\x01 \x01(\fR\aauthKey\"\xdf\x01\n" +
 	"\x15UnlockUserKeyResponse\x12\x1d\n" +
 	"\n" +
 	"public_key\x18\x01 \x01(\fR\tpublicKey\x12.\n" +
 	"\x13wrapped_private_key\x18\x02 \x01(\fR\x11wrappedPrivateKey\x126\n" +
 	"\x06params\x18\x03 \x01(\v2\x1e.vaultsync.v1.PassphraseParamsR\x06params\x12\x17\n" +
-	"\auser_id\x18\x04 \x01(\tR\x06userId\"\xeb\x01\n" +
+	"\auser_id\x18\x04 \x01(\tR\x06userId\x12&\n" +
+	"\x0fsign_public_key\x18\x05 \x01(\fR\rsignPublicKey\"\\\n" +
+	"\x17AddSignPublicKeyRequest\x12\x19\n" +
+	"\bauth_key\x18\x01 \x01(\fR\aauthKey\x12&\n" +
+	"\x0fsign_public_key\x18\x02 \x01(\fR\rsignPublicKey\"\x1a\n" +
+	"\x18AddSignPublicKeyResponse\"\xeb\x01\n" +
 	"\x17ChangePassphraseRequest\x12\x19\n" +
 	"\bauth_key\x18\x01 \x01(\fR\aauthKey\x12\x1d\n" +
 	"\n" +
@@ -810,11 +940,12 @@ const file_vaultsync_v1_user_key_proto_rawDesc = "" +
 	"\aversion\x18\x01 \x01(\x04R\aversion\x12\x1f\n" +
 	"\vsealed_list\x18\x02 \x01(\fR\n" +
 	"sealedList\"\x17\n" +
-	"\x15PutAnchorListResponse2\xca\x04\n" +
+	"\x15PutAnchorListResponse2\xaf\x05\n" +
 	"\x0eUserKeyService\x12c\n" +
 	"\x10GetUserKeyParams\x12%.vaultsync.v1.GetUserKeyParamsRequest\x1a&.vaultsync.v1.GetUserKeyParamsResponse\"\x00\x12Z\n" +
 	"\rCreateUserKey\x12\".vaultsync.v1.CreateUserKeyRequest\x1a#.vaultsync.v1.CreateUserKeyResponse\"\x00\x12Z\n" +
 	"\rUnlockUserKey\x12\".vaultsync.v1.UnlockUserKeyRequest\x1a#.vaultsync.v1.UnlockUserKeyResponse\"\x00\x12c\n" +
+	"\x10AddSignPublicKey\x12%.vaultsync.v1.AddSignPublicKeyRequest\x1a&.vaultsync.v1.AddSignPublicKeyResponse\"\x00\x12c\n" +
 	"\x10ChangePassphrase\x12%.vaultsync.v1.ChangePassphraseRequest\x1a&.vaultsync.v1.ChangePassphraseResponse\"\x00\x12Z\n" +
 	"\rGetAnchorList\x12\".vaultsync.v1.GetAnchorListRequest\x1a#.vaultsync.v1.GetAnchorListResponse\"\x00\x12Z\n" +
 	"\rPutAnchorList\x12\".vaultsync.v1.PutAnchorListRequest\x1a#.vaultsync.v1.PutAnchorListResponse\"\x00B@Z>github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyncv1b\x06proto3"
@@ -831,7 +962,7 @@ func file_vaultsync_v1_user_key_proto_rawDescGZIP() []byte {
 	return file_vaultsync_v1_user_key_proto_rawDescData
 }
 
-var file_vaultsync_v1_user_key_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_vaultsync_v1_user_key_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_vaultsync_v1_user_key_proto_goTypes = []any{
 	(*PassphraseParams)(nil),         // 0: vaultsync.v1.PassphraseParams
 	(*GetUserKeyParamsRequest)(nil),  // 1: vaultsync.v1.GetUserKeyParamsRequest
@@ -840,12 +971,14 @@ var file_vaultsync_v1_user_key_proto_goTypes = []any{
 	(*CreateUserKeyResponse)(nil),    // 4: vaultsync.v1.CreateUserKeyResponse
 	(*UnlockUserKeyRequest)(nil),     // 5: vaultsync.v1.UnlockUserKeyRequest
 	(*UnlockUserKeyResponse)(nil),    // 6: vaultsync.v1.UnlockUserKeyResponse
-	(*ChangePassphraseRequest)(nil),  // 7: vaultsync.v1.ChangePassphraseRequest
-	(*ChangePassphraseResponse)(nil), // 8: vaultsync.v1.ChangePassphraseResponse
-	(*GetAnchorListRequest)(nil),     // 9: vaultsync.v1.GetAnchorListRequest
-	(*GetAnchorListResponse)(nil),    // 10: vaultsync.v1.GetAnchorListResponse
-	(*PutAnchorListRequest)(nil),     // 11: vaultsync.v1.PutAnchorListRequest
-	(*PutAnchorListResponse)(nil),    // 12: vaultsync.v1.PutAnchorListResponse
+	(*AddSignPublicKeyRequest)(nil),  // 7: vaultsync.v1.AddSignPublicKeyRequest
+	(*AddSignPublicKeyResponse)(nil), // 8: vaultsync.v1.AddSignPublicKeyResponse
+	(*ChangePassphraseRequest)(nil),  // 9: vaultsync.v1.ChangePassphraseRequest
+	(*ChangePassphraseResponse)(nil), // 10: vaultsync.v1.ChangePassphraseResponse
+	(*GetAnchorListRequest)(nil),     // 11: vaultsync.v1.GetAnchorListRequest
+	(*GetAnchorListResponse)(nil),    // 12: vaultsync.v1.GetAnchorListResponse
+	(*PutAnchorListRequest)(nil),     // 13: vaultsync.v1.PutAnchorListRequest
+	(*PutAnchorListResponse)(nil),    // 14: vaultsync.v1.PutAnchorListResponse
 }
 var file_vaultsync_v1_user_key_proto_depIdxs = []int32{
 	0,  // 0: vaultsync.v1.GetUserKeyParamsResponse.params:type_name -> vaultsync.v1.PassphraseParams
@@ -855,17 +988,19 @@ var file_vaultsync_v1_user_key_proto_depIdxs = []int32{
 	1,  // 4: vaultsync.v1.UserKeyService.GetUserKeyParams:input_type -> vaultsync.v1.GetUserKeyParamsRequest
 	3,  // 5: vaultsync.v1.UserKeyService.CreateUserKey:input_type -> vaultsync.v1.CreateUserKeyRequest
 	5,  // 6: vaultsync.v1.UserKeyService.UnlockUserKey:input_type -> vaultsync.v1.UnlockUserKeyRequest
-	7,  // 7: vaultsync.v1.UserKeyService.ChangePassphrase:input_type -> vaultsync.v1.ChangePassphraseRequest
-	9,  // 8: vaultsync.v1.UserKeyService.GetAnchorList:input_type -> vaultsync.v1.GetAnchorListRequest
-	11, // 9: vaultsync.v1.UserKeyService.PutAnchorList:input_type -> vaultsync.v1.PutAnchorListRequest
-	2,  // 10: vaultsync.v1.UserKeyService.GetUserKeyParams:output_type -> vaultsync.v1.GetUserKeyParamsResponse
-	4,  // 11: vaultsync.v1.UserKeyService.CreateUserKey:output_type -> vaultsync.v1.CreateUserKeyResponse
-	6,  // 12: vaultsync.v1.UserKeyService.UnlockUserKey:output_type -> vaultsync.v1.UnlockUserKeyResponse
-	8,  // 13: vaultsync.v1.UserKeyService.ChangePassphrase:output_type -> vaultsync.v1.ChangePassphraseResponse
-	10, // 14: vaultsync.v1.UserKeyService.GetAnchorList:output_type -> vaultsync.v1.GetAnchorListResponse
-	12, // 15: vaultsync.v1.UserKeyService.PutAnchorList:output_type -> vaultsync.v1.PutAnchorListResponse
-	10, // [10:16] is the sub-list for method output_type
-	4,  // [4:10] is the sub-list for method input_type
+	7,  // 7: vaultsync.v1.UserKeyService.AddSignPublicKey:input_type -> vaultsync.v1.AddSignPublicKeyRequest
+	9,  // 8: vaultsync.v1.UserKeyService.ChangePassphrase:input_type -> vaultsync.v1.ChangePassphraseRequest
+	11, // 9: vaultsync.v1.UserKeyService.GetAnchorList:input_type -> vaultsync.v1.GetAnchorListRequest
+	13, // 10: vaultsync.v1.UserKeyService.PutAnchorList:input_type -> vaultsync.v1.PutAnchorListRequest
+	2,  // 11: vaultsync.v1.UserKeyService.GetUserKeyParams:output_type -> vaultsync.v1.GetUserKeyParamsResponse
+	4,  // 12: vaultsync.v1.UserKeyService.CreateUserKey:output_type -> vaultsync.v1.CreateUserKeyResponse
+	6,  // 13: vaultsync.v1.UserKeyService.UnlockUserKey:output_type -> vaultsync.v1.UnlockUserKeyResponse
+	8,  // 14: vaultsync.v1.UserKeyService.AddSignPublicKey:output_type -> vaultsync.v1.AddSignPublicKeyResponse
+	10, // 15: vaultsync.v1.UserKeyService.ChangePassphrase:output_type -> vaultsync.v1.ChangePassphraseResponse
+	12, // 16: vaultsync.v1.UserKeyService.GetAnchorList:output_type -> vaultsync.v1.GetAnchorListResponse
+	14, // 17: vaultsync.v1.UserKeyService.PutAnchorList:output_type -> vaultsync.v1.PutAnchorListResponse
+	11, // [11:18] is the sub-list for method output_type
+	4,  // [4:11] is the sub-list for method input_type
 	4,  // [4:4] is the sub-list for extension type_name
 	4,  // [4:4] is the sub-list for extension extendee
 	0,  // [0:4] is the sub-list for field type_name
@@ -882,7 +1017,7 @@ func file_vaultsync_v1_user_key_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_vaultsync_v1_user_key_proto_rawDesc), len(file_vaultsync_v1_user_key_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   13,
+			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

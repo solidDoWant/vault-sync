@@ -176,6 +176,10 @@ message Member {
   // docs/design/crypto.md) for wrapping vault epoch keys to them, or empty when they have no user key
   // (UserKeyService).
   bytes public_key = 5;
+  // The member's Ed25519 signing public key (32 bytes), or empty when they
+  // have no user key or it was stored without one. With user_id and
+  // public_key it gives the member's bundle (docs/design/crypto.md).
+  bytes sign_public_key = 6;
 }
 
 // CreateInvitationRequest describes the invitation to create.

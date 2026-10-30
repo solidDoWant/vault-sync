@@ -10,7 +10,7 @@ import {
   type Argon2Params,
 } from "../e2ee/e2ee";
 import { generateKeyPair } from "../e2ee/hybrid";
-import { userSecretBytes } from "../e2ee/identity";
+import { signPublicKey, userSecretBytes } from "../e2ee/identity";
 import {
   ATTEMPT_WINDOW_MS,
   MAX_FAILED_ATTEMPTS,
@@ -73,6 +73,7 @@ describe("enabling end-to-end encryption", ARGON2_TIMEOUT, () => {
 
     expect(created).toBe(true);
     expect(server.stored?.publicKey).toEqual(key.publicKey);
+    expect(server.stored?.signPublicKey).toEqual(signPublicKey(key.signSeed));
     expect(server.requests.map((request) => request.procedure)).toEqual([
       "CreateUserKey",
     ]);
@@ -147,9 +148,41 @@ describe("unlocking on another device", ARGON2_TIMEOUT, () => {
       expect(contains(request.bytes, key.privateKey)).toBe(false);
   });
 
+  it("adds the signing public key once to a key the server stored without one", async () => {
+    const server = new MemoryUserKeyServer();
+    const { key } = await enableEncryption(device(server), passphrase, cheap);
+    const stored = server.stored;
+    if (stored === undefined) throw new Error("no key stored");
+    stored.signPublicKey = new Uint8Array();
+
+    await unlockUserKey(device(server), passphrase);
+    expect(server.stored?.signPublicKey).toEqual(signPublicKey(key.signSeed));
+    await unlockUserKey(device(server), passphrase);
+
+    expect(
+      server.requests.filter(
+        (request) => request.procedure === "AddSignPublicKey",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("refuses a released key whose signing public key is not the stored one", async () => {
+    const server = new MemoryUserKeyServer();
+    await enableEncryption(device(server), passphrase, cheap);
+    const stored = server.stored;
+    if (stored === undefined) throw new Error("no key stored");
+    stored.signPublicKey = new Uint8Array(32).fill(9);
+
+    await expect(unlockUserKey(device(server), passphrase)).rejects.toThrow(
+      "does not match its signing public key",
+    );
+  });
+
   it("refuses a key the server returns without a valid user id", async () => {
     const server = new MemoryUserKeyServer(undefined, "not-a-uuid");
-    await expect(enableEncryption(device(server), passphrase, cheap)).rejects.toThrow(/no valid user id/);
+    await expect(
+      enableEncryption(device(server), passphrase, cheap),
+    ).rejects.toThrow(/no valid user id/);
   });
 
   it("fails with a wrong passphrase", async () => {
@@ -238,6 +271,7 @@ describe("unlocking on another device", ARGON2_TIMEOUT, () => {
     const header = parsePassphraseHeader(wrapped);
     await device(server).createUserKey({
       publicKey: claimed.publicKey,
+      signPublicKey: signPublicKey(new Uint8Array(32).fill(7)),
       wrappedPrivateKey: wrapped,
       params: {
         suite: SUITE_V2,
@@ -272,7 +306,12 @@ class MemoryParams implements PassphraseParamsMemory {
 describe("remembering the Argon2id parameters", ARGON2_TIMEOUT, () => {
   it("remembers the parameters of the key this device created", async () => {
     const remembered = new MemoryParams();
-    await enableEncryption(device(new MemoryUserKeyServer()), passphrase, cheap, remembered);
+    await enableEncryption(
+      device(new MemoryUserKeyServer()),
+      passphrase,
+      cheap,
+      remembered,
+    );
     expect(remembered.params).toEqual(cheap);
   });
 
@@ -280,24 +319,33 @@ describe("remembering the Argon2id parameters", ARGON2_TIMEOUT, () => {
     ["memory", { ...cheap, memory: cheap.memory + 1 }],
     ["passes", { ...cheap, iterations: cheap.iterations + 1 }],
     ["lanes", { ...cheap, parallelism: cheap.parallelism + 1 }],
-  ])("refuses to unlock with lower %s than it remembers, before deriving or sending anything", async (_name, higher) => {
-    const server = new MemoryUserKeyServer();
-    await enableEncryption(device(server), passphrase, cheap);
-    const remembered = new MemoryParams(higher);
-    const before = server.requests.length;
+  ])(
+    "refuses to unlock with lower %s than it remembers, before deriving or sending anything",
+    async (_name, higher) => {
+      const server = new MemoryUserKeyServer();
+      await enableEncryption(device(server), passphrase, cheap);
+      const remembered = new MemoryParams(higher);
+      const before = server.requests.length;
 
-    await expect(unlockUserKey(device(server), passphrase, remembered)).rejects.toBeInstanceOf(WeakerPassphraseParamsError);
+      await expect(
+        unlockUserKey(device(server), passphrase, remembered),
+      ).rejects.toBeInstanceOf(WeakerPassphraseParamsError);
 
-    expect(server.requests.slice(before).map((request) => request.procedure)).toEqual(["GetUserKeyParams"]);
-    expect(remembered.params).toEqual(higher);
-  });
+      expect(
+        server.requests.slice(before).map((request) => request.procedure),
+      ).toEqual(["GetUserKeyParams"]);
+      expect(remembered.params).toEqual(higher);
+    },
+  );
 
   it("unlocks with the parameters it remembers", async () => {
     const server = new MemoryUserKeyServer();
     const { key } = await enableEncryption(device(server), passphrase, cheap);
     const remembered = new MemoryParams({ ...cheap });
 
-    expect((await unlockUserKey(device(server), passphrase, remembered)).publicKey).toEqual(key.publicKey);
+    expect(
+      (await unlockUserKey(device(server), passphrase, remembered)).publicKey,
+    ).toEqual(key.publicKey);
     expect(remembered.params).toEqual(cheap);
   });
 
@@ -314,12 +362,23 @@ describe("remembering the Argon2id parameters", ARGON2_TIMEOUT, () => {
   it("refuses to change the passphrase of a key with lower parameters than it remembers", async () => {
     const server = new MemoryUserKeyServer();
     await enableEncryption(device(server), passphrase, cheap);
-    const remembered = new MemoryParams({ ...cheap, iterations: cheap.iterations + 1 });
+    const remembered = new MemoryParams({
+      ...cheap,
+      iterations: cheap.iterations + 1,
+    });
 
-    await expect(changePassphrase(device(server), passphrase, "another long passphrase", cheap, remembered)).rejects.toBeInstanceOf(
-      WeakerPassphraseParamsError,
+    await expect(
+      changePassphrase(
+        device(server),
+        passphrase,
+        "another long passphrase",
+        cheap,
+        remembered,
+      ),
+    ).rejects.toBeInstanceOf(WeakerPassphraseParamsError);
+    expect(server.requests.map((request) => request.procedure)).not.toContain(
+      "ChangePassphrase",
     );
-    expect(server.requests.map((request) => request.procedure)).not.toContain("ChangePassphrase");
   });
 
   it("refuses, when another device enabled encryption first, to unlock its key with lower parameters", async () => {
@@ -327,6 +386,8 @@ describe("remembering the Argon2id parameters", ARGON2_TIMEOUT, () => {
     await enableEncryption(device(server), passphrase, cheap);
     const remembered = new MemoryParams({ ...cheap, memory: cheap.memory + 1 });
 
-    await expect(enableEncryption(device(server), passphrase, cheap, remembered)).rejects.toBeInstanceOf(WeakerPassphraseParamsError);
+    await expect(
+      enableEncryption(device(server), passphrase, cheap, remembered),
+    ).rejects.toBeInstanceOf(WeakerPassphraseParamsError);
   });
 });

@@ -118,7 +118,11 @@ type Member struct {
 	// The member's hybrid ML-KEM-768 + X25519 user public key (1216 bytes,
 	// docs/design/crypto.md) for wrapping vault epoch keys to them, or empty when they have no user key
 	// (UserKeyService).
-	PublicKey     []byte `protobuf:"bytes,5,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`
+	PublicKey []byte `protobuf:"bytes,5,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`
+	// The member's Ed25519 signing public key (32 bytes), or empty when they
+	// have no user key or it was stored without one. With user_id and
+	// public_key it gives the member's bundle (docs/design/crypto.md).
+	SignPublicKey []byte `protobuf:"bytes,6,opt,name=sign_public_key,json=signPublicKey,proto3" json:"sign_public_key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -184,6 +188,13 @@ func (x *Member) GetJoinTime() *timestamppb.Timestamp {
 func (x *Member) GetPublicKey() []byte {
 	if x != nil {
 		return x.PublicKey
+	}
+	return nil
+}
+
+func (x *Member) GetSignPublicKey() []byte {
+	if x != nil {
+		return x.SignPublicKey
 	}
 	return nil
 }
@@ -1251,14 +1262,15 @@ const file_vaultsync_v1_membership_proto_rawDesc = "" +
 	"\vcreate_time\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"createTime\x12;\n" +
 	"\vexpire_time\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"expireTime\"\xc9\x01\n" +
+	"expireTime\"\xf1\x01\n" +
 	"\x06Member\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12!\n" +
 	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\x12+\n" +
 	"\x04role\x18\x03 \x01(\x0e2\x17.vaultsync.v1.VaultRoleR\x04role\x127\n" +
 	"\tjoin_time\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\bjoinTime\x12\x1d\n" +
 	"\n" +
-	"public_key\x18\x05 \x01(\fR\tpublicKey\"\xa2\x02\n" +
+	"public_key\x18\x05 \x01(\fR\tpublicKey\x12&\n" +
+	"\x0fsign_public_key\x18\x06 \x01(\fR\rsignPublicKey\"\xa2\x02\n" +
 	"\x17CreateInvitationRequest\x12\x19\n" +
 	"\bvault_id\x18\x01 \x01(\tR\avaultId\x12+\n" +
 	"\x04role\x18\x02 \x01(\x0e2\x17.vaultsync.v1.VaultRoleR\x04role\x12\x1f\n" +

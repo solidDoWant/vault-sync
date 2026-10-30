@@ -53,6 +53,9 @@ type Member struct {
 	// PublicKey is the member's user public key (SPEC.md §9.3), or nil
 	// when they have none.
 	PublicKey []byte
+	// SignPublicKey is the member's Ed25519 signing public key, or nil when
+	// they have no user key or it was stored without one.
+	SignPublicKey []byte
 }
 
 // lockVault locks the vault row against every other membership change and
@@ -371,7 +374,7 @@ func (store *Store) RedeemInvitation(ctx context.Context, userID uuid.UUID, code
 // ListMembers returns the vault's members, oldest membership first.
 func (vault *VaultStore) ListMembers(ctx context.Context) ([]Member, error) {
 	rows, err := vault.store.pool.Query(ctx, `
-		SELECT m.user_id, u.display_name, m.role, m.created_at, k.public_key
+		SELECT m.user_id, u.display_name, m.role, m.created_at, k.public_key, k.sign_public_key
 		FROM vault_members m JOIN users u ON u.id = m.user_id
 		LEFT JOIN user_keys k ON k.user_id = m.user_id
 		WHERE m.vault_id = $1
@@ -383,7 +386,7 @@ func (vault *VaultStore) ListMembers(ctx context.Context) ([]Member, error) {
 	members, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Member, error) {
 		var member Member
 
-		err := row.Scan(&member.UserID, &member.DisplayName, &member.Role, &member.JoinedAt, &member.PublicKey)
+		err := row.Scan(&member.UserID, &member.DisplayName, &member.Role, &member.JoinedAt, &member.PublicKey, &member.SignPublicKey)
 
 		return member, err
 	})

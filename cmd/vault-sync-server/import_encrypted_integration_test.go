@@ -96,7 +96,8 @@ func newEncryptedMember(t *testing.T, server *instance, token string) *encrypted
 		Params: &vaultsyncv1.PassphraseParams{
 			Suite: uint32(e2ee.SuiteV2), MemoryKib: params.Memory, Iterations: params.Iterations, Parallelism: uint32(params.Parallelism), Salt: salt,
 		},
-		AuthKey: authKey,
+		AuthKey:       authKey,
+		SignPublicKey: bytes.Repeat([]byte{1}, 32),
 	}, token))
 	require.NoError(t, err)
 

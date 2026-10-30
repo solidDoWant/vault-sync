@@ -39,18 +39,20 @@ func (fixture *syncFixture) userKeys(replica int) vaultsyncv1connect.UserKeyServ
 // userKeyMaterial is what a device sends for one wrapping. The wrapped key
 // and auth_key are random: the server treats them as opaque bytes.
 type userKeyMaterial struct {
-	publicKey []byte
-	wrapped   []byte
-	params    *vaultsyncv1.PassphraseParams
-	authKey   []byte
+	publicKey     []byte
+	signPublicKey []byte
+	wrapped       []byte
+	params        *vaultsyncv1.PassphraseParams
+	authKey       []byte
 }
 
 func newUserKeyMaterial(t *testing.T) userKeyMaterial {
 	t.Helper()
 
 	return userKeyMaterial{
-		publicKey: randomBytes(t, 1216),
-		wrapped:   randomBytes(t, 98),
+		publicKey:     randomBytes(t, 1216),
+		signPublicKey: randomBytes(t, 32),
+		wrapped:       randomBytes(t, 98),
 		params: &vaultsyncv1.PassphraseParams{
 			Suite: 2, MemoryKib: 65536, Iterations: 3, Parallelism: 1, Salt: randomBytes(t, 16),
 		},
@@ -64,6 +66,7 @@ func (material userKeyMaterial) rewrapped(t *testing.T) userKeyMaterial {
 
 	next := newUserKeyMaterial(t)
 	next.publicKey = material.publicKey
+	next.signPublicKey = material.signPublicKey
 	next.params.Iterations = 4
 
 	return next
@@ -74,6 +77,7 @@ func (fixture *syncFixture) createUserKey(t *testing.T, token string, material u
 
 	_, err := fixture.userKeys(0).CreateUserKey(t.Context(), authorized(&vaultsyncv1.CreateUserKeyRequest{
 		PublicKey: material.publicKey, WrappedPrivateKey: material.wrapped, Params: material.params, AuthKey: material.authKey,
+		SignPublicKey: material.signPublicKey,
 	}, token))
 
 	return err
@@ -108,6 +112,7 @@ func (fixture *syncFixture) requireUnlocksTo(t *testing.T, token string, authKey
 	unlocked, err := fixture.unlockUserKey(t, 0, token, authKey)
 	require.NoError(t, err)
 	assert.Equal(t, material.publicKey, unlocked.GetPublicKey())
+	assert.Equal(t, material.signPublicKey, unlocked.GetSignPublicKey())
 	assert.Equal(t, material.wrapped, unlocked.GetWrappedPrivateKey())
 	assert.Equal(t, material.params.GetSalt(), unlocked.GetParams().GetSalt())
 	assert.Equal(t, material.params.GetIterations(), unlocked.GetParams().GetIterations())
@@ -176,6 +181,7 @@ func TestCreateUserKeyIsCreateOnlyAgainstPostgres(t *testing.T) {
 	params, err := fixture.userKeys(1).GetUserKeyParams(t.Context(), authorized(&vaultsyncv1.GetUserKeyParamsRequest{}, token))
 	require.NoError(t, err)
 	assert.Equal(t, first.publicKey, params.Msg.GetPublicKey())
+	assert.Equal(t, first.signPublicKey, params.Msg.GetSignPublicKey())
 	assert.Equal(t, first.params.GetSalt(), params.Msg.GetParams().GetSalt())
 	assert.Equal(t, first.params.GetMemoryKib(), params.Msg.GetParams().GetMemoryKib())
 	assert.Equal(t, first.params.GetIterations(), params.Msg.GetParams().GetIterations())
@@ -192,6 +198,7 @@ func TestCreateUserKeyIsCreateOnlyAgainstPostgres(t *testing.T) {
 		group.Go(func() {
 			_, err := fixture.userKeys(replica).CreateUserKey(t.Context(), authorized(&vaultsyncv1.CreateUserKeyRequest{
 				PublicKey: second.publicKey, WrappedPrivateKey: second.wrapped, Params: second.params, AuthKey: second.authKey,
+				SignPublicKey: second.signPublicKey,
 			}, token))
 			assert.Equal(t, connect.CodeAlreadyExists, connect.CodeOf(err), err)
 		})
@@ -219,6 +226,7 @@ func TestConcurrentCreateUserKeyStoresOneKeyAgainstPostgres(t *testing.T) {
 		group.Go(func() {
 			_, results[index] = fixture.userKeys(index).CreateUserKey(t.Context(), authorized(&vaultsyncv1.CreateUserKeyRequest{
 				PublicKey: material.publicKey, WrappedPrivateKey: material.wrapped, Params: material.params, AuthKey: material.authKey,
+				SignPublicKey: material.signPublicKey,
 			}, token))
 		})
 	}
@@ -563,10 +571,103 @@ func TestUserKeyProceduresRequireAuthenticationAgainstPostgres(t *testing.T) {
 			_, err := client.ChangePassphrase(t.Context(), connect.NewRequest(&vaultsyncv1.ChangePassphraseRequest{}))
 			return err
 		},
+		"AddSignPublicKey": func() error {
+			_, err := client.AddSignPublicKey(t.Context(), connect.NewRequest(&vaultsyncv1.AddSignPublicKeyRequest{}))
+			return err
+		},
 	}
 
 	for name, call := range calls {
 		err := call()
 		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err), "%s: %v", name, errors.Unwrap(err))
 	}
+}
+
+func (fixture *syncFixture) addSignPublicKey(t *testing.T, token string, authKey, signPublicKey []byte) error {
+	t.Helper()
+
+	_, err := fixture.userKeys(1).AddSignPublicKey(t.Context(), authorized(&vaultsyncv1.AddSignPublicKeyRequest{
+		AuthKey: authKey, SignPublicKey: signPublicKey,
+	}, token))
+
+	return err
+}
+
+// signPublicKeysOf lists vaultID's members as user id to sign_public_key.
+func (fixture *syncFixture) signPublicKeysOf(t *testing.T, token, vaultID string) map[string][]byte {
+	t.Helper()
+
+	members, err := fixture.members(0).ListMembers(t.Context(), authorized(&vaultsyncv1.ListMembersRequest{VaultId: vaultID}, token))
+	require.NoError(t, err)
+
+	keys := map[string][]byte{}
+	for _, member := range members.Msg.GetMembers() {
+		keys[member.GetUserId()] = member.GetSignPublicKey()
+	}
+
+	return keys
+}
+
+// A key created with its signing public key reports it to its owner and in
+// every member list; a key stored without one (as before the column
+// existed) reports none until the user adds it, once, with the right
+// auth_key.
+func TestSignPublicKeyIsStoredAddedOnceAndListedAgainstPostgres(t *testing.T) {
+	fixture := newSyncFixture(t, api.SyncLimits{})
+	alice := fixture.token(t, "alice")
+	bob := fixture.token(t, "bob")
+	carol := fixture.token(t, "carol")
+	vaultID := fixture.createVault(t, alice, "Plaintext").GetId()
+
+	for _, token := range []string{bob, carol} {
+		_, err := fixture.redeem(t, token, fixture.mustInvite(t, alice, vaultID, vaultsyncv1.VaultRole_VAULT_ROLE_EDITOR).GetCode())
+		require.NoError(t, err)
+	}
+
+	alices := newUserKeyMaterial(t)
+	require.NoError(t, fixture.createUserKey(t, alice, alices))
+
+	// Bob's key was stored without a signing public key.
+	bobs := newUserKeyMaterial(t)
+	require.NoError(t, fixture.createUserKey(t, bob, bobs))
+
+	bobID := userID(t, fixture.pool, fixture.issuer.URL, "bob")
+	_, err := fixture.pool.Exec(t.Context(), `UPDATE user_keys SET sign_public_key = NULL WHERE user_id = $1`, bobID)
+	require.NoError(t, err)
+
+	aliceID := userID(t, fixture.pool, fixture.issuer.URL, "alice").String()
+	carolID := userID(t, fixture.pool, fixture.issuer.URL, "carol").String()
+	assert.Equal(t, map[string][]byte{aliceID: alices.signPublicKey, bobID.String(): nil, carolID: nil},
+		fixture.signPublicKeysOf(t, alice, vaultID), "Carol has no user key, Bob's has no signing key")
+
+	unlocked, err := fixture.unlockUserKey(t, 0, bob, bobs.authKey)
+	require.NoError(t, err)
+	assert.Empty(t, unlocked.GetSignPublicKey())
+
+	// A wrong auth_key adds nothing and counts as a failed attempt.
+	requireWrongPassphrase(t, fixture.addSignPublicKey(t, bob, randomBytes(t, 32), bobs.signPublicKey))
+
+	var failed int
+	require.NoError(t, fixture.pool.QueryRow(t.Context(), `SELECT failed_attempts FROM user_keys WHERE user_id = $1`, bobID).Scan(&failed))
+	assert.Equal(t, 1, failed)
+
+	params, err := fixture.userKeys(0).GetUserKeyParams(t.Context(), authorized(&vaultsyncv1.GetUserKeyParamsRequest{}, bob))
+	require.NoError(t, err)
+	assert.Empty(t, params.Msg.GetSignPublicKey())
+
+	require.NoError(t, fixture.addSignPublicKey(t, bob, bobs.authKey, bobs.signPublicKey))
+	require.NoError(t, fixture.addSignPublicKey(t, bob, bobs.authKey, bobs.signPublicKey), "adding the stored key again changes nothing")
+
+	err = fixture.addSignPublicKey(t, bob, bobs.authKey, randomBytes(t, 32))
+	assert.Equal(t, connect.CodeAlreadyExists, connect.CodeOf(err), err)
+
+	err = fixture.addSignPublicKey(t, alice, alices.authKey, randomBytes(t, 32))
+	assert.Equal(t, connect.CodeAlreadyExists, connect.CodeOf(err), "a key created with one cannot get another: %v", err)
+
+	err = fixture.addSignPublicKey(t, carol, randomBytes(t, 32), randomBytes(t, 32))
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err), err)
+
+	fixture.requireUnlocksTo(t, bob, bobs.authKey, bobs)
+	assert.Equal(t, map[string][]byte{aliceID: alices.signPublicKey, bobID.String(): bobs.signPublicKey, carolID: nil},
+		fixture.signPublicKeysOf(t, alice, vaultID))
 }

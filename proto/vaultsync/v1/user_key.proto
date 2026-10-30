@@ -15,10 +15,10 @@ option go_package = "github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyn
 // user's key. A user has at most one key, which is never replaced (only
 // re-wrapped by ChangePassphrase).
 //
-// Failed attempts: UnlockUserKey and ChangePassphrase calls with a wrong
-// auth_key are counted per user, on every server replica alike. After 10 of
-// them within one hour (the hour starting at the first counted failure),
-// every UnlockUserKey and ChangePassphrase call gets RESOURCE_EXHAUSTED, with
+// Failed attempts: UnlockUserKey, ChangePassphrase and AddSignPublicKey
+// calls with a wrong auth_key are counted per user, on every server replica
+// alike. After 10 of them within one hour (the hour starting at the first
+// counted failure), every such call gets RESOURCE_EXHAUSTED, with
 // an ErrorDetail of reason ERROR_REASON_PASSPHRASE_ATTEMPTS_EXHAUSTED and
 // retry_time set to the end of the hour, even with the right auth_key. Calls
 // refused that way are not counted. A successful call does not reset the
@@ -48,6 +48,19 @@ service UserKeyService {
   // failed attempt); RESOURCE_EXHAUSTED when too many attempts failed (see
   // the service comment).
   rpc UnlockUserKey(UnlockUserKeyRequest) returns (UnlockUserKeyResponse) {}
+
+  // AddSignPublicKey stores the caller's Ed25519 signing public key for a
+  // user key stored without one, when auth_key is right. It is add-once:
+  // presenting the key already stored succeeds and changes nothing, so two
+  // devices unlocking at once both succeed.
+  //
+  // Errors: INVALID_ARGUMENT when auth_key or sign_public_key is not 32
+  // bytes; NOT_FOUND when the caller has no key; PERMISSION_DENIED with
+  // reason ERROR_REASON_WRONG_PASSPHRASE when auth_key is wrong (counted as a
+  // failed attempt); ALREADY_EXISTS when another signing public key is
+  // stored, which is left unchanged; RESOURCE_EXHAUSTED when too many
+  // attempts failed.
+  rpc AddSignPublicKey(AddSignPublicKeyRequest) returns (AddSignPublicKeyResponse) {}
 
   // ChangePassphrase replaces the wrapped private key, its parameters and
   // the verifier in one step: a compare-and-swap on the stored public key,
@@ -109,6 +122,10 @@ message GetUserKeyParamsResponse {
   // UUID: the id a signed log entry must name for the caller. The token's
   // subject is the OIDC subject, not this id.
   string user_id = 3;
+  // The caller's Ed25519 signing public key (32 bytes, docs/design/crypto.md
+  // bundle), or empty when their key was stored without one
+  // (AddSignPublicKey adds it).
+  bytes sign_public_key = 4;
 }
 
 // CreateUserKeyRequest holds a new key pair, its private key wrapped.
@@ -123,6 +140,9 @@ message CreateUserKeyRequest {
   // The verifier derived from the passphrase: exactly 32 bytes. The server
   // stores only its SHA-256.
   bytes auth_key = 4;
+  // The Ed25519 signing public key of the key pair (docs/design/crypto.md
+  // bundle): exactly 32 bytes.
+  bytes sign_public_key = 5;
 }
 
 // CreateUserKeyResponse confirms the key was stored.
@@ -147,7 +167,21 @@ message UnlockUserKeyResponse {
   PassphraseParams params = 3;
   // The caller's user id, as in GetUserKeyParamsResponse.
   string user_id = 4;
+  // The caller's signing public key, as in GetUserKeyParamsResponse.
+  bytes sign_public_key = 5;
 }
+
+// AddSignPublicKeyRequest holds the signing public key to add.
+message AddSignPublicKeyRequest {
+  // The verifier derived from the passphrase: exactly 32 bytes.
+  bytes auth_key = 1;
+  // The Ed25519 signing public key of the caller's key pair: exactly 32
+  // bytes.
+  bytes sign_public_key = 2;
+}
+
+// AddSignPublicKeyResponse confirms the key is stored. It has no fields.
+message AddSignPublicKeyResponse {}
 
 // ChangePassphraseRequest re-wraps the caller's private key.
 message ChangePassphraseRequest {

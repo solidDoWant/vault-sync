@@ -42,7 +42,7 @@ func (fixture *keyFixture) keyedUser(t *testing.T, subject string) uuid.UUID {
 	user, err := fixture.queries.UpsertUser(t.Context(), testIssuer, subject, "")
 	require.NoError(t, err)
 
-	require.NoError(t, fixture.queries.CreateUserKey(t.Context(), user, randomBytes(t, 32), store.Wrapping{
+	require.NoError(t, fixture.queries.CreateUserKey(t.Context(), user, randomBytes(t, 32), randomBytes(t, 32), store.Wrapping{
 		WrappedPrivateKey: randomBytes(t, 98),
 		Params:            store.PassphraseParams{Suite: 1, MemoryKiB: 65536, Iterations: 3, Parallelism: 1, Salt: randomBytes(t, 16)},
 		AuthKeyHash:       randomBytes(t, 32),

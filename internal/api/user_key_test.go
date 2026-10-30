@@ -26,15 +26,27 @@ type userKeyRecorder struct {
 	authKeyHash       []byte
 	wrapping          store.Wrapping
 	publicKey         []byte
+	signPublicKey     []byte
 	expectedPublicKey []byte
+	// addErr is what AddSignPublicKey returns.
+	addErr error
 }
 
-func (recorder *userKeyRecorder) CreateUserKey(_ context.Context, _ uuid.UUID, publicKey []byte, wrapping store.Wrapping) error {
+func (recorder *userKeyRecorder) CreateUserKey(_ context.Context, _ uuid.UUID, publicKey, signPublicKey []byte, wrapping store.Wrapping) error {
 	recorder.calls++
 	recorder.publicKey = publicKey
+	recorder.signPublicKey = signPublicKey
 	recorder.wrapping = wrapping
 
 	return nil
+}
+
+func (recorder *userKeyRecorder) AddSignPublicKey(_ context.Context, _ uuid.UUID, authKeyHash, signPublicKey []byte, _ store.AttemptLimit) error {
+	recorder.calls++
+	recorder.authKeyHash = authKeyHash
+	recorder.signPublicKey = signPublicKey
+
+	return recorder.addErr
 }
 
 func (recorder *userKeyRecorder) UserKeyParams(context.Context, uuid.UUID) (store.UserKey, error) {
@@ -122,6 +134,7 @@ func validCreateRequest() *vaultsyncv1.CreateUserKeyRequest {
 		WrappedPrivateKey: bytes.Repeat([]byte{2}, 98),
 		Params:            validParams(),
 		AuthKey:           bytes.Repeat([]byte{3}, 32),
+		SignPublicKey:     bytes.Repeat([]byte{6}, 32),
 	}
 }
 
@@ -171,6 +184,11 @@ func TestCreateUserKeyBoundsEveryInputBeforeTheStore(t *testing.T) {
 		{name: "31-byte auth key", mutate: func(request *vaultsyncv1.CreateUserKeyRequest) { request.AuthKey = request.AuthKey[:31] }},
 		{name: "33-byte auth key", mutate: func(request *vaultsyncv1.CreateUserKeyRequest) { request.AuthKey = append(request.AuthKey, 0) }},
 		{name: "missing params", mutate: func(request *vaultsyncv1.CreateUserKeyRequest) { request.Params = nil }},
+		{name: "empty sign public key", mutate: func(request *vaultsyncv1.CreateUserKeyRequest) { request.SignPublicKey = nil }},
+		{name: "31-byte sign public key", mutate: func(request *vaultsyncv1.CreateUserKeyRequest) { request.SignPublicKey = request.SignPublicKey[:31] }},
+		{name: "33-byte sign public key", mutate: func(request *vaultsyncv1.CreateUserKeyRequest) {
+			request.SignPublicKey = append(request.SignPublicKey, 0)
+		}},
 	}
 
 	for _, params := range paramsCases() {
@@ -266,6 +284,7 @@ func TestOnlyTheHashOfAnAuthKeyReachesTheStore(t *testing.T) {
 	createHash := sha256.Sum256(create.GetAuthKey())
 	assert.Equal(t, createHash[:], recorder.wrapping.AuthKeyHash)
 	assert.Equal(t, create.GetPublicKey(), recorder.publicKey)
+	assert.Equal(t, create.GetSignPublicKey(), recorder.signPublicKey)
 
 	change := validChangeRequest()
 	_, err = service.ChangePassphrase(ctx, connect.NewRequest(change))
@@ -312,6 +331,72 @@ func TestUserKeyResponsesNameTheCallersUserID(t *testing.T) {
 			unlocked, err := service.UnlockUserKey(ctx, connect.NewRequest(&vaultsyncv1.UnlockUserKeyRequest{AuthKey: bytes.Repeat([]byte{9}, 32)}))
 			require.NoError(t, err)
 			assert.Equal(t, want, unlocked.Msg.GetUserId())
+		})
+	}
+}
+
+func TestAddSignPublicKeyBoundsEveryInputBeforeTheStore(t *testing.T) {
+	ctx := userKeyContext(t)
+
+	tests := []struct {
+		name          string
+		authKey       int
+		signPublicKey int
+		accepted      bool
+	}{
+		{name: "valid", authKey: 32, signPublicKey: 32, accepted: true},
+		{name: "31-byte auth key", authKey: 31, signPublicKey: 32},
+		{name: "33-byte auth key", authKey: 33, signPublicKey: 32},
+		{name: "empty sign public key", authKey: 32, signPublicKey: 0},
+		{name: "31-byte sign public key", authKey: 32, signPublicKey: 31},
+		{name: "33-byte sign public key", authKey: 32, signPublicKey: 33},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := &userKeyRecorder{}
+			service := api.UserKeyService{Store: recorder, Logger: slog.New(slog.DiscardHandler)}
+
+			_, err := service.AddSignPublicKey(ctx, connect.NewRequest(&vaultsyncv1.AddSignPublicKeyRequest{
+				AuthKey: bytes.Repeat([]byte{3}, test.authKey), SignPublicKey: bytes.Repeat([]byte{6}, test.signPublicKey),
+			}))
+			assertBounded(t, recorder, err, test.accepted)
+		})
+	}
+}
+
+func TestAddSignPublicKeyPassesTheKeyAndTheAuthKeyHashAndMapsRefusals(t *testing.T) {
+	ctx := userKeyContext(t)
+	authKey := bytes.Repeat([]byte{3}, 32)
+	signPublicKey := bytes.Repeat([]byte{6}, 32)
+
+	tests := []struct {
+		name     string
+		storeErr error
+		code     connect.Code
+	}{
+		{name: "added"},
+		{name: "another key stored", storeErr: store.ErrSignPublicKeyExists, code: connect.CodeAlreadyExists},
+		{name: "wrong auth key", storeErr: store.ErrWrongAuthKey, code: connect.CodePermissionDenied},
+		{name: "no user key", storeErr: store.ErrUserKeyNotFound, code: connect.CodeNotFound},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := &userKeyRecorder{addErr: test.storeErr}
+			service := api.UserKeyService{Store: recorder, Logger: slog.New(slog.DiscardHandler)}
+
+			_, err := service.AddSignPublicKey(ctx, connect.NewRequest(&vaultsyncv1.AddSignPublicKeyRequest{AuthKey: authKey, SignPublicKey: signPublicKey}))
+			if test.storeErr == nil {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+				assert.Equal(t, test.code, connect.CodeOf(err))
+			}
+
+			hash := sha256.Sum256(authKey)
+			assert.Equal(t, hash[:], recorder.authKeyHash)
+			assert.Equal(t, signPublicKey, recorder.signPublicKey)
 		})
 	}
 }

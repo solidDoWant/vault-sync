@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"errors"
@@ -25,6 +26,9 @@ var (
 	// ErrPublicKeyMismatch is returned by ChangePassphrase when the expected
 	// public key is not the stored one. Nothing was changed.
 	ErrPublicKeyMismatch = errors.New("public key does not match the stored key")
+	// ErrSignPublicKeyExists is returned by AddSignPublicKey when another
+	// signing public key is stored. Nothing was changed.
+	ErrSignPublicKeyExists = errors.New("another signing public key is stored")
 )
 
 // AttemptsExhaustedError is returned when the user's failed attempts have
@@ -57,7 +61,10 @@ type PassphraseParams struct {
 
 // UserKey is a user's public key and wrapped private key.
 type UserKey struct {
-	PublicKey         []byte
+	PublicKey []byte
+	// SignPublicKey is the Ed25519 signing public key, or nil for a key
+	// stored without one.
+	SignPublicKey     []byte
 	WrappedPrivateKey []byte
 	Params            PassphraseParams
 }
@@ -72,15 +79,15 @@ type Wrapping struct {
 
 // CreateUserKey stores userID's key pair, returning ErrUserKeyExists (and
 // changing nothing) if userID already has one.
-func (store *Store) CreateUserKey(ctx context.Context, userID uuid.UUID, publicKey []byte, wrapping Wrapping) error {
+func (store *Store) CreateUserKey(ctx context.Context, userID uuid.UUID, publicKey, signPublicKey []byte, wrapping Wrapping) error {
 	params := wrapping.Params
 
 	tag, err := store.pool.Exec(ctx, `
-		INSERT INTO user_keys (user_id, public_key, wrapped_private_key, suite, argon2_memory_kib, argon2_iterations,
-			argon2_parallelism, salt, auth_key_hash)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		INSERT INTO user_keys (user_id, public_key, sign_public_key, wrapped_private_key, suite, argon2_memory_kib,
+			argon2_iterations, argon2_parallelism, salt, auth_key_hash)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		ON CONFLICT (user_id) DO NOTHING`,
-		userID, publicKey, wrapping.WrappedPrivateKey, params.Suite, params.MemoryKiB, params.Iterations,
+		userID, publicKey, signPublicKey, wrapping.WrappedPrivateKey, params.Suite, params.MemoryKiB, params.Iterations,
 		params.Parallelism, params.Salt, wrapping.AuthKeyHash)
 	if err != nil {
 		var pgErr *pgconn.PgError
@@ -104,9 +111,9 @@ func (store *Store) UserKeyParams(ctx context.Context, userID uuid.UUID) (UserKe
 	var key UserKey
 
 	err := store.pool.QueryRow(ctx, `
-		SELECT public_key, suite, argon2_memory_kib, argon2_iterations, argon2_parallelism, salt
+		SELECT public_key, sign_public_key, suite, argon2_memory_kib, argon2_iterations, argon2_parallelism, salt
 		FROM user_keys WHERE user_id = $1`, userID).Scan(
-		&key.PublicKey, &key.Params.Suite, &key.Params.MemoryKiB, &key.Params.Iterations, &key.Params.Parallelism, &key.Params.Salt)
+		&key.PublicKey, &key.SignPublicKey, &key.Params.Suite, &key.Params.MemoryKiB, &key.Params.Iterations, &key.Params.Parallelism, &key.Params.Salt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return UserKey{}, ErrUserKeyNotFound
 	}
@@ -162,6 +169,31 @@ func (store *Store) ChangePassphrase(ctx context.Context, userID uuid.UUID, auth
 	})
 }
 
+// AddSignPublicKey stores signPublicKey as userID's signing public key when
+// authKeyHash matches the stored one and the key has none. Presenting the
+// stored signing public key succeeds without a change. Beyond
+// UnlockUserKey's errors, it returns ErrSignPublicKeyExists when another one
+// is stored, changing nothing.
+func (store *Store) AddSignPublicKey(ctx context.Context, userID uuid.UUID, authKeyHash, signPublicKey []byte, limit AttemptLimit) error {
+	return store.withVerifiedUserKey(ctx, userID, authKeyHash, limit, func(tx pgx.Tx, stored UserKey) error {
+		if stored.SignPublicKey != nil {
+			if !bytes.Equal(stored.SignPublicKey, signPublicKey) {
+				return ErrSignPublicKeyExists
+			}
+
+			return nil
+		}
+
+		_, err := tx.Exec(ctx, `UPDATE user_keys SET sign_public_key = $2, updated_at = now() WHERE user_id = $1`,
+			userID, signPublicKey)
+		if err != nil {
+			return fmt.Errorf("add sign public key: %w", err)
+		}
+
+		return nil
+	})
+}
+
 // withVerifiedUserKey locks userID's key row, enforces limit and checks
 // authKeyHash in one transaction, then runs action on success. A wrong
 // auth_key is counted and committed before ErrWrongAuthKey is returned. The
@@ -185,10 +217,10 @@ func (store *Store) withVerifiedUserKey(ctx context.Context, userID uuid.UUID, a
 		)
 
 		err := tx.QueryRow(ctx, `
-			SELECT public_key, wrapped_private_key, suite, argon2_memory_kib, argon2_iterations, argon2_parallelism, salt,
+			SELECT public_key, sign_public_key, wrapped_private_key, suite, argon2_memory_kib, argon2_iterations, argon2_parallelism, salt,
 				auth_key_hash, failed_attempts, attempt_window_start, now()
 			FROM user_keys WHERE user_id = $1 FOR UPDATE`, userID).Scan(
-			&stored.PublicKey, &stored.WrappedPrivateKey, &stored.Params.Suite, &stored.Params.MemoryKiB,
+			&stored.PublicKey, &stored.SignPublicKey, &stored.WrappedPrivateKey, &stored.Params.Suite, &stored.Params.MemoryKiB,
 			&stored.Params.Iterations, &stored.Params.Parallelism, &stored.Params.Salt,
 			&storedHash, &failed, &windowStart, &now)
 		if errors.Is(err, pgx.ErrNoRows) {
