@@ -94,9 +94,8 @@ message Device {
 // ContentRef points at the content of a revision: a complete blob in the same
 // vault (SPEC.md §5 "Content addressing").
 message ContentRef {
-  // Content address. For plaintext vaults SHA-256(content) (32 bytes). For
-  // E2EE vaults HMAC-SHA256(blob_id_secret, plaintext) (32 bytes); the blob
-  // itself then holds ciphertext.
+  // Content address: SHA-256 of the stored bytes (32 bytes), the content in
+  // plaintext vaults and the sealed content (ciphertext) in E2EE vaults.
   bytes blob_id = 1;
   // Size in bytes of the stored blob (ciphertext size for E2EE vaults).
   uint64 size = 2;

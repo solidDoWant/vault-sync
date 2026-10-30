@@ -4,7 +4,6 @@ package main_test
 
 import (
 	"bytes"
-	"crypto/hmac"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
@@ -223,12 +222,7 @@ func (member *encryptedMember) decryptAll(t *testing.T, server *instance, vaultI
 			content, err := e2ee.Open(contentSubkey, sealed, contentAD)
 			require.NoError(t, err, "the content of %q decrypts", path)
 
-			blobIDSecret, err := e2ee.DeriveSubkey(epochKey, e2ee.LabelBlobIDSecret)
-			require.NoError(t, err)
-
-			expected, err := e2ee.BlobID(blobIDSecret, content)
-			require.NoError(t, err)
-			assert.True(t, hmac.Equal(expected, blobID), "the blob id of %q matches its content", path)
+			assert.Equal(t, e2ee.BlobID(sealed), blobID, "the blob id of %q is the hash of its sealed content", path)
 
 			file.Digest = digest(string(content))
 		}

@@ -90,8 +90,7 @@ func (deployment *deployment) commitEncrypted(t *testing.T, vault *escrowedStore
 	sealedContent, err := e2ee.Seal(subkey(e2ee.LabelContent), content, contentAD)
 	require.NoError(t, err)
 
-	blobID, err := e2ee.BlobID(subkey(e2ee.LabelBlobIDSecret), content)
-	require.NoError(t, err)
+	blobID := e2ee.BlobID(sealedContent)
 
 	pathKey, err := e2ee.PathKey(subkey(e2ee.LabelPathKeySecret), path)
 	require.NoError(t, err)

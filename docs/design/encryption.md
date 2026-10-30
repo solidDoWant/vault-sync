@@ -9,7 +9,7 @@ Status: approved by the owner on 2026-10-29. It adds to `SPEC.md` §9.3–§9.4,
   - every member;
   - every pending invitation;
   - the deployment's escrow key, if escrow is on for the vault.
-- **Path keys and blob ids** are HMACs. The server compares them without learning names or contents. Path keys use one secret for the vault's lifetime and blob ids use the revision's epoch (*Formats and rules*, below).
+- **Path keys** are HMACs, and **blob ids** are the SHA-256 of the sealed content. The server compares path keys without learning names, and verifies blob ids without learning contents. Path keys use one secret for the vault's lifetime (*Formats and rules*, below).
 - **Merging happens on the device.** A device decrypts, applies `engine.md` rule M, and encrypts the result. The engine itself is unchanged.
 
 ## Suite 2: hybrid post-quantum
@@ -52,7 +52,7 @@ Status: approved by the owner on 2026-10-29. It adds to `SPEC.md` §9.3–§9.4,
 ## Converting a plaintext vault in place
 
 1. **Every member must have a user key.** Otherwise conversion is refused and the members without one are listed.
-2. **One atomic switch:** the owner's device creates epoch 1 with all its slots, submits the HMAC path key of every live document, and flips the vault to encrypted. From then on, plaintext commits are refused with `FAILED_PRECONDITION` and reason `VAULT_ENCRYPTED`. A device that gets it reloads the vault, unlocks its user key (prompting if it must), syncs the keys, re-encrypts the pending change and retries, as after `EPOCH_NOT_CURRENT`. Until the user unlocks, sync of that vault pauses and keeps local files.
+2. **One atomic switch:** the owner's device creates epoch 1 with all its slots, submits the HMAC path key of every live document, and flips the vault to encrypted. The server stores those keys and replaces the plaintext `path_key` of every deleted document with a placeholder unique to it, so once history is re-encrypted no plaintext path is left in the database. From then on, plaintext commits are refused with `FAILED_PRECONDITION` and reason `VAULT_ENCRYPTED`. A device that gets it reloads the vault, unlocks its user key (prompting if it must), syncs the keys, re-encrypts the pending change and retries, as after `EPOCH_NOT_CURRENT`. Until the user unlocks, sync of that vault pauses and keeps local files.
 3. **Plaintext history becomes epoch 0,** and the re-key job encrypts it. Readers treat epoch 0 as plaintext until then.
 
 ## Escrow

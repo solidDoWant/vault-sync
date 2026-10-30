@@ -786,11 +786,11 @@ func TestConcurrentUploadsOfTheSameBlob(t *testing.T) {
 	})
 }
 
-// End-to-end encrypted vaults address blobs by an HMAC the server cannot
-// verify, so it stores whatever was uploaded and clients verify it (SPEC.md
-// §5). Such vaults cannot be created through the API yet, so the vault is
-// seeded directly.
-func TestEndToEndEncryptedVaultsSkipTheHashCheck(t *testing.T) {
+// End-to-end encrypted vaults address blobs by the SHA-256 of the sealed
+// bytes, which the server verifies as in plaintext vaults (SPEC.md §5), so a
+// resumed or shared upload spliced from two ciphertexts is refused. The vault
+// is seeded directly.
+func TestEndToEndEncryptedVaultsVerifyTheHashOfTheSealedBytes(t *testing.T) {
 	fixture := newBlobFixture(t, defaultBlobLimits)
 	token := fixture.token(t, "alice")
 	fixture.listVaults(t, token)
@@ -803,8 +803,13 @@ func TestEndToEndEncryptedVaultsSkipTheHashCheck(t *testing.T) {
 	require.NoError(t, err)
 
 	ciphertext := randomBytes(t, config.DefaultBlobMaxChunkBytes+1)
-	hmacID := randomBytes(t, 32)
 
-	require.NoError(t, fixture.upload(t, token, vaultID, hmacID, ciphertext))
-	assert.Equal(t, ciphertext, fixture.downloadAll(t, token, vaultID, hmacID))
+	otherID := randomBytes(t, 32)
+	requireCode(t, connect.CodeInvalidArgument, fixture.upload(t, token, vaultID, otherID, ciphertext), "an id that is not the hash of the sealed bytes")
+	_, err = fixture.download(t, token, vaultID, otherID, 0, 0)
+	requireCode(t, connect.CodeNotFound, err, "nothing visible")
+
+	blobID := blobIDOf(ciphertext)
+	require.NoError(t, fixture.upload(t, token, vaultID, blobID, ciphertext))
+	assert.Equal(t, ciphertext, fixture.downloadAll(t, token, vaultID, blobID))
 }

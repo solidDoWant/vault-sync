@@ -238,3 +238,22 @@ describe("sync in an end-to-end encrypted vault", () => {
     expect(await b.files()).toEqual({ "new.md": "under epoch 2\n", "old.md": "under epoch 1\n" });
   });
 });
+
+describe("a path-only rename in an encrypted vault", () => {
+  it("references the content the server already holds under the current epoch, even after a restart", async () => {
+    const { server, a, b } = setup();
+    await a.write("before.md", "content that only moves\n");
+    await a.sync();
+    a.restart();
+    await a.vault.rename("before.md", "after.md");
+    const uploads: string[] = [];
+    server.interceptor = (method) => {
+      if (method === "BeginBlob" || method === "PutBlobChunk") uploads.push(method);
+    };
+    await a.sync();
+    server.interceptor = undefined;
+    expect(uploads).toEqual([]);
+    await b.sync();
+    expect(await b.files()).toEqual({ "after.md": "content that only moves\n" });
+  });
+});

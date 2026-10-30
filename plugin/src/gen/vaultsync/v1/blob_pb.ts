@@ -317,8 +317,9 @@ export const BlobService: GenService<{
     output: typeof PutBlobChunkResponseSchema;
   },
   /**
-   * CommitBlob completes an upload. For plaintext vaults the server verifies
-   * SHA-256(content) == blob_id. Committing an already-complete blob
+   * CommitBlob completes an upload. The server verifies
+   * SHA-256(content) == blob_id, the stored bytes in every vault (ciphertext
+   * in E2EE vaults). Committing an already-complete blob
    * succeeds (idempotent).
    *
    * Errors: FAILED_PRECONDITION if fewer than size bytes were received;

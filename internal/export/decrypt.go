@@ -3,7 +3,6 @@ package export
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -21,7 +20,7 @@ var (
 	errNoEpochKey       = errors.New("no escrow key opens the revision's epoch")
 	errPathDecrypt      = errors.New("path does not decrypt with the revision's epoch key")
 	errContentDecrypt   = errors.New("stored content does not decrypt with the revision's epoch key")
-	errContentNotBlobID = errors.New("decrypted content does not match its blob id")
+	errContentNotBlobID = errors.New("sealed content does not match its blob id")
 )
 
 // EscrowIdentity is an escrow private key the export decrypts escrowed
@@ -61,7 +60,6 @@ func (failure *vaultFailure) Error() string { return failure.reason }
 type epochKeys struct {
 	content []byte
 	path    []byte
-	blobID  []byte
 }
 
 // escrowKeys opens every escrow slot of the vault that one of the
@@ -167,10 +165,6 @@ func deriveEpochKeys(epochKey []byte) (epochKeys, error) {
 		return epochKeys{}, err
 	}
 
-	if keys.blobID, err = e2ee.DeriveSubkey(epochKey, e2ee.LabelBlobIDSecret); err != nil {
-		return epochKeys{}, err
-	}
-
 	return keys, nil
 }
 
@@ -271,12 +265,7 @@ func (run *run) decryptContent(ctx context.Context, vaultID uuid.UUID, keys epoc
 		return nil, refuse(errContentDecrypt)
 	}
 
-	blobID, err := e2ee.BlobID(keys.blobID, content)
-	if err != nil {
-		return nil, err
-	}
-
-	if !hmac.Equal(blobID, document.ContentRef) {
+	if !bytes.Equal(e2ee.BlobID(sealed), document.ContentRef) {
 		return nil, refuse(errContentNotBlobID)
 	}
 

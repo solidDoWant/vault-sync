@@ -263,7 +263,7 @@ func TestDeriveSubkey(t *testing.T) {
 
 	subkeys := map[string]struct{}{}
 
-	for _, label := range []e2ee.Label{e2ee.LabelContent, e2ee.LabelPath, e2ee.LabelPathKeySecret, e2ee.LabelBlobIDSecret} {
+	for _, label := range []e2ee.Label{e2ee.LabelContent, e2ee.LabelPath, e2ee.LabelPathKeySecret} {
 		subkey, err := e2ee.DeriveSubkey(epochKey, label)
 		require.NoError(t, err)
 		require.Len(t, subkey, e2ee.KeySize)
@@ -271,7 +271,7 @@ func TestDeriveSubkey(t *testing.T) {
 		subkeys[string(subkey)] = struct{}{}
 	}
 
-	assert.Len(t, subkeys, 4, "every label derives a different key")
+	assert.Len(t, subkeys, 3, "every label derives a different key")
 
 	tests := []struct {
 		name     string

@@ -1,7 +1,7 @@
 /**
  * End-to-end encryption primitives of SPEC.md §9.3, cipher suite 2:
  * HKDF-SHA256 sub-keys, XChaCha20-Poly1305 with associated data, HMAC-SHA256
- * path_key and blob_id, and Argon2id passphrase wrapping. The hybrid
+ * path_key, SHA-256 blob_id, and Argon2id passphrase wrapping. The hybrid
  * post-quantum key wrapping of key slots is in hybrid.ts.
  *
  * Every symmetric ciphertext starts with its suite version byte, and every open
@@ -58,7 +58,7 @@ export class DecryptError extends Error {
 }
 
 /** The HKDF sub-keys of a vault epoch key (SPEC.md §9.3). */
-export const SUBKEY_LABELS = ["content", "path", "path_key_secret", "blob_id_secret"] as const;
+export const SUBKEY_LABELS = ["content", "path", "path_key_secret"] as const;
 export type SubkeyLabel = (typeof SUBKEY_LABELS)[number];
 
 function requireLength(name: string, value: Uint8Array, length: number): void {
@@ -161,9 +161,9 @@ export function pathKey(pathKeySecret: Uint8Array, path: string): Uint8Array {
   return mac(pathKeySecret, encoder.encode(normalizePath(path)));
 }
 
-/** The E2EE blob_id of a plaintext (SPEC.md §5): HMAC-SHA256(blob_id_secret, plaintext). */
-export function blobId(blobIdSecret: Uint8Array, plaintext: Uint8Array): Uint8Array {
-  return mac(blobIdSecret, plaintext);
+/** The E2EE blob_id of sealed content (SPEC.md §5): the SHA-256 of the sealed bytes, which the server verifies at CommitBlob. */
+export function blobId(sealed: Uint8Array): Uint8Array {
+  return sha256(sealed);
 }
 
 /** The Argon2id parameters of a passphrase-wrapped secret. */

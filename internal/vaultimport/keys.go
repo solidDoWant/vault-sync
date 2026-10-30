@@ -175,10 +175,9 @@ type vaultKeys struct {
 	// epoch is the vault's current epoch, which every revision is sealed
 	// under.
 	epoch uint64
-	// content, path and blobID are the current epoch's sub-keys.
+	// content and path are the current epoch's sub-keys.
 	content []byte
 	path    []byte
-	blobID  []byte
 	// pathKeySecret is epoch 1's: path keys use it for the vault's whole
 	// life.
 	pathKeySecret []byte
@@ -338,10 +337,6 @@ func deriveVaultKeys(epoch uint64, currentKey, firstKey []byte) (*vaultKeys, err
 	}
 
 	if keys.path, err = e2ee.DeriveSubkey(currentKey, e2ee.LabelPath); err != nil {
-		return nil, err
-	}
-
-	if keys.blobID, err = e2ee.DeriveSubkey(currentKey, e2ee.LabelBlobIDSecret); err != nil {
 		return nil, err
 	}
 
