@@ -113,21 +113,21 @@ SPEC keeps its section numbers and its rules. The SPEC readability issue applies
 
 | Section | W | Class | Destination | Notes |
 |---|---|---|---|---|
-| [ ] Intro | 28 | delete | — | Replaced by the reader line on each user page. |
-| [ ] Settings | 1,083 | keep | `user/getting-started.md` (tour of the settings tab); each setting also on the page for its topic | Advanced settings listed in `user/troubleshooting.md` where they fix a problem. Setting internals (storage keys, defaults in code) are a delete: the settings tab shows them. |
-| [ ] Signing in | 353 | keep | `user/getting-started.md`; device-grant detail to `dev/architecture.md` (sign-in) | "RFC 8628" is developer depth. |
-| [ ] When the session ends | 137 | keep | `user/troubleshooting.md` ("sign-in needed"); `user/getting-started.md` | |
-| [ ] Connecting a vault | 382 | keep | `user/getting-started.md` | |
-| [ ] Sharing a vault | 1,236 | keep | `user/sharing.md`; member limit and roles also to `admin/security.md` | RPC names and error codes are a delete (pinned by `plugin/src/obsidian/sharing.test.ts`). |
-| [ ] Device registration | 249 | keep | `user/devices.md`; device id in `data.json` to `plugin/src/obsidian` module comment (move) | |
-| [ ] Devices | 279 | keep | `user/devices.md` | |
-| [ ] End-to-end encryption (setup, unlock, change passphrase) | 646 | keep | `user/encryption.md`; Argon2id parameters to `dev/` via `docs/design/crypto.md` link only | Follow the passphrase row of the depth table. |
-| [ ] Sync | 610 | keep | `user/syncing.md` | Timeouts and retry detail: move to `plugin/src/core/protocol` module comments. |
-| [ ] Realtime channel | 192 | keep | `user/syncing.md` (one paragraph: changes arrive in seconds); `admin/install.md` (WebSocket path) | Protocol detail duplicates SPEC §6.4: delete. |
-| [ ] Status | 542 | keep | `user/syncing.md` (icons); `user/troubleshooting.md` (each message) | |
-| [ ] Conflicts | 1,084 | keep | `user/conflicts-and-history.md`; "files that are not synced" and name rules to `user/syncing.md` and `user/troubleshooting.md` | Size limits: user page gives the numbers; admin page names `VAULT_SYNC_BLOB_MAX_SIZE_BYTES`. Rule letters (M, W, C) are developer depth: delete here. |
-| [ ] Config folder | 42 | keep | `user/syncing.md` (what is not synced); `user/faq.md` | |
-| [ ] History and restore | 712 | keep | `user/conflicts-and-history.md`; retention numbers link to `admin/history-and-retention.md` | |
+| [x] Intro | 28 | delete | — | Replaced by the reader line on each user page. |
+| [x] Settings | 1,083 | keep | `user/getting-started.md` (tour of the settings tab); each setting also on the page for its topic | Advanced settings listed in `user/troubleshooting.md` where they fix a problem. Setting internals (storage keys, defaults in code) are a delete: the settings tab shows them. |
+| [ ] Signing in | 353 | keep | `user/getting-started.md`; device-grant detail to `dev/architecture.md` (sign-in) | "RFC 8628" is developer depth. User part done in `user/`; device-grant detail to `dev/architecture.md` is left for the developer docs. |
+| [x] When the session ends | 137 | keep | `user/troubleshooting.md` ("sign-in needed"); `user/getting-started.md` | |
+| [x] Connecting a vault | 382 | keep | `user/getting-started.md` | |
+| [ ] Sharing a vault | 1,236 | keep | `user/sharing.md`; member limit and roles also to `admin/security.md` | RPC names and error codes are a delete (pinned by `plugin/src/obsidian/sharing.test.ts`). User part done in `user/`; member limit and roles in `admin/security.md` are left for the admin docs. |
+| [ ] Device registration | 249 | keep | `user/devices.md`; device id in `data.json` to `plugin/src/obsidian` module comment (move) | User part done in `user/`; the `data.json` device-id module comment is left. |
+| [x] Devices | 279 | keep | `user/devices.md` | |
+| [x] End-to-end encryption (setup, unlock, change passphrase) | 646 | keep | `user/encryption.md`; Argon2id parameters to `dev/` via `docs/design/crypto.md` link only | Follow the passphrase row of the depth table. |
+| [ ] Sync | 610 | keep | `user/syncing.md` | Timeouts and retry detail: move to `plugin/src/core/protocol` module comments. User part done in `user/`; the timeout and retry module comments are left. |
+| [ ] Realtime channel | 192 | keep | `user/syncing.md` (one paragraph: changes arrive in seconds); `admin/install.md` (WebSocket path) | Protocol detail duplicates SPEC §6.4: delete. User part done in `user/`; the WebSocket path in `admin/install.md` is left for the admin docs. |
+| [x] Status | 542 | keep | `user/syncing.md` (icons); `user/troubleshooting.md` (each message) | |
+| [x] Conflicts | 1,084 | keep | `user/conflicts-and-history.md`; "files that are not synced" and name rules to `user/syncing.md` and `user/troubleshooting.md` | Size limits: user page gives the numbers; admin page names `VAULT_SYNC_BLOB_MAX_SIZE_BYTES`. Rule letters (M, W, C) are developer depth: delete here. |
+| [x] Config folder | 42 | keep | `user/syncing.md` (what is not synced); `user/faq.md` | |
+| [x] History and restore | 712 | keep | `user/conflicts-and-history.md`; retention numbers link to `admin/history-and-retention.md` | |
 | [ ] Identity provider setup (Authentik) | 164 | keep | `admin/identity-provider.md` | Admin content, not user. Merge with `deployment.md` "Authentik". |
 
 ## docs/encryption.md → user + admin (4.3k W)
@@ -135,23 +135,23 @@ SPEC keeps its section numbers and its rules. The SPEC readability issue applies
 | Section | W | Class | Destination | Notes |
 |---|---|---|---|---|
 | [ ] Intro | 92 | delete | — | Reader lines replace it. |
-| [ ] In short | 118 | keep | `user/encryption.md` (user summary); `admin/encryption.md` (operator summary) | |
-| [ ] What the server can and can't see | 240 | keep | `admin/encryption.md` (full list); `user/encryption.md` (short list) | |
-| [ ] Your key and your recovery passphrase | 371 | keep | `user/encryption.md`; Argon2id and the guess limit to `admin/encryption.md` | Key chain duplicates `docs/design/crypto.md`: delete. |
+| [ ] In short | 118 | keep | `user/encryption.md` (user summary); `admin/encryption.md` (operator summary) | User part done in `user/`; admin summary left. |
+| [ ] What the server can and can't see | 240 | keep | `admin/encryption.md` (full list); `user/encryption.md` (short list) | User part done in `user/`; full list left for `admin/encryption.md`. |
+| [ ] Your key and your recovery passphrase | 371 | keep | `user/encryption.md`; Argon2id and the guess limit to `admin/encryption.md` | Key chain duplicates `docs/design/crypto.md`: delete. User part done in `user/`; Argon2id and the guess limit left for `admin/encryption.md`. |
 | [ ] Vault keys | 216 | keep | `admin/encryption.md` | Cipher names duplicate `docs/design/`: delete. Users don't need key slots. |
-| [ ] Creating an encrypted vault | 60 | keep | `user/encryption.md`; escrow default setting to `admin/encryption.md` | |
-| [ ] Invitations | 252 | keep | `user/sharing.md` (how to invite to an encrypted vault) | Code format duplicates `docs/design/encryption.md`: delete after checking it is there. |
-| [ ] Rotation | 302 | keep | `user/sharing.md` (what a removed member keeps); `admin/encryption.md` (epochs) | |
-| [ ] Re-encrypting history | 170 | keep | `admin/encryption.md`; one line to `user/encryption.md` | Rekey backlog alert links here. |
-| [ ] Converting a plaintext vault | 196 | keep | `user/encryption.md` | |
-| [ ] Escrow | 344 | keep | `user/encryption.md` (what escrow means for you); `admin/encryption.md` | |
+| [ ] Creating an encrypted vault | 60 | keep | `user/encryption.md`; escrow default setting to `admin/encryption.md` | User part done in `user/`; escrow default setting left for `admin/encryption.md`. |
+| [ ] Invitations | 252 | keep | `user/sharing.md` (how to invite to an encrypted vault) | Code format duplicates `docs/design/encryption.md`: delete after checking it is there. User part done in `user/`; code-format delete left. |
+| [ ] Rotation | 302 | keep | `user/sharing.md` (what a removed member keeps); `admin/encryption.md` (epochs) | User part done in `user/`; epochs left for `admin/encryption.md`. |
+| [ ] Re-encrypting history | 170 | keep | `admin/encryption.md`; one line to `user/encryption.md` | Rekey backlog alert links here. User part done in `user/`; admin part left. |
+| [x] Converting a plaintext vault | 196 | keep | `user/encryption.md` | |
+| [ ] Escrow | 344 | keep | `user/encryption.md` (what escrow means for you); `admin/encryption.md` | User part done in `user/`; admin part left. |
 | [ ] For operators: the escrow key | 416 | keep | `admin/encryption.md` | |
-| [ ] Losing your passphrase | 153 | keep | `user/encryption.md`; operator recovery steps to `admin/encryption.md` | |
+| [ ] Losing your passphrase | 153 | keep | `user/encryption.md`; operator recovery steps to `admin/encryption.md` | User part done in `user/`; operator recovery steps left for `admin/encryption.md`. |
 | [ ] Recovery with `age` | 272 | keep | `admin/encryption.md` (or `admin/backup-and-restore.md`, linked from both) | |
-| [ ] Threat model | 30 | keep | `admin/security.md`; short user version in `user/encryption.md` | |
-| [ ] A stolen copy of the database or the bucket | 144 | keep | `admin/security.md`; user version: "choose a long passphrase" | |
+| [ ] Threat model | 30 | keep | `admin/security.md`; short user version in `user/encryption.md` | User part done in `user/`; admin part left. |
+| [ ] A stolen copy of the database or the bucket | 144 | keep | `admin/security.md`; user version: "choose a long passphrase" | User part done in `user/`; admin part left. |
 | [ ] An actively malicious server | 490 | keep | `admin/security.md` (≈150 W: what it can and can't do) | Mechanism duplicates `docs/design/encryption.md` "Protection against an active server": delete the mechanism here. |
-| [ ] What encryption does not protect | 336 | keep | `admin/security.md`; `user/encryption.md` | Must stay visible to users. |
+| [ ] What encryption does not protect | 336 | keep | `admin/security.md`; `user/encryption.md` | Must stay visible to users. User part done in `user/`; admin part left. |
 
 ## docs/configuration.md → admin (9.9k W)
 
@@ -197,10 +197,10 @@ SPEC keeps its section numbers and its rules. The SPEC readability issue applies
 
 | Section | W | Class | Destination | Notes |
 |---|---|---|---|---|
-| [ ] Intro | 129 | keep | `admin/backup-and-restore.md`; user summary in `user/getting-your-notes-out.md` | |
+| [ ] Intro | 129 | keep | `admin/backup-and-restore.md`; user summary in `user/getting-your-notes-out.md` | User part done in `user/`; admin part left. |
 | [ ] Flags | 35 | keep | `admin/backup-and-restore.md` | |
 | [ ] Environment variables | 280 | generate | `admin/configuration-reference.md` (generated, export section) | The export's variables are `internal/config` constants too; one generator covers both. |
-| [ ] What an export contains | 429 | keep | `admin/backup-and-restore.md`; user summary in `user/getting-your-notes-out.md` | |
+| [ ] What an export contains | 429 | keep | `admin/backup-and-restore.md`; user summary in `user/getting-your-notes-out.md` | User part done in `user/`; admin part left. |
 | [ ] Output layout | 268 | keep | `admin/backup-and-restore.md` | |
 | [ ] End-to-end encrypted vaults | 258 | keep | `admin/backup-and-restore.md`; links `admin/encryption.md` | |
 | [ ] Documents that cannot be placed at their path | 168 | keep | `admin/backup-and-restore.md` | |
@@ -215,7 +215,7 @@ SPEC keeps its section numbers and its rules. The SPEC readability issue applies
 
 | Section | W | Class | Destination | Notes |
 |---|---|---|---|---|
-| [ ] Intro | 236 | keep | `admin/backup-and-restore.md`; user line in `user/faq.md` (moving notes in) | |
+| [ ] Intro | 236 | keep | `admin/backup-and-restore.md`; user line in `user/faq.md` (moving notes in) | User part done in `user/`; admin part left. |
 | [ ] What it imports | 127 | keep | `admin/backup-and-restore.md` | |
 | [ ] Importing into an end-to-end encrypted vault | 314 | keep | `admin/backup-and-restore.md`; links `admin/encryption.md` | |
 | [ ] Verification against the server | 187 | move | `admin/backup-and-restore.md` (one line) | Mechanism already in `docs/design/encryption.md` "Import": delete here. |
@@ -240,9 +240,9 @@ All sections stay and keep their rules: the engine design is fixed. The develope
 | Section | W | Class | Destination | Notes |
 |---|---|---|---|---|
 | [ ] `design/engine.md` (all) | 3,914 | keep | stays | Owner-fixed. Delete only issue numbers. |
-| [ ] `design/engine.md` §10 Status and user interface | — | keep | stays; user view to `user/syncing.md` | |
+| [ ] `design/engine.md` §10 Status and user interface | — | keep | stays; user view to `user/syncing.md` | User view done in `user/syncing.md`; the developer-reader pass on `docs/design/` is left. |
 | [ ] `design/engine-situations.md` (all) | 5,128 | keep | stays | Each situation has a decision-table test; the situations stay because they explain the rows. Delete only issue numbers. |
-| [ ] `design/sharing.md` Roles, Losing access, Deleting a vault | 684 (file) | keep | stays; user view to `user/sharing.md` | |
+| [ ] `design/sharing.md` Roles, Losing access, Deleting a vault | 684 (file) | keep | stays; user view to `user/sharing.md` | User view done in `user/sharing.md`; the developer-reader pass on `docs/design/` is left. |
 | [ ] `design/encryption.md` Escrow, Protection against an active server | — | keep | stays; operator view in `admin/encryption.md`, `admin/security.md` | |
 | [ ] `design/encryption.md` Formats and rules settled during implementation | 800 | move | byte formats pinned by `testdata/crypto/vectors.json` and described in `design/crypto.md` | Delete the duplicates; move what remains to `design/crypto.md`. |
 | [ ] `design/encryption.md` Interaction matrix | 1,128 | keep | stays | Design-review artefact the design reviewer reads. |
