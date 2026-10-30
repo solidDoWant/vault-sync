@@ -27,10 +27,13 @@ vet: ## Run go vet against code.
 	go vet ./...
 
 .PHONY: lint
-lint: plugin-lint ## Run golangci-lint, buf lint and buf breaking vs master (Go/proto) plus eslint + tsc (plugin).
-	golangci-lint run ./...
-	buf lint
-	./scripts/buf-breaking.sh
+lint: ## Run eslint + tsc (plugin), golangci-lint, buf lint and buf breaking vs master. Runs every check, then fails if any failed.
+	@failed=""; \
+	$(MAKE) --no-print-directory plugin-lint || failed="$$failed plugin-lint"; \
+	golangci-lint run ./... || failed="$$failed golangci-lint"; \
+	buf lint || failed="$$failed buf-lint"; \
+	./scripts/buf-breaking.sh || failed="$$failed buf-breaking"; \
+	if [ -n "$$failed" ]; then echo "lint failed:$$failed" >&2; exit 1; fi
 
 .PHONY: lint-fix
 lint-fix: ## Run golangci-lint and perform fixes.
