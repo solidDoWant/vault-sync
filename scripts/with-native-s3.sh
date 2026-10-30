@@ -20,12 +20,15 @@
 # versitygw image of deploy/compose/compose.test.yaml and exits; `make test`
 # runs it, so a compose image bump without a matching pin here fails the
 # required checks, not only the optional macOS and Windows e2e jobs.
+#
+# `with-native-s3.sh --update-pin vX.Y.Z` rewrites the pinned version and
+# checksums from that release's checksums.txt (see below).
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 if [[ $# -eq 0 ]]; then
-	echo "usage: $0 command [argument ...] | --check-pin" >&2
+	echo "usage: $0 command [argument ...] | --check-pin | --update-pin version" >&2
 	exit 2
 fi
 
@@ -34,10 +37,34 @@ die() {
 	exit 1
 }
 
+# The release assets whose SHA-256 is pinned below.
+pinned_suffixes="Darwin_arm64.tar.gz Darwin_x86_64.tar.gz Linux_arm64.tar.gz Linux_x86_64.tar.gz Windows_arm64.zip Windows_x86_64.zip"
+
+# `with-native-s3.sh --update-pin vX.Y.Z` rewrites the pinned version and
+# checksums in this script from that release's checksums.txt and exits. The
+# renovate-fixups workflow runs it when Renovate bumps the compose image.
+if [[ $1 == --update-pin ]]; then
+	new_version="${2:-}"
+	[[ $new_version =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "--update-pin needs a version like v1.2.3, got '${new_version}'"
+	checksums="$(curl --fail --silent --show-error --location --retry 5 \
+		"https://github.com/versity/versitygw/releases/download/${new_version}/checksums.txt")"
+	edits=(-e "s/^version=v[0-9.]*\$/version=${new_version}/")
+	for suffix in $pinned_suffixes; do
+		sum="$(awk -v asset="versitygw_${new_version}_${suffix}" '$2 == asset { print $1 }' <<<"$checksums")"
+		[[ $sum =~ ^[0-9a-f]{64}$ ]] || die "no SHA-256 for versitygw_${new_version}_${suffix} in the ${new_version} checksums.txt"
+		edits+=(-e "s/^${suffix}) expected=[0-9a-f]* ;;\$/${suffix}) expected=${sum} ;;/")
+	done
+	script=scripts/with-native-s3.sh
+	updated="$(sed "${edits[@]}" "$script")"
+	printf '%s\n' "$updated" >"$script"
+	echo "with-native-s3: pinned versitygw ${new_version}"
+	exit 0
+fi
+
 # Must match the versitygw image tag in compose.test.yaml (checked
 # below). The SHA-256 of each release asset (from the release's checksums.txt)
-# is pinned further down; update them together with the version.
-version=v1.9.0
+# is pinned further down; --update-pin updates them together with the version.
+version=v1.10.0
 compose_file=deploy/compose/compose.test.yaml
 if ! grep -q "image: mirror.gcr.io/versity/versitygw:${version}@" "$compose_file"; then
 	die "versitygw ${version} is not the image in ${compose_file}; update the version and checksums in scripts/with-native-s3.sh to match it"
@@ -76,12 +103,12 @@ fi
 
 # A case, not an associative array: macOS ships bash 3.2.
 case "$suffix" in
-Darwin_arm64.tar.gz) expected=96e926d4c0f45f57385a2cfa566809f53387682e8c5c622b55915f82b4261c5f ;;
-Darwin_x86_64.tar.gz) expected=67b65bf563880799703079af194926ac796ec37e442cdfa9a69c0e1d7a4d3ccd ;;
-Linux_arm64.tar.gz) expected=1ab234dc11d540d861898d391bfda5914eaff78f20d162c3ce7c84337b3d9204 ;;
-Linux_x86_64.tar.gz) expected=0c28ccda3452451d7c71a0427f6aa7d0db5cac5e2b98a8e4dd2970967e1aadc1 ;;
-Windows_arm64.zip) expected=276a3aa57c61e113a6cd6f6b1496a621c50cc4b89518758cecfaf6dd1fc50b48 ;;
-Windows_x86_64.zip) expected=668dc559ee106d27e788bdcccc451a024daf46c276e7227974e05096f2c64114 ;;
+Darwin_arm64.tar.gz) expected=2234e3151e8f1ab8c143cdab541a91f10e394c75670a43ab46ee89195a3d8707 ;;
+Darwin_x86_64.tar.gz) expected=23352b524028b44ada33323466c6baeab769ab4e777911c08a0eee4c9e4cdcc3 ;;
+Linux_arm64.tar.gz) expected=6307b377caee30c1f0fc8950e62ba684e0440a92f8e6a3a06bee1b83a857f03a ;;
+Linux_x86_64.tar.gz) expected=8f9869752939d4dc9cfe1bddb935a02cc6610e95319a3a9fc2947d2a6ebd2c91 ;;
+Windows_arm64.zip) expected=84b59fa57c110ff7f89082fbb83ef464d00ca2cc908156a4c7d9cf4340d14467 ;;
+Windows_x86_64.zip) expected=77746a0e998baf2a308343394465a47a58dbb33ca15f63c5abca0fafd83f72d2 ;;
 *) die "no pinned SHA-256 for versitygw ${version} asset ${suffix}" ;;
 esac
 
