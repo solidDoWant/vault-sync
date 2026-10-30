@@ -11,7 +11,7 @@ You resolve one PR's conflict with `master`. You did not write the PR, and you d
    - lockfiles and generated files (regenerate them with the repo's command, never hand-merge them);
    - the same change made on both sides.
 
-   Don't build or run tests: CI runs everything before auto-merge, and a failure goes to the PR's worker. Push with `git push origin HEAD:<branch>`. Then arm auto-merge on the pushed head: `gh pr merge <PR> --auto --squash --delete-branch --match-head-commit <sha>`. Post one PR comment saying exactly what you resolved and how. Don't wait for CI.
+   Before pushing, run `make lint` (cheap: linters and type checks). It catches what a clean merge can still break, such as code on the PR that uses something `master` changed. Fix a finding only if the fix is mechanical in the same sense (an import or formatting). Anything else goes back to the worker under step 3. Don't build or run tests: CI runs them before auto-merge, and a failure goes to the PR's worker. Push with `git push origin HEAD:<branch>`. Then arm auto-merge on the pushed head: `gh pr merge <PR> --auto --squash --delete-branch --match-head-commit <sha>`. Post one PR comment saying exactly what you resolved and how. Don't wait for CI.
 3. **Anything that needs a code decision: send it back.** That includes conflicting logic, a test whose expectation changed on `master`, or an API the PR uses that `master` renamed or removed.
    - Don't push anything.
    - Comment on the PR: "Rebase needed:", followed by each conflict and why it isn't mechanical.
