@@ -33,6 +33,7 @@ import { publicKey as publicKeyOf } from "../e2ee/hybrid";
 import {
   generateUserSecret,
   parseUserSecret,
+  signPublicKey,
   USER_SECRET_SIZE,
   userSecretBytes,
 } from "../e2ee/identity";
@@ -40,7 +41,11 @@ import {
 /** The calls the key manager makes: UserKeyService (ProtocolClient.userKeys). */
 export type UserKeyClient = Pick<
   Client<typeof UserKeyService>,
-  "getUserKeyParams" | "createUserKey" | "unlockUserKey" | "changePassphrase"
+  | "getUserKeyParams"
+  | "createUserKey"
+  | "unlockUserKey"
+  | "changePassphrase"
+  | "addSignPublicKey"
 >;
 
 /**
@@ -161,8 +166,8 @@ export async function storedPublicKey(
 /**
  * Enables encryption for the user: creates a key pair on this device and
  * stores it on the server with the private key wrapped under `passphrase`
- * (CreateUserKey sends only the public key, the wrapped private key, its
- * parameters and auth_key). The server keeps one key per user and never
+ * (CreateUserKey sends only the public key, the signing public key, the
+ * wrapped private key, its parameters and auth_key). The server keeps one key per user and never
  * replaces it: when another device enabled encryption first (ALREADY_EXISTS),
  * this device unlocks that key with `passphrase` instead, and `created` is
  * false. Rejects as {@link unlockUserKey} does then.
@@ -192,6 +197,7 @@ export async function enableEncryption(
   try {
     const response = await client.createUserKey({
       publicKey: key.publicKey,
+      signPublicKey: signPublicKey(secret.signSeed),
       wrappedPrivateKey: wrapped,
       params: {
         suite: SUITE_V2,
@@ -216,11 +222,13 @@ export async function enableEncryption(
   return { key, created: true };
 }
 
-const canonicalUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+const canonicalUuid =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 
 /** The caller's user id as the server returned it with their key; anything but a canonical lowercase UUID is refused. */
 function serverUserId(userId: string): string {
-  if (!canonicalUuid.test(userId)) throw new Error("the server returned no valid user id with the user key");
+  if (!canonicalUuid.test(userId))
+    throw new Error("the server returned no valid user id with the user key");
   return userId;
 }
 
@@ -231,7 +239,9 @@ function serverUserId(userId: string): string {
  * Rejects with {@link WrongPassphraseError}, {@link
  * PassphraseAttemptsExhaustedError} (with the server's retry time) or
  * {@link NoUserKeyError}; and with an Error when what the server released
- * does not open or does not match the stored public key. With `remembered`,
+ * does not open or does not match the stored public key (or the stored
+ * signing public key). A key stored without a signing public key gets this
+ * key pair's added (AddSignPublicKey). With `remembered`,
  * stored parameters lower than the remembered ones are refused with {@link
  * WeakerPassphraseParamsError} before anything is derived, and the
  * parameters of a successful unlock are remembered.
@@ -252,7 +262,11 @@ export async function unlockUserKey(
   return key;
 }
 
-/** Has the server release the wrapped private key for `keys.authKey`, and unwraps it with `keys.wrapKey`. */
+/**
+ * Has the server release the wrapped private key for `keys.authKey`, and
+ * unwraps it with `keys.wrapKey`. When the server has no signing public key
+ * for it, adds the key pair's.
+ */
 async function release(
   client: UserKeyClient,
   keys: { wrapKey: Uint8Array; authKey: Uint8Array },
@@ -282,6 +296,19 @@ async function release(
     throw new Error(
       "the key the server released does not match its public key",
     );
+  const signPub = signPublicKey(secret.signSeed);
+  if (released.signPublicKey.length === 0) {
+    await call(() =>
+      client.addSignPublicKey({
+        authKey: keys.authKey,
+        signPublicKey: signPub,
+      }),
+    );
+  } else if (!equalBytes(signPub, released.signPublicKey)) {
+    throw new Error(
+      "the key the server released does not match its signing public key",
+    );
+  }
   return {
     userId: serverUserId(released.userId),
     publicKey: released.publicKey,

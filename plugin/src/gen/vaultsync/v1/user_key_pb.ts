@@ -10,7 +10,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file vaultsync/v1/user_key.proto.
  */
 export const file_vaultsync_v1_user_key: GenFile = /*@__PURE__*/
-  fileDesc("Cht2YXVsdHN5bmMvdjEvdXNlcl9rZXkucHJvdG8SDHZhdWx0c3luYy52MSJsChBQYXNzcGhyYXNlUGFyYW1zEg0KBXN1aXRlGAEgASgNEhIKCm1lbW9yeV9raWIYAiABKA0SEgoKaXRlcmF0aW9ucxgDIAEoDRITCgtwYXJhbGxlbGlzbRgEIAEoDRIMCgRzYWx0GAUgASgMIhkKF0dldFVzZXJLZXlQYXJhbXNSZXF1ZXN0Im8KGEdldFVzZXJLZXlQYXJhbXNSZXNwb25zZRISCgpwdWJsaWNfa2V5GAEgASgMEi4KBnBhcmFtcxgCIAEoCzIeLnZhdWx0c3luYy52MS5QYXNzcGhyYXNlUGFyYW1zEg8KB3VzZXJfaWQYAyABKAkiiQEKFENyZWF0ZVVzZXJLZXlSZXF1ZXN0EhIKCnB1YmxpY19rZXkYASABKAwSGwoTd3JhcHBlZF9wcml2YXRlX2tleRgCIAEoDBIuCgZwYXJhbXMYAyABKAsyHi52YXVsdHN5bmMudjEuUGFzc3BocmFzZVBhcmFtcxIQCghhdXRoX2tleRgEIAEoDCIoChVDcmVhdGVVc2VyS2V5UmVzcG9uc2USDwoHdXNlcl9pZBgBIAEoCSIoChRVbmxvY2tVc2VyS2V5UmVxdWVzdBIQCghhdXRoX2tleRgBIAEoDCKJAQoVVW5sb2NrVXNlcktleVJlc3BvbnNlEhIKCnB1YmxpY19rZXkYASABKAwSGwoTd3JhcHBlZF9wcml2YXRlX2tleRgCIAEoDBIuCgZwYXJhbXMYAyABKAsyHi52YXVsdHN5bmMudjEuUGFzc3BocmFzZVBhcmFtcxIPCgd1c2VyX2lkGAQgASgJIqoBChdDaGFuZ2VQYXNzcGhyYXNlUmVxdWVzdBIQCghhdXRoX2tleRgBIAEoDBISCgpwdWJsaWNfa2V5GAIgASgMEh8KF25ld193cmFwcGVkX3ByaXZhdGVfa2V5GAMgASgMEjIKCm5ld19wYXJhbXMYBCABKAsyHi52YXVsdHN5bmMudjEuUGFzc3BocmFzZVBhcmFtcxIUCgxuZXdfYXV0aF9rZXkYBSABKAwiGgoYQ2hhbmdlUGFzc3BocmFzZVJlc3BvbnNlIhYKFEdldEFuY2hvckxpc3RSZXF1ZXN0Ij0KFUdldEFuY2hvckxpc3RSZXNwb25zZRIPCgd2ZXJzaW9uGAEgASgEEhMKC3NlYWxlZF9saXN0GAIgASgMIjwKFFB1dEFuY2hvckxpc3RSZXF1ZXN0Eg8KB3ZlcnNpb24YASABKAQSEwoLc2VhbGVkX2xpc3QYAiABKAwiFwoVUHV0QW5jaG9yTGlzdFJlc3BvbnNlMsoECg5Vc2VyS2V5U2VydmljZRJjChBHZXRVc2VyS2V5UGFyYW1zEiUudmF1bHRzeW5jLnYxLkdldFVzZXJLZXlQYXJhbXNSZXF1ZXN0GiYudmF1bHRzeW5jLnYxLkdldFVzZXJLZXlQYXJhbXNSZXNwb25zZSIAEloKDUNyZWF0ZVVzZXJLZXkSIi52YXVsdHN5bmMudjEuQ3JlYXRlVXNlcktleVJlcXVlc3QaIy52YXVsdHN5bmMudjEuQ3JlYXRlVXNlcktleVJlc3BvbnNlIgASWgoNVW5sb2NrVXNlcktleRIiLnZhdWx0c3luYy52MS5VbmxvY2tVc2VyS2V5UmVxdWVzdBojLnZhdWx0c3luYy52MS5VbmxvY2tVc2VyS2V5UmVzcG9uc2UiABJjChBDaGFuZ2VQYXNzcGhyYXNlEiUudmF1bHRzeW5jLnYxLkNoYW5nZVBhc3NwaHJhc2VSZXF1ZXN0GiYudmF1bHRzeW5jLnYxLkNoYW5nZVBhc3NwaHJhc2VSZXNwb25zZSIAEloKDUdldEFuY2hvckxpc3QSIi52YXVsdHN5bmMudjEuR2V0QW5jaG9yTGlzdFJlcXVlc3QaIy52YXVsdHN5bmMudjEuR2V0QW5jaG9yTGlzdFJlc3BvbnNlIgASWgoNUHV0QW5jaG9yTGlzdBIiLnZhdWx0c3luYy52MS5QdXRBbmNob3JMaXN0UmVxdWVzdBojLnZhdWx0c3luYy52MS5QdXRBbmNob3JMaXN0UmVzcG9uc2UiAEJAWj5naXRodWIuY29tL3NvbGlkRG9XYW50L3ZhdWx0LXN5bmMvZ2VuL3ZhdWx0c3luYy92MTt2YXVsdHN5bmN2MWIGcHJvdG8z");
+  fileDesc("Cht2YXVsdHN5bmMvdjEvdXNlcl9rZXkucHJvdG8SDHZhdWx0c3luYy52MSJsChBQYXNzcGhyYXNlUGFyYW1zEg0KBXN1aXRlGAEgASgNEhIKCm1lbW9yeV9raWIYAiABKA0SEgoKaXRlcmF0aW9ucxgDIAEoDRITCgtwYXJhbGxlbGlzbRgEIAEoDRIMCgRzYWx0GAUgASgMIhkKF0dldFVzZXJLZXlQYXJhbXNSZXF1ZXN0IogBChhHZXRVc2VyS2V5UGFyYW1zUmVzcG9uc2USEgoKcHVibGljX2tleRgBIAEoDBIuCgZwYXJhbXMYAiABKAsyHi52YXVsdHN5bmMudjEuUGFzc3BocmFzZVBhcmFtcxIPCgd1c2VyX2lkGAMgASgJEhcKD3NpZ25fcHVibGljX2tleRgEIAEoDCKiAQoUQ3JlYXRlVXNlcktleVJlcXVlc3QSEgoKcHVibGljX2tleRgBIAEoDBIbChN3cmFwcGVkX3ByaXZhdGVfa2V5GAIgASgMEi4KBnBhcmFtcxgDIAEoCzIeLnZhdWx0c3luYy52MS5QYXNzcGhyYXNlUGFyYW1zEhAKCGF1dGhfa2V5GAQgASgMEhcKD3NpZ25fcHVibGljX2tleRgFIAEoDCIoChVDcmVhdGVVc2VyS2V5UmVzcG9uc2USDwoHdXNlcl9pZBgBIAEoCSIoChRVbmxvY2tVc2VyS2V5UmVxdWVzdBIQCghhdXRoX2tleRgBIAEoDCKiAQoVVW5sb2NrVXNlcktleVJlc3BvbnNlEhIKCnB1YmxpY19rZXkYASABKAwSGwoTd3JhcHBlZF9wcml2YXRlX2tleRgCIAEoDBIuCgZwYXJhbXMYAyABKAsyHi52YXVsdHN5bmMudjEuUGFzc3BocmFzZVBhcmFtcxIPCgd1c2VyX2lkGAQgASgJEhcKD3NpZ25fcHVibGljX2tleRgFIAEoDCJEChdBZGRTaWduUHVibGljS2V5UmVxdWVzdBIQCghhdXRoX2tleRgBIAEoDBIXCg9zaWduX3B1YmxpY19rZXkYAiABKAwiGgoYQWRkU2lnblB1YmxpY0tleVJlc3BvbnNlIqoBChdDaGFuZ2VQYXNzcGhyYXNlUmVxdWVzdBIQCghhdXRoX2tleRgBIAEoDBISCgpwdWJsaWNfa2V5GAIgASgMEh8KF25ld193cmFwcGVkX3ByaXZhdGVfa2V5GAMgASgMEjIKCm5ld19wYXJhbXMYBCABKAsyHi52YXVsdHN5bmMudjEuUGFzc3BocmFzZVBhcmFtcxIUCgxuZXdfYXV0aF9rZXkYBSABKAwiGgoYQ2hhbmdlUGFzc3BocmFzZVJlc3BvbnNlIhYKFEdldEFuY2hvckxpc3RSZXF1ZXN0Ij0KFUdldEFuY2hvckxpc3RSZXNwb25zZRIPCgd2ZXJzaW9uGAEgASgEEhMKC3NlYWxlZF9saXN0GAIgASgMIjwKFFB1dEFuY2hvckxpc3RSZXF1ZXN0Eg8KB3ZlcnNpb24YASABKAQSEwoLc2VhbGVkX2xpc3QYAiABKAwiFwoVUHV0QW5jaG9yTGlzdFJlc3BvbnNlMq8FCg5Vc2VyS2V5U2VydmljZRJjChBHZXRVc2VyS2V5UGFyYW1zEiUudmF1bHRzeW5jLnYxLkdldFVzZXJLZXlQYXJhbXNSZXF1ZXN0GiYudmF1bHRzeW5jLnYxLkdldFVzZXJLZXlQYXJhbXNSZXNwb25zZSIAEloKDUNyZWF0ZVVzZXJLZXkSIi52YXVsdHN5bmMudjEuQ3JlYXRlVXNlcktleVJlcXVlc3QaIy52YXVsdHN5bmMudjEuQ3JlYXRlVXNlcktleVJlc3BvbnNlIgASWgoNVW5sb2NrVXNlcktleRIiLnZhdWx0c3luYy52MS5VbmxvY2tVc2VyS2V5UmVxdWVzdBojLnZhdWx0c3luYy52MS5VbmxvY2tVc2VyS2V5UmVzcG9uc2UiABJjChBBZGRTaWduUHVibGljS2V5EiUudmF1bHRzeW5jLnYxLkFkZFNpZ25QdWJsaWNLZXlSZXF1ZXN0GiYudmF1bHRzeW5jLnYxLkFkZFNpZ25QdWJsaWNLZXlSZXNwb25zZSIAEmMKEENoYW5nZVBhc3NwaHJhc2USJS52YXVsdHN5bmMudjEuQ2hhbmdlUGFzc3BocmFzZVJlcXVlc3QaJi52YXVsdHN5bmMudjEuQ2hhbmdlUGFzc3BocmFzZVJlc3BvbnNlIgASWgoNR2V0QW5jaG9yTGlzdBIiLnZhdWx0c3luYy52MS5HZXRBbmNob3JMaXN0UmVxdWVzdBojLnZhdWx0c3luYy52MS5HZXRBbmNob3JMaXN0UmVzcG9uc2UiABJaCg1QdXRBbmNob3JMaXN0EiIudmF1bHRzeW5jLnYxLlB1dEFuY2hvckxpc3RSZXF1ZXN0GiMudmF1bHRzeW5jLnYxLlB1dEFuY2hvckxpc3RSZXNwb25zZSIAQkBaPmdpdGh1Yi5jb20vc29saWREb1dhbnQvdmF1bHQtc3luYy9nZW4vdmF1bHRzeW5jL3YxO3ZhdWx0c3luY3YxYgZwcm90bzM");
 
 /**
  * PassphraseParams are the public parameters of a passphrase wrapping
@@ -108,6 +108,15 @@ export type GetUserKeyParamsResponse = Message<"vaultsync.v1.GetUserKeyParamsRes
    * @generated from field: string user_id = 3;
    */
   userId: string;
+
+  /**
+   * The caller's Ed25519 signing public key (32 bytes, docs/design/crypto.md
+   * bundle), or empty when their key was stored without one
+   * (AddSignPublicKey adds it).
+   *
+   * @generated from field: bytes sign_public_key = 4;
+   */
+  signPublicKey: Uint8Array;
 };
 
 /**
@@ -152,6 +161,14 @@ export type CreateUserKeyRequest = Message<"vaultsync.v1.CreateUserKeyRequest"> 
    * @generated from field: bytes auth_key = 4;
    */
   authKey: Uint8Array;
+
+  /**
+   * The Ed25519 signing public key of the key pair (docs/design/crypto.md
+   * bundle): exactly 32 bytes.
+   *
+   * @generated from field: bytes sign_public_key = 5;
+   */
+  signPublicKey: Uint8Array;
 };
 
 /**
@@ -236,6 +253,13 @@ export type UnlockUserKeyResponse = Message<"vaultsync.v1.UnlockUserKeyResponse"
    * @generated from field: string user_id = 4;
    */
   userId: string;
+
+  /**
+   * The caller's signing public key, as in GetUserKeyParamsResponse.
+   *
+   * @generated from field: bytes sign_public_key = 5;
+   */
+  signPublicKey: Uint8Array;
 };
 
 /**
@@ -244,6 +268,50 @@ export type UnlockUserKeyResponse = Message<"vaultsync.v1.UnlockUserKeyResponse"
  */
 export const UnlockUserKeyResponseSchema: GenMessage<UnlockUserKeyResponse> = /*@__PURE__*/
   messageDesc(file_vaultsync_v1_user_key, 6);
+
+/**
+ * AddSignPublicKeyRequest holds the signing public key to add.
+ *
+ * @generated from message vaultsync.v1.AddSignPublicKeyRequest
+ */
+export type AddSignPublicKeyRequest = Message<"vaultsync.v1.AddSignPublicKeyRequest"> & {
+  /**
+   * The verifier derived from the passphrase: exactly 32 bytes.
+   *
+   * @generated from field: bytes auth_key = 1;
+   */
+  authKey: Uint8Array;
+
+  /**
+   * The Ed25519 signing public key of the caller's key pair: exactly 32
+   * bytes.
+   *
+   * @generated from field: bytes sign_public_key = 2;
+   */
+  signPublicKey: Uint8Array;
+};
+
+/**
+ * Describes the message vaultsync.v1.AddSignPublicKeyRequest.
+ * Use `create(AddSignPublicKeyRequestSchema)` to create a new message.
+ */
+export const AddSignPublicKeyRequestSchema: GenMessage<AddSignPublicKeyRequest> = /*@__PURE__*/
+  messageDesc(file_vaultsync_v1_user_key, 7);
+
+/**
+ * AddSignPublicKeyResponse confirms the key is stored. It has no fields.
+ *
+ * @generated from message vaultsync.v1.AddSignPublicKeyResponse
+ */
+export type AddSignPublicKeyResponse = Message<"vaultsync.v1.AddSignPublicKeyResponse"> & {
+};
+
+/**
+ * Describes the message vaultsync.v1.AddSignPublicKeyResponse.
+ * Use `create(AddSignPublicKeyResponseSchema)` to create a new message.
+ */
+export const AddSignPublicKeyResponseSchema: GenMessage<AddSignPublicKeyResponse> = /*@__PURE__*/
+  messageDesc(file_vaultsync_v1_user_key, 8);
 
 /**
  * ChangePassphraseRequest re-wraps the caller's private key.
@@ -292,7 +360,7 @@ export type ChangePassphraseRequest = Message<"vaultsync.v1.ChangePassphraseRequ
  * Use `create(ChangePassphraseRequestSchema)` to create a new message.
  */
 export const ChangePassphraseRequestSchema: GenMessage<ChangePassphraseRequest> = /*@__PURE__*/
-  messageDesc(file_vaultsync_v1_user_key, 7);
+  messageDesc(file_vaultsync_v1_user_key, 9);
 
 /**
  * ChangePassphraseResponse confirms the change. It has no fields.
@@ -307,7 +375,7 @@ export type ChangePassphraseResponse = Message<"vaultsync.v1.ChangePassphraseRes
  * Use `create(ChangePassphraseResponseSchema)` to create a new message.
  */
 export const ChangePassphraseResponseSchema: GenMessage<ChangePassphraseResponse> = /*@__PURE__*/
-  messageDesc(file_vaultsync_v1_user_key, 8);
+  messageDesc(file_vaultsync_v1_user_key, 10);
 
 /**
  * GetAnchorListRequest has no fields: it names the caller's list.
@@ -322,7 +390,7 @@ export type GetAnchorListRequest = Message<"vaultsync.v1.GetAnchorListRequest"> 
  * Use `create(GetAnchorListRequestSchema)` to create a new message.
  */
 export const GetAnchorListRequestSchema: GenMessage<GetAnchorListRequest> = /*@__PURE__*/
-  messageDesc(file_vaultsync_v1_user_key, 9);
+  messageDesc(file_vaultsync_v1_user_key, 11);
 
 /**
  * GetAnchorListResponse holds the caller's sealed anchor list.
@@ -351,7 +419,7 @@ export type GetAnchorListResponse = Message<"vaultsync.v1.GetAnchorListResponse"
  * Use `create(GetAnchorListResponseSchema)` to create a new message.
  */
 export const GetAnchorListResponseSchema: GenMessage<GetAnchorListResponse> = /*@__PURE__*/
-  messageDesc(file_vaultsync_v1_user_key, 10);
+  messageDesc(file_vaultsync_v1_user_key, 12);
 
 /**
  * PutAnchorListRequest holds a new version of the caller's anchor list.
@@ -380,7 +448,7 @@ export type PutAnchorListRequest = Message<"vaultsync.v1.PutAnchorListRequest"> 
  * Use `create(PutAnchorListRequestSchema)` to create a new message.
  */
 export const PutAnchorListRequestSchema: GenMessage<PutAnchorListRequest> = /*@__PURE__*/
-  messageDesc(file_vaultsync_v1_user_key, 11);
+  messageDesc(file_vaultsync_v1_user_key, 13);
 
 /**
  * PutAnchorListResponse confirms the list was stored. It has no fields.
@@ -395,7 +463,7 @@ export type PutAnchorListResponse = Message<"vaultsync.v1.PutAnchorListResponse"
  * Use `create(PutAnchorListResponseSchema)` to create a new message.
  */
 export const PutAnchorListResponseSchema: GenMessage<PutAnchorListResponse> = /*@__PURE__*/
-  messageDesc(file_vaultsync_v1_user_key, 12);
+  messageDesc(file_vaultsync_v1_user_key, 14);
 
 /**
  * UserKeyService stores the calling user's end-to-end encryption key pair
@@ -409,10 +477,10 @@ export const PutAnchorListResponseSchema: GenMessage<PutAnchorListResponse> = /*
  * user's key. A user has at most one key, which is never replaced (only
  * re-wrapped by ChangePassphrase).
  *
- * Failed attempts: UnlockUserKey and ChangePassphrase calls with a wrong
- * auth_key are counted per user, on every server replica alike. After 10 of
- * them within one hour (the hour starting at the first counted failure),
- * every UnlockUserKey and ChangePassphrase call gets RESOURCE_EXHAUSTED, with
+ * Failed attempts: UnlockUserKey, ChangePassphrase and AddSignPublicKey
+ * calls with a wrong auth_key are counted per user, on every server replica
+ * alike. After 10 of them within one hour (the hour starting at the first
+ * counted failure), every such call gets RESOURCE_EXHAUSTED, with
  * an ErrorDetail of reason ERROR_REASON_PASSPHRASE_ATTEMPTS_EXHAUSTED and
  * retry_time set to the end of the hour, even with the right auth_key. Calls
  * refused that way are not counted. A successful call does not reset the
@@ -466,6 +534,26 @@ export const UserKeyService: GenService<{
     methodKind: "unary";
     input: typeof UnlockUserKeyRequestSchema;
     output: typeof UnlockUserKeyResponseSchema;
+  },
+  /**
+   * AddSignPublicKey stores the caller's Ed25519 signing public key for a
+   * user key stored without one, when auth_key is right. It is add-once:
+   * presenting the key already stored succeeds and changes nothing, so two
+   * devices unlocking at once both succeed.
+   *
+   * Errors: INVALID_ARGUMENT when auth_key or sign_public_key is not 32
+   * bytes; NOT_FOUND when the caller has no key; PERMISSION_DENIED with
+   * reason ERROR_REASON_WRONG_PASSPHRASE when auth_key is wrong (counted as a
+   * failed attempt); ALREADY_EXISTS when another signing public key is
+   * stored, which is left unchanged; RESOURCE_EXHAUSTED when too many
+   * attempts failed.
+   *
+   * @generated from rpc vaultsync.v1.UserKeyService.AddSignPublicKey
+   */
+  addSignPublicKey: {
+    methodKind: "unary";
+    input: typeof AddSignPublicKeyRequestSchema;
+    output: typeof AddSignPublicKeyResponseSchema;
   },
   /**
    * ChangePassphrase replaces the wrapped private key, its parameters and

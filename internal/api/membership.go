@@ -114,11 +114,12 @@ func invitationMessage(invitation store.Invitation) *vaultsyncv1.Invitation {
 
 func memberMessage(member store.Member) *vaultsyncv1.Member {
 	return &vaultsyncv1.Member{
-		UserId:      member.UserID.String(),
-		DisplayName: member.DisplayName,
-		Role:        roleMessage(member.Role),
-		JoinTime:    timestamppb.New(member.JoinedAt),
-		PublicKey:   member.PublicKey,
+		UserId:        member.UserID.String(),
+		DisplayName:   member.DisplayName,
+		Role:          roleMessage(member.Role),
+		JoinTime:      timestamppb.New(member.JoinedAt),
+		PublicKey:     member.PublicKey,
+		SignPublicKey: member.SignPublicKey,
 	}
 }
 

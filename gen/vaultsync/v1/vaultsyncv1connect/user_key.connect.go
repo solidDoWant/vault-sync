@@ -42,6 +42,9 @@ const (
 	// UserKeyServiceUnlockUserKeyProcedure is the fully-qualified name of the UserKeyService's
 	// UnlockUserKey RPC.
 	UserKeyServiceUnlockUserKeyProcedure = "/vaultsync.v1.UserKeyService/UnlockUserKey"
+	// UserKeyServiceAddSignPublicKeyProcedure is the fully-qualified name of the UserKeyService's
+	// AddSignPublicKey RPC.
+	UserKeyServiceAddSignPublicKeyProcedure = "/vaultsync.v1.UserKeyService/AddSignPublicKey"
 	// UserKeyServiceChangePassphraseProcedure is the fully-qualified name of the UserKeyService's
 	// ChangePassphrase RPC.
 	UserKeyServiceChangePassphraseProcedure = "/vaultsync.v1.UserKeyService/ChangePassphrase"
@@ -77,6 +80,18 @@ type UserKeyServiceClient interface {
 	// failed attempt); RESOURCE_EXHAUSTED when too many attempts failed (see
 	// the service comment).
 	UnlockUserKey(context.Context, *connect.Request[v1.UnlockUserKeyRequest]) (*connect.Response[v1.UnlockUserKeyResponse], error)
+	// AddSignPublicKey stores the caller's Ed25519 signing public key for a
+	// user key stored without one, when auth_key is right. It is add-once:
+	// presenting the key already stored succeeds and changes nothing, so two
+	// devices unlocking at once both succeed.
+	//
+	// Errors: INVALID_ARGUMENT when auth_key or sign_public_key is not 32
+	// bytes; NOT_FOUND when the caller has no key; PERMISSION_DENIED with
+	// reason ERROR_REASON_WRONG_PASSPHRASE when auth_key is wrong (counted as a
+	// failed attempt); ALREADY_EXISTS when another signing public key is
+	// stored, which is left unchanged; RESOURCE_EXHAUSTED when too many
+	// attempts failed.
+	AddSignPublicKey(context.Context, *connect.Request[v1.AddSignPublicKeyRequest]) (*connect.Response[v1.AddSignPublicKeyResponse], error)
 	// ChangePassphrase replaces the wrapped private key, its parameters and
 	// the verifier in one step: a compare-and-swap on the stored public key,
 	// which the new wrapping must keep. The key pair itself never changes.
@@ -133,6 +148,12 @@ func NewUserKeyServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(userKeyServiceMethods.ByName("UnlockUserKey")),
 			connect.WithClientOptions(opts...),
 		),
+		addSignPublicKey: connect.NewClient[v1.AddSignPublicKeyRequest, v1.AddSignPublicKeyResponse](
+			httpClient,
+			baseURL+UserKeyServiceAddSignPublicKeyProcedure,
+			connect.WithSchema(userKeyServiceMethods.ByName("AddSignPublicKey")),
+			connect.WithClientOptions(opts...),
+		),
 		changePassphrase: connect.NewClient[v1.ChangePassphraseRequest, v1.ChangePassphraseResponse](
 			httpClient,
 			baseURL+UserKeyServiceChangePassphraseProcedure,
@@ -159,6 +180,7 @@ type userKeyServiceClient struct {
 	getUserKeyParams *connect.Client[v1.GetUserKeyParamsRequest, v1.GetUserKeyParamsResponse]
 	createUserKey    *connect.Client[v1.CreateUserKeyRequest, v1.CreateUserKeyResponse]
 	unlockUserKey    *connect.Client[v1.UnlockUserKeyRequest, v1.UnlockUserKeyResponse]
+	addSignPublicKey *connect.Client[v1.AddSignPublicKeyRequest, v1.AddSignPublicKeyResponse]
 	changePassphrase *connect.Client[v1.ChangePassphraseRequest, v1.ChangePassphraseResponse]
 	getAnchorList    *connect.Client[v1.GetAnchorListRequest, v1.GetAnchorListResponse]
 	putAnchorList    *connect.Client[v1.PutAnchorListRequest, v1.PutAnchorListResponse]
@@ -177,6 +199,11 @@ func (c *userKeyServiceClient) CreateUserKey(ctx context.Context, req *connect.R
 // UnlockUserKey calls vaultsync.v1.UserKeyService.UnlockUserKey.
 func (c *userKeyServiceClient) UnlockUserKey(ctx context.Context, req *connect.Request[v1.UnlockUserKeyRequest]) (*connect.Response[v1.UnlockUserKeyResponse], error) {
 	return c.unlockUserKey.CallUnary(ctx, req)
+}
+
+// AddSignPublicKey calls vaultsync.v1.UserKeyService.AddSignPublicKey.
+func (c *userKeyServiceClient) AddSignPublicKey(ctx context.Context, req *connect.Request[v1.AddSignPublicKeyRequest]) (*connect.Response[v1.AddSignPublicKeyResponse], error) {
+	return c.addSignPublicKey.CallUnary(ctx, req)
 }
 
 // ChangePassphrase calls vaultsync.v1.UserKeyService.ChangePassphrase.
@@ -218,6 +245,18 @@ type UserKeyServiceHandler interface {
 	// failed attempt); RESOURCE_EXHAUSTED when too many attempts failed (see
 	// the service comment).
 	UnlockUserKey(context.Context, *connect.Request[v1.UnlockUserKeyRequest]) (*connect.Response[v1.UnlockUserKeyResponse], error)
+	// AddSignPublicKey stores the caller's Ed25519 signing public key for a
+	// user key stored without one, when auth_key is right. It is add-once:
+	// presenting the key already stored succeeds and changes nothing, so two
+	// devices unlocking at once both succeed.
+	//
+	// Errors: INVALID_ARGUMENT when auth_key or sign_public_key is not 32
+	// bytes; NOT_FOUND when the caller has no key; PERMISSION_DENIED with
+	// reason ERROR_REASON_WRONG_PASSPHRASE when auth_key is wrong (counted as a
+	// failed attempt); ALREADY_EXISTS when another signing public key is
+	// stored, which is left unchanged; RESOURCE_EXHAUSTED when too many
+	// attempts failed.
+	AddSignPublicKey(context.Context, *connect.Request[v1.AddSignPublicKeyRequest]) (*connect.Response[v1.AddSignPublicKeyResponse], error)
 	// ChangePassphrase replaces the wrapped private key, its parameters and
 	// the verifier in one step: a compare-and-swap on the stored public key,
 	// which the new wrapping must keep. The key pair itself never changes.
@@ -270,6 +309,12 @@ func NewUserKeyServiceHandler(svc UserKeyServiceHandler, opts ...connect.Handler
 		connect.WithSchema(userKeyServiceMethods.ByName("UnlockUserKey")),
 		connect.WithHandlerOptions(opts...),
 	)
+	userKeyServiceAddSignPublicKeyHandler := connect.NewUnaryHandler(
+		UserKeyServiceAddSignPublicKeyProcedure,
+		svc.AddSignPublicKey,
+		connect.WithSchema(userKeyServiceMethods.ByName("AddSignPublicKey")),
+		connect.WithHandlerOptions(opts...),
+	)
 	userKeyServiceChangePassphraseHandler := connect.NewUnaryHandler(
 		UserKeyServiceChangePassphraseProcedure,
 		svc.ChangePassphrase,
@@ -296,6 +341,8 @@ func NewUserKeyServiceHandler(svc UserKeyServiceHandler, opts ...connect.Handler
 			userKeyServiceCreateUserKeyHandler.ServeHTTP(w, r)
 		case UserKeyServiceUnlockUserKeyProcedure:
 			userKeyServiceUnlockUserKeyHandler.ServeHTTP(w, r)
+		case UserKeyServiceAddSignPublicKeyProcedure:
+			userKeyServiceAddSignPublicKeyHandler.ServeHTTP(w, r)
 		case UserKeyServiceChangePassphraseProcedure:
 			userKeyServiceChangePassphraseHandler.ServeHTTP(w, r)
 		case UserKeyServiceGetAnchorListProcedure:
@@ -321,6 +368,10 @@ func (UnimplementedUserKeyServiceHandler) CreateUserKey(context.Context, *connec
 
 func (UnimplementedUserKeyServiceHandler) UnlockUserKey(context.Context, *connect.Request[v1.UnlockUserKeyRequest]) (*connect.Response[v1.UnlockUserKeyResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("vaultsync.v1.UserKeyService.UnlockUserKey is not implemented"))
+}
+
+func (UnimplementedUserKeyServiceHandler) AddSignPublicKey(context.Context, *connect.Request[v1.AddSignPublicKeyRequest]) (*connect.Response[v1.AddSignPublicKeyResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("vaultsync.v1.UserKeyService.AddSignPublicKey is not implemented"))
 }
 
 func (UnimplementedUserKeyServiceHandler) ChangePassphrase(context.Context, *connect.Request[v1.ChangePassphraseRequest]) (*connect.Response[v1.ChangePassphraseResponse], error) {

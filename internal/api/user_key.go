@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -26,6 +27,8 @@ const (
 	// UserPublicKeyBytes is the size of a user's hybrid ML-KEM-768 + X25519
 	// public key.
 	UserPublicKeyBytes = e2ee.PublicKeySize
+	// SignPublicKeyBytes is the size of a user's Ed25519 signing public key.
+	SignPublicKeyBytes = ed25519.PublicKeySize
 	// MaxWrappedPrivateKeyBytes bounds a wrapped private key. A suite 2
 	// wrapping of a 32-byte hybrid private key seed is 98 bytes.
 	MaxWrappedPrivateKeyBytes = 256
@@ -40,7 +43,8 @@ const (
 
 // UserKeyStore persists users' wrapped keys. *store.Store implements it.
 type UserKeyStore interface {
-	CreateUserKey(ctx context.Context, userID uuid.UUID, publicKey []byte, wrapping store.Wrapping) error
+	CreateUserKey(ctx context.Context, userID uuid.UUID, publicKey, signPublicKey []byte, wrapping store.Wrapping) error
+	AddSignPublicKey(ctx context.Context, userID uuid.UUID, authKeyHash, signPublicKey []byte, limit store.AttemptLimit) error
 	UserKeyParams(ctx context.Context, userID uuid.UUID) (store.UserKey, error)
 	UnlockUserKey(ctx context.Context, userID uuid.UUID, authKeyHash []byte, limit store.AttemptLimit) (store.UserKey, error)
 	ChangePassphrase(ctx context.Context, userID uuid.UUID, authKeyHash, expectedPublicKey []byte, replacement store.Wrapping, limit store.AttemptLimit) error
@@ -73,9 +77,10 @@ func (service UserKeyService) GetUserKeyParams(ctx context.Context, _ *connect.R
 	}
 
 	return connect.NewResponse(&vaultsyncv1.GetUserKeyParamsResponse{
-		PublicKey: key.PublicKey,
-		Params:    paramsMessage(key.Params),
-		UserId:    user.ID.String(),
+		PublicKey:     key.PublicKey,
+		Params:        paramsMessage(key.Params),
+		UserId:        user.ID.String(),
+		SignPublicKey: key.SignPublicKey,
 	}), nil
 }
 
@@ -91,12 +96,16 @@ func (service UserKeyService) CreateUserKey(ctx context.Context, request *connec
 		return nil, err
 	}
 
+	if err := checkSignPublicKey(message.GetSignPublicKey()); err != nil {
+		return nil, err
+	}
+
 	wrapping, err := checkWrapping("", message.GetWrappedPrivateKey(), message.GetParams(), message.GetAuthKey())
 	if err != nil {
 		return nil, err
 	}
 
-	if err := service.Store.CreateUserKey(ctx, user.ID, message.GetPublicKey(), wrapping); err != nil {
+	if err := service.Store.CreateUserKey(ctx, user.ID, message.GetPublicKey(), message.GetSignPublicKey(), wrapping); err != nil {
 		if errors.Is(err, store.ErrUserKeyExists) {
 			return nil, connect.NewError(connect.CodeAlreadyExists, errors.New("a user key already exists"))
 		}
@@ -129,7 +138,38 @@ func (service UserKeyService) UnlockUserKey(ctx context.Context, request *connec
 		WrappedPrivateKey: key.WrappedPrivateKey,
 		Params:            paramsMessage(key.Params),
 		UserId:            user.ID.String(),
+		SignPublicKey:     key.SignPublicKey,
 	}), nil
+}
+
+// AddSignPublicKey adds the signing public key to the caller's key, once.
+func (service UserKeyService) AddSignPublicKey(ctx context.Context, request *connect.Request[vaultsyncv1.AddSignPublicKeyRequest]) (*connect.Response[vaultsyncv1.AddSignPublicKeyResponse], error) {
+	user, ok := auth.UserFromContext(ctx)
+	if !ok {
+		return nil, connect.NewError(connect.CodeUnauthenticated, auth.ErrUnauthenticated)
+	}
+
+	message := request.Msg
+
+	authKeyHash, err := hashAuthKey("auth_key", message.GetAuthKey())
+	if err != nil {
+		return nil, err
+	}
+
+	if err := checkSignPublicKey(message.GetSignPublicKey()); err != nil {
+		return nil, err
+	}
+
+	err = service.Store.AddSignPublicKey(ctx, user.ID, authKeyHash, message.GetSignPublicKey(), attemptLimit)
+	if err != nil {
+		if errors.Is(err, store.ErrSignPublicKeyExists) {
+			return nil, connect.NewError(connect.CodeAlreadyExists, errors.New("another sign_public_key is stored"))
+		}
+
+		return nil, service.storeError(ctx, "cannot add sign public key", err)
+	}
+
+	return connect.NewResponse(&vaultsyncv1.AddSignPublicKeyResponse{}), nil
 }
 
 // ChangePassphrase re-wraps the caller's private key.
@@ -202,6 +242,14 @@ func (service UserKeyService) storeError(ctx context.Context, message string, er
 func checkPublicKey(field string, publicKey []byte) error {
 	if len(publicKey) != UserPublicKeyBytes {
 		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("%s must be exactly %d bytes", field, UserPublicKeyBytes))
+	}
+
+	return nil
+}
+
+func checkSignPublicKey(signPublicKey []byte) error {
+	if len(signPublicKey) != SignPublicKeyBytes {
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("sign_public_key must be exactly %d bytes", SignPublicKeyBytes))
 	}
 
 	return nil
