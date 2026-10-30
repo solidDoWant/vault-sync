@@ -128,7 +128,9 @@ func Main(ctx context.Context, args []string, lookup func(string) (string, bool)
 	// The refresher stops with ctx, or when Main returns; the pool closes
 	// only after it has.
 	serviceMetrics := servicemetrics.NewMetrics()
-	refresher := &servicemetrics.Refresher{Store: queries, Metrics: serviceMetrics, Logger: logger}
+	refresher := &servicemetrics.Refresher{
+		Store: queries, Metrics: serviceMetrics, EscrowRetiringKeyIDs: escrow.RetiringKeyIDs, Logger: logger,
+	}
 	refresherCtx, stopRefresher := context.WithCancel(ctx)
 	refresherDone := make(chan struct{})
 
