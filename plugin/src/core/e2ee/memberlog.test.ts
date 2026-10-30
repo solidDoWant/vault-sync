@@ -11,6 +11,7 @@ import {
   bundleOf,
   encodeBundle,
   encodeEscrowBundle,
+  escrowFingerprint,
   type EscrowRotation,
   fingerprint,
   formatFingerprint,
@@ -169,9 +170,12 @@ describe("identity keys match the shared vectors", () => {
     }
   });
 
-  it("encodes escrow bundles and follows only signed, chained rotations", () => {
+  it("encodes and fingerprints escrow bundles and follows only signed, chained rotations", () => {
     for (const vector of vectors.escrow_bundles) {
-      expect(bytesToHex(encodeEscrowBundle({ signPub: signPublicKey(hexToBytes(vector.sign_seed)), recipient: vector.recipient }))).toBe(vector.encoded);
+      const bundle = { signPub: signPublicKey(hexToBytes(vector.sign_seed)), recipient: vector.recipient };
+      expect(bytesToHex(encodeEscrowBundle(bundle))).toBe(vector.encoded);
+      expect(bytesToHex(escrowFingerprint(bundle)), vector.name).toBe(vector.fingerprint);
+      expect(formatFingerprint(escrowFingerprint(bundle)), vector.name).toBe(vector.fingerprint_display);
     }
     for (const vector of vectors.escrow_chains) {
       const end = verifyEscrowChain(parseEscrowBundle(hexToBytes(vector.pinned)), rotationsOf(vector.rotations));

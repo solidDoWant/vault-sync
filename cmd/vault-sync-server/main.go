@@ -9,6 +9,9 @@
 // -signing-public-key K` rotates the deployment's escrow key and exits
 // (docs/export.md).
 //
+// `vault-sync-server escrow fingerprint` prints the fingerprint of the
+// deployment's escrow key pair and exits (docs/encryption.md).
+//
 // `vault-sync-server import SERVER_URL VAULT_ID DIR` loads a folder of Markdown notes
 // and attachments into an empty vault and exits (docs/import.md).
 //
@@ -25,6 +28,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/solidDoWant/vault-sync/internal/escrowcmd"
 	"github.com/solidDoWant/vault-sync/internal/export"
 	"github.com/solidDoWant/vault-sync/internal/retentioncmd"
 	"github.com/solidDoWant/vault-sync/internal/server"
@@ -40,6 +44,8 @@ func main() {
 	switch {
 	case len(os.Args) > 1 && os.Args[1] == "export":
 		code = export.Main(ctx, os.Args[2:], os.LookupEnv, os.Stdout, os.Stderr)
+	case len(os.Args) > 1 && os.Args[1] == "escrow":
+		code = escrowcmd.Main(os.Args[2:], os.LookupEnv, os.Stdout, os.Stderr)
 	case len(os.Args) > 1 && os.Args[1] == "import":
 		code = vaultimport.Main(ctx, os.Args[2:], os.LookupEnv, os.Stdout, os.Stderr)
 	case len(os.Args) > 1 && os.Args[1] == "retention":

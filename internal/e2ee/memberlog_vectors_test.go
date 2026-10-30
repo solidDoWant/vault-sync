@@ -89,6 +89,9 @@ type escrowBundleVector struct {
 	SignPub   string `json:"sign_pub"`
 	Recipient string `json:"recipient"`
 	Encoded   string `json:"encoded"`
+	// Fingerprint is the escrow fingerprint, FingerprintDisplay as shown.
+	Fingerprint        string `json:"fingerprint"`
+	FingerprintDisplay string `json:"fingerprint_display"`
 }
 
 type escrowRotationJSON struct {
@@ -440,6 +443,8 @@ func generateIdentityVectors(t *testing.T) identityVectors {
 		vectors.EscrowBundles = append(vectors.EscrowBundles, escrowBundleVector{
 			Name: testCase.name, SignSeed: hex.EncodeToString(testCase.seed), SignPub: hex.EncodeToString(testCase.bundle.SignPub),
 			Recipient: testCase.bundle.Recipient, Encoded: hex.EncodeToString(must(testCase.bundle.Encode())),
+			Fingerprint:        hex.EncodeToString(must(testCase.bundle.Fingerprint())),
+			FingerprintDisplay: FormatFingerprint(must(testCase.bundle.Fingerprint())),
 		})
 	}
 
@@ -889,6 +894,8 @@ func TestIdentityVectors(t *testing.T) {
 			signPub, _ := ed25519.NewKeyFromSeed(unhex(t, vector.SignSeed)).Public().(ed25519.PublicKey)
 			bundle := EscrowBundle{SignPub: signPub, Recipient: vector.Recipient}
 			assert.Equal(t, vector.Encoded, hex.EncodeToString(must(bundle.Encode())))
+			assert.Equal(t, vector.Fingerprint, hex.EncodeToString(must(bundle.Fingerprint())), vector.Name)
+			assert.Equal(t, vector.FingerprintDisplay, FormatFingerprint(must(bundle.Fingerprint())), vector.Name)
 		}
 
 		for _, vector := range vectors.EscrowChains {
