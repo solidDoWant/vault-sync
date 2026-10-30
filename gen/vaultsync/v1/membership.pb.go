@@ -1030,7 +1030,15 @@ type RemoveMemberRequest struct {
 	NextEpoch *NextEpoch `protobuf:"bytes,3,opt,name=next_epoch,json=nextEpoch,proto3" json:"next_epoch,omitempty"`
 	// The signed remove-member entry for user_id: required in an end-to-end
 	// encrypted vault, and must be unset in a plaintext vault.
-	LogEntry      *LogEntry `protobuf:"bytes,4,opt,name=log_entry,json=logEntry,proto3" json:"log_entry,omitempty"`
+	LogEntry *LogEntry `protobuf:"bytes,4,opt,name=log_entry,json=logEntry,proto3" json:"log_entry,omitempty"`
+	// next_epoch's signed record (docs/design/crypto.md): required with
+	// next_epoch in an end-to-end encrypted vault, and must be unset in a
+	// plaintext vault. It must be signed by an owner at log_entry's seq, name
+	// log_entry as its log position, and list exactly the recipients the log
+	// has after log_entry, which next_epoch's slots must match, as
+	// VaultKeyService.RotateEpoch checks a record. It is stored with the
+	// epoch (KeyEpoch.record).
+	Record        *EpochRecord `protobuf:"bytes,5,opt,name=record,proto3" json:"record,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1089,6 +1097,13 @@ func (x *RemoveMemberRequest) GetNextEpoch() *NextEpoch {
 func (x *RemoveMemberRequest) GetLogEntry() *LogEntry {
 	if x != nil {
 		return x.LogEntry
+	}
+	return nil
+}
+
+func (x *RemoveMemberRequest) GetRecord() *EpochRecord {
+	if x != nil {
+		return x.Record
 	}
 	return nil
 }
@@ -1292,13 +1307,14 @@ const file_vaultsync_v1_membership_proto_rawDesc = "" +
 	"\x04role\x18\x03 \x01(\x0e2\x17.vaultsync.v1.VaultRoleR\x04role\x123\n" +
 	"\tlog_entry\x18\x04 \x01(\v2\x16.vaultsync.v1.LogEntryR\blogEntry\"H\n" +
 	"\x18UpdateMemberRoleResponse\x12,\n" +
-	"\x06member\x18\x01 \x01(\v2\x14.vaultsync.v1.MemberR\x06member\"\xb6\x01\n" +
+	"\x06member\x18\x01 \x01(\v2\x14.vaultsync.v1.MemberR\x06member\"\xe9\x01\n" +
 	"\x13RemoveMemberRequest\x12\x19\n" +
 	"\bvault_id\x18\x01 \x01(\tR\avaultId\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\tR\x06userId\x126\n" +
 	"\n" +
 	"next_epoch\x18\x03 \x01(\v2\x17.vaultsync.v1.NextEpochR\tnextEpoch\x123\n" +
-	"\tlog_entry\x18\x04 \x01(\v2\x16.vaultsync.v1.LogEntryR\blogEntry\"\x16\n" +
+	"\tlog_entry\x18\x04 \x01(\v2\x16.vaultsync.v1.LogEntryR\blogEntry\x121\n" +
+	"\x06record\x18\x05 \x01(\v2\x19.vaultsync.v1.EpochRecordR\x06record\"\x16\n" +
 	"\x14RemoveMemberResponse\"c\n" +
 	"\x11LeaveVaultRequest\x12\x19\n" +
 	"\bvault_id\x18\x01 \x01(\tR\avaultId\x123\n" +
@@ -1357,6 +1373,7 @@ var file_vaultsync_v1_membership_proto_goTypes = []any{
 	(*KeyEpoch)(nil),                   // 24: vaultsync.v1.KeyEpoch
 	(*Vault)(nil),                      // 25: vaultsync.v1.Vault
 	(*NextEpoch)(nil),                  // 26: vaultsync.v1.NextEpoch
+	(*EpochRecord)(nil),                // 27: vaultsync.v1.EpochRecord
 }
 var file_vaultsync_v1_membership_proto_depIdxs = []int32{
 	20, // 0: vaultsync.v1.Invitation.role:type_name -> vaultsync.v1.VaultRole
@@ -1382,30 +1399,31 @@ var file_vaultsync_v1_membership_proto_depIdxs = []int32{
 	1,  // 20: vaultsync.v1.UpdateMemberRoleResponse.member:type_name -> vaultsync.v1.Member
 	26, // 21: vaultsync.v1.RemoveMemberRequest.next_epoch:type_name -> vaultsync.v1.NextEpoch
 	22, // 22: vaultsync.v1.RemoveMemberRequest.log_entry:type_name -> vaultsync.v1.LogEntry
-	22, // 23: vaultsync.v1.LeaveVaultRequest.log_entry:type_name -> vaultsync.v1.LogEntry
-	2,  // 24: vaultsync.v1.MembershipService.CreateInvitation:input_type -> vaultsync.v1.CreateInvitationRequest
-	4,  // 25: vaultsync.v1.MembershipService.ListInvitations:input_type -> vaultsync.v1.ListInvitationsRequest
-	6,  // 26: vaultsync.v1.MembershipService.RevokeInvitation:input_type -> vaultsync.v1.RevokeInvitationRequest
-	8,  // 27: vaultsync.v1.MembershipService.GetInvitationSlots:input_type -> vaultsync.v1.GetInvitationSlotsRequest
-	10, // 28: vaultsync.v1.MembershipService.RedeemInvitation:input_type -> vaultsync.v1.RedeemInvitationRequest
-	12, // 29: vaultsync.v1.MembershipService.ListMembers:input_type -> vaultsync.v1.ListMembersRequest
-	14, // 30: vaultsync.v1.MembershipService.UpdateMemberRole:input_type -> vaultsync.v1.UpdateMemberRoleRequest
-	16, // 31: vaultsync.v1.MembershipService.RemoveMember:input_type -> vaultsync.v1.RemoveMemberRequest
-	18, // 32: vaultsync.v1.MembershipService.LeaveVault:input_type -> vaultsync.v1.LeaveVaultRequest
-	3,  // 33: vaultsync.v1.MembershipService.CreateInvitation:output_type -> vaultsync.v1.CreateInvitationResponse
-	5,  // 34: vaultsync.v1.MembershipService.ListInvitations:output_type -> vaultsync.v1.ListInvitationsResponse
-	7,  // 35: vaultsync.v1.MembershipService.RevokeInvitation:output_type -> vaultsync.v1.RevokeInvitationResponse
-	9,  // 36: vaultsync.v1.MembershipService.GetInvitationSlots:output_type -> vaultsync.v1.GetInvitationSlotsResponse
-	11, // 37: vaultsync.v1.MembershipService.RedeemInvitation:output_type -> vaultsync.v1.RedeemInvitationResponse
-	13, // 38: vaultsync.v1.MembershipService.ListMembers:output_type -> vaultsync.v1.ListMembersResponse
-	15, // 39: vaultsync.v1.MembershipService.UpdateMemberRole:output_type -> vaultsync.v1.UpdateMemberRoleResponse
-	17, // 40: vaultsync.v1.MembershipService.RemoveMember:output_type -> vaultsync.v1.RemoveMemberResponse
-	19, // 41: vaultsync.v1.MembershipService.LeaveVault:output_type -> vaultsync.v1.LeaveVaultResponse
-	33, // [33:42] is the sub-list for method output_type
-	24, // [24:33] is the sub-list for method input_type
-	24, // [24:24] is the sub-list for extension type_name
-	24, // [24:24] is the sub-list for extension extendee
-	0,  // [0:24] is the sub-list for field type_name
+	27, // 23: vaultsync.v1.RemoveMemberRequest.record:type_name -> vaultsync.v1.EpochRecord
+	22, // 24: vaultsync.v1.LeaveVaultRequest.log_entry:type_name -> vaultsync.v1.LogEntry
+	2,  // 25: vaultsync.v1.MembershipService.CreateInvitation:input_type -> vaultsync.v1.CreateInvitationRequest
+	4,  // 26: vaultsync.v1.MembershipService.ListInvitations:input_type -> vaultsync.v1.ListInvitationsRequest
+	6,  // 27: vaultsync.v1.MembershipService.RevokeInvitation:input_type -> vaultsync.v1.RevokeInvitationRequest
+	8,  // 28: vaultsync.v1.MembershipService.GetInvitationSlots:input_type -> vaultsync.v1.GetInvitationSlotsRequest
+	10, // 29: vaultsync.v1.MembershipService.RedeemInvitation:input_type -> vaultsync.v1.RedeemInvitationRequest
+	12, // 30: vaultsync.v1.MembershipService.ListMembers:input_type -> vaultsync.v1.ListMembersRequest
+	14, // 31: vaultsync.v1.MembershipService.UpdateMemberRole:input_type -> vaultsync.v1.UpdateMemberRoleRequest
+	16, // 32: vaultsync.v1.MembershipService.RemoveMember:input_type -> vaultsync.v1.RemoveMemberRequest
+	18, // 33: vaultsync.v1.MembershipService.LeaveVault:input_type -> vaultsync.v1.LeaveVaultRequest
+	3,  // 34: vaultsync.v1.MembershipService.CreateInvitation:output_type -> vaultsync.v1.CreateInvitationResponse
+	5,  // 35: vaultsync.v1.MembershipService.ListInvitations:output_type -> vaultsync.v1.ListInvitationsResponse
+	7,  // 36: vaultsync.v1.MembershipService.RevokeInvitation:output_type -> vaultsync.v1.RevokeInvitationResponse
+	9,  // 37: vaultsync.v1.MembershipService.GetInvitationSlots:output_type -> vaultsync.v1.GetInvitationSlotsResponse
+	11, // 38: vaultsync.v1.MembershipService.RedeemInvitation:output_type -> vaultsync.v1.RedeemInvitationResponse
+	13, // 39: vaultsync.v1.MembershipService.ListMembers:output_type -> vaultsync.v1.ListMembersResponse
+	15, // 40: vaultsync.v1.MembershipService.UpdateMemberRole:output_type -> vaultsync.v1.UpdateMemberRoleResponse
+	17, // 41: vaultsync.v1.MembershipService.RemoveMember:output_type -> vaultsync.v1.RemoveMemberResponse
+	19, // 42: vaultsync.v1.MembershipService.LeaveVault:output_type -> vaultsync.v1.LeaveVaultResponse
+	34, // [34:43] is the sub-list for method output_type
+	25, // [25:34] is the sub-list for method input_type
+	25, // [25:25] is the sub-list for extension type_name
+	25, // [25:25] is the sub-list for extension extendee
+	0,  // [0:25] is the sub-list for field type_name
 }
 
 func init() { file_vaultsync_v1_membership_proto_init() }

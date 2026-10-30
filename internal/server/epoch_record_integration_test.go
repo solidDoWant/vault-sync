@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
 
@@ -325,4 +326,151 @@ func TestRotateEpochOnAPlaintextVaultIsUnchangedAgainstPostgres(t *testing.T) {
 			assert.Equal(t, vaultSnapshot{}, fixture.snapshot(t, alice.vaultID))
 		})
 	}
+}
+
+// An E2EE RemoveMember stores the entry, the epoch and its record together
+// when the record is signed by an owner at the remove-member entry, names
+// that entry and lists the log's recipients after it; a missing record,
+// another signer, another position or other recipients are refused as
+// RotateEpoch refuses them, and nothing changes.
+func TestRemoveMemberVerifiesTheSignedRecordAgainstPostgres(t *testing.T) {
+	fixture := newSyncFixture(t, api.SyncLimits{})
+	alice := fixture.keyedMember(t, "alice")
+	bob := fixture.keyedMember(t, "bob")
+	carol := fixture.keyedMember(t, "carol")
+
+	vaultID := fixture.e2eeVault(t, alice, false)
+	fixture.join(t, alice, bob, vaultsyncv1.VaultRole_VAULT_ROLE_EDITOR)
+	fixture.join(t, alice, carol, vaultsyncv1.VaultRole_VAULT_ROLE_EDITOR)
+
+	first, err := e2ee.GenerateKey()
+	require.NoError(t, err)
+
+	_, err = fixture.rotate(t, 0, alice, nextEpoch(t, vaultID, 0, first, alice, bob, carol))
+	require.NoError(t, err)
+
+	second, err := e2ee.GenerateKey()
+	require.NoError(t, err)
+
+	log, ok := fixture.signedLog(t, alice)
+	require.True(t, ok, "the membership changes built the vault's log")
+
+	firstCommitment := fixture.epochs(t, alice).GetEpochs()[0].GetCommitment()
+
+	// removal is a valid removal of bob; afterRemoval is the log with its
+	// entry appended, for records built by hand.
+	removal := func(t *testing.T) (*vaultsyncv1.RemoveMemberRequest, *logtest.Log) {
+		t.Helper()
+
+		request := fixture.removalRequest(t, alice, bob, nextEpoch(t, vaultID, 1, second, alice, carol))
+		require.NotNil(t, request.GetRecord())
+
+		afterRemoval := &logtest.Log{
+			VaultID: vaultID, Entries: append(slices.Clone(log.Entries), logEntryOf(vaultID, request.GetLogEntry())),
+			Secrets: map[string]e2ee.UserSecret{alice.userID.String(): alice.secret},
+		}
+
+		return request, afterRemoval
+	}
+
+	_, stranger, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+
+	resign := func(t *testing.T, record e2ee.EpochRecord, key ed25519.PrivateKey) *vaultsyncv1.EpochRecord {
+		t.Helper()
+
+		signed, err := record.Sign(key)
+		require.NoError(t, err)
+
+		return logtest.RecordMessage(signed)
+	}
+
+	refused := map[string]func(t *testing.T, request *vaultsyncv1.RemoveMemberRequest, afterRemoval *logtest.Log){
+		"no record": func(_ *testing.T, request *vaultsyncv1.RemoveMemberRequest, _ *logtest.Log) { request.Record = nil },
+		"signed by a key outside the log": func(t *testing.T, request *vaultsyncv1.RemoveMemberRequest, afterRemoval *logtest.Log) {
+			record := afterRemoval.Record(t, alice.userID, 2, request.GetNextEpoch().GetCommitment(), firstCommitment)
+			request.Record = resign(t, record, stranger)
+		},
+		"signed by an editor": func(t *testing.T, request *vaultsyncv1.RemoveMemberRequest, afterRemoval *logtest.Log) {
+			record := afterRemoval.Record(t, alice.userID, 2, request.GetNextEpoch().GetCommitment(), firstCommitment)
+			request.Record = resign(t, record, carol.secret.SignKey())
+		},
+		"at the log position before the entry": func(t *testing.T, request *vaultsyncv1.RemoveMemberRequest, _ *logtest.Log) {
+			before := &logtest.Log{VaultID: vaultID, Entries: log.Entries, Secrets: log.Secrets}
+			record := before.Record(t, alice.userID, 2, request.GetNextEpoch().GetCommitment(), firstCommitment)
+			// The members there include bob; drop him so only the position differs.
+			record.Recipients = slices.DeleteFunc(record.Recipients, func(recipient e2ee.EpochRecipient) bool {
+				return bytes.Equal(recipient.ID, bob.userID[:])
+			})
+			request.Record = resign(t, record, alice.secret.SignKey())
+		},
+		"the removed member as a recipient": func(t *testing.T, request *vaultsyncv1.RemoveMemberRequest, afterRemoval *logtest.Log) {
+			record := afterRemoval.Record(t, alice.userID, 2, request.GetNextEpoch().GetCommitment(), firstCommitment)
+			record.Recipients = append(record.Recipients, e2ee.EpochRecipient{Kind: 0x01, ID: bob.userID[:], KeyHash: record.Recipients[0].KeyHash})
+			slices.SortFunc(record.Recipients, func(left, right e2ee.EpochRecipient) int {
+				if left.Kind != right.Kind {
+					return int(left.Kind) - int(right.Kind)
+				}
+
+				return bytes.Compare(left.ID, right.ID)
+			})
+			request.Record = resign(t, record, alice.secret.SignKey())
+		},
+	}
+
+	before := fixture.snapshot(t, vaultID)
+
+	for name, mutate := range refused {
+		t.Run(name, func(t *testing.T) {
+			request, afterRemoval := removal(t)
+			mutate(t, request, afterRemoval)
+
+			_, err := fixture.members(1).RemoveMember(t.Context(), authorized(request, alice.token))
+			assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err), err)
+			require.ErrorContains(t, err, store.ErrEpochRecord.Error())
+			assert.Equal(t, before, fixture.snapshot(t, vaultID), "neither the entry nor the epoch is stored")
+			assert.Equal(t, vaultsyncv1.VaultRole_VAULT_ROLE_EDITOR, fixture.roleIn(t, bob.token, vaultID), "bob stays")
+		})
+	}
+
+	valid, _ := removal(t)
+	_, err = fixture.members(1).RemoveMember(t.Context(), authorized(valid, alice.token))
+	require.NoError(t, err)
+	assert.Equal(t, vaultsyncv1.VaultRole_VAULT_ROLE_UNSPECIFIED, fixture.roleIn(t, bob.token, vaultID))
+
+	after := fixture.snapshot(t, vaultID)
+	assert.Equal(t, before.logEntries+1, after.logEntries, "the entry is appended")
+	assert.Equal(t, int32(2), after.currentEpoch)
+
+	listed := fixture.epochs(t, alice)
+	require.Len(t, listed.GetEpochs(), 2)
+	assert.True(t, proto.Equal(valid.GetRecord(), listed.GetEpochs()[1].GetRecord()), "the removal's epoch carries its record")
+}
+
+// A plaintext vault's removal takes no record.
+func TestRemoveMemberOfAPlaintextVaultTakesNoRecordAgainstPostgres(t *testing.T) {
+	fixture := newSyncFixture(t, api.SyncLimits{})
+	alice := fixture.keyedMember(t, "alice")
+	bob := fixture.keyedMember(t, "bob")
+
+	vaultID := fixture.createVault(t, alice.token, "Plain").GetId()
+	alice.vaultID = vaultID
+	fixture.join(t, alice, bob, vaultsyncv1.VaultRole_VAULT_ROLE_EDITOR)
+
+	log := logtest.New(t, uuid.MustParse(vaultID), alice.userID, nil)
+	next := nextEpoch(t, vaultID, 0, bytes.Repeat([]byte{1}, 32), alice)
+	record := logtest.RecordMessage(log.Record(t, alice.userID, 1, next.GetCommitment(), nil))
+
+	for name, request := range map[string]*vaultsyncv1.RemoveMemberRequest{
+		"a record alone":           {VaultId: vaultID, UserId: bob.userID.String(), Record: record},
+		"a record with next_epoch": {VaultId: vaultID, UserId: bob.userID.String(), Record: record, NextEpoch: next},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := fixture.members(1).RemoveMember(t.Context(), authorized(request, alice.token))
+			assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err), err)
+			assert.Equal(t, vaultsyncv1.VaultRole_VAULT_ROLE_EDITOR, fixture.roleIn(t, bob.token, vaultID), "bob stays")
+		})
+	}
+
+	require.NoError(t, fixture.removeWithEpoch(t, alice, bob, nil))
 }

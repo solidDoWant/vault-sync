@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"net/http"
+	"slices"
 	"sync"
 	"testing"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/solidDoWant/vault-sync/gen/vaultsync/v1/vaultsyncv1connect"
 	"github.com/solidDoWant/vault-sync/internal/api"
 	"github.com/solidDoWant/vault-sync/internal/e2ee"
+	"github.com/solidDoWant/vault-sync/internal/e2ee/logtest"
 	"github.com/solidDoWant/vault-sync/internal/store"
 )
 
@@ -214,14 +216,50 @@ func (fixture *syncFixture) missingSlots(t *testing.T, caller *keyedMember) []*v
 func (fixture *syncFixture) removeWithEpoch(t *testing.T, owner, removed *keyedMember, next *vaultsyncv1.NextEpoch) error {
 	t.Helper()
 
+	_, err := fixture.members(1).RemoveMember(t.Context(), authorized(fixture.removalRequest(t, owner, removed, next), owner.token))
+
+	return err
+}
+
+// removalRequest is owner's removal of removed with next: in an E2EE vault
+// with the remove-member entry signed by owner and next's record at it.
+func (fixture *syncFixture) removalRequest(t *testing.T, owner, removed *keyedMember, next *vaultsyncv1.NextEpoch) *vaultsyncv1.RemoveMemberRequest {
+	t.Helper()
+
 	request := &vaultsyncv1.RemoveMemberRequest{VaultId: owner.vaultID, UserId: removed.userID.String(), NextEpoch: next}
 	if fixture.encrypted(t, owner) {
 		request.LogEntry = fixture.idEntry(t, owner, e2ee.EntryRemoveMember, removed.userID, owner)
+		request.Record = fixture.removalRecord(t, owner, request.GetLogEntry(), next)
 	}
 
-	_, err := fixture.members(1).RemoveMember(t.Context(), authorized(request, owner.token))
+	return request
+}
 
-	return err
+// removalRecord is next's record signed by owner at entry, the remove-member
+// entry after the head of the vault's log, or nil when there is no next
+// epoch, its commitment cannot be signed or the log does not verify with
+// entry (the removal is refused for those first).
+func (fixture *syncFixture) removalRecord(t *testing.T, owner *keyedMember, entry *vaultsyncv1.LogEntry, next *vaultsyncv1.NextEpoch) *vaultsyncv1.EpochRecord {
+	t.Helper()
+
+	if entry == nil || next == nil || len(next.GetCommitment()) != e2ee.MACSize {
+		return nil
+	}
+
+	log, ok := fixture.signedLog(t, owner)
+	if !ok {
+		log = fixture.vaultLog(t, owner.vaultID)
+	}
+
+	extended := &logtest.Log{
+		VaultID: log.VaultID, Entries: append(slices.Clone(log.Entries), logEntryOf(owner.vaultID, entry)), Secrets: log.Secrets,
+	}
+
+	if _, err := e2ee.ReplayLog(extended.VaultID, extended.Entries, e2ee.ReplayOptions{}); err != nil {
+		return nil
+	}
+
+	return fixture.signedRecord(t, extended, owner.vaultID, owner.userID, next)
 }
 
 // openSlot unwraps the epoch key of a slot listed to member and checks it

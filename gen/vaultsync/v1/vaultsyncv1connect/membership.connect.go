@@ -143,10 +143,17 @@ type MembershipServiceClient interface {
 	// end-to-end encrypted vault this way, because they would know the epoch
 	// meant to exclude them; they leave with LeaveVault.
 	//
+	// The request also carries the new epoch's signed record, naming the
+	// remove-member entry as its log position: the entry, the epoch and its
+	// record are stored in one transaction.
+	//
 	// Errors: INVALID_ARGUMENT when user_id is not a canonical lowercase UUID,
 	// when next_epoch is missing in an E2EE vault, given in a plaintext vault
-	// or out of bounds, or when its slots are not exactly the new epoch's
-	// recipients (the removed member is not one); NOT_FOUND when the user is
+	// or out of bounds, when its slots are not exactly the new epoch's
+	// recipients (the removed member is not one), when record is given
+	// without next_epoch, or when record is missing in an E2EE vault, not
+	// signed by an owner at log_entry, names another log position or lists
+	// other recipients than the log's (as RotateEpoch); NOT_FOUND when the user is
 	// not a member; FAILED_PRECONDITION when it would remove the vault's last
 	// owner, when the caller removes themselves from an E2EE vault, or,
 	// with an ErrorDetail of reason ERROR_REASON_EPOCH_NOT_CURRENT,
@@ -368,10 +375,17 @@ type MembershipServiceHandler interface {
 	// end-to-end encrypted vault this way, because they would know the epoch
 	// meant to exclude them; they leave with LeaveVault.
 	//
+	// The request also carries the new epoch's signed record, naming the
+	// remove-member entry as its log position: the entry, the epoch and its
+	// record are stored in one transaction.
+	//
 	// Errors: INVALID_ARGUMENT when user_id is not a canonical lowercase UUID,
 	// when next_epoch is missing in an E2EE vault, given in a plaintext vault
-	// or out of bounds, or when its slots are not exactly the new epoch's
-	// recipients (the removed member is not one); NOT_FOUND when the user is
+	// or out of bounds, when its slots are not exactly the new epoch's
+	// recipients (the removed member is not one), when record is given
+	// without next_epoch, or when record is missing in an E2EE vault, not
+	// signed by an owner at log_entry, names another log position or lists
+	// other recipients than the log's (as RotateEpoch); NOT_FOUND when the user is
 	// not a member; FAILED_PRECONDITION when it would remove the vault's last
 	// owner, when the caller removes themselves from an E2EE vault, or,
 	// with an ErrorDetail of reason ERROR_REASON_EPOCH_NOT_CURRENT,

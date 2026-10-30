@@ -143,7 +143,7 @@ message KeyEpoch {
   // When the epoch was created.
   google.protobuf.Timestamp create_time = 4;
   // The owner's signed epoch record (docs/design/crypto.md), as RotateEpoch
-  // stored it. Unset for an epoch created without one (a member removal).
+  // or RemoveMember stored it. Unset for an epoch created without one.
   EpochRecord record = 5;
 }
 

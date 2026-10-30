@@ -199,8 +199,10 @@ func TestMembershipChangesRefuseEntriesThatDoNotVerifyAgainstPostgres(t *testing
 	fixture.requireRefusalsThenAccept(t, logChange{
 		lister: alice, entryType: e2ee.EntryRemoveMember, payload: dave.userID[:], keys: owner, wrongKeys: editor,
 		call: func(entry *vaultsyncv1.LogEntry) error {
+			next := nextEpoch(t, vaultID, 1, second, alice, bob, carol)
 			_, err := members.RemoveMember(t.Context(), authorized(&vaultsyncv1.RemoveMemberRequest{
-				VaultId: vaultID, UserId: dave.userID.String(), NextEpoch: nextEpoch(t, vaultID, 1, second, alice, bob, carol), LogEntry: entry,
+				VaultId: vaultID, UserId: dave.userID.String(), NextEpoch: next, LogEntry: entry,
+				Record: fixture.removalRecord(t, alice, entry, next),
 			}, alice.token))
 
 			return err

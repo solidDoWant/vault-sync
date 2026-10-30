@@ -531,9 +531,16 @@ func (vault *VaultStore) UpdateMemberRole(ctx context.Context, userID uuid.UUID,
 // announced on VaultChangedChannel at the vault's current head_seq, so every
 // replica re-checks the vault's realtime subscribers at once and ends the
 // removed member's subscriptions (SPEC.md §6.4). entry is the remove-member
-// entry, appended in the same transaction (see appendLog).
+// entry, appended in the same transaction (see appendLog). next.Check, when
+// set, runs after entry is appended, on the log that ends with it, so the
+// epoch's record can name the remove-member entry as its log position.
 func (vault *VaultStore) RemoveMember(ctx context.Context, removedBy, userID uuid.UUID, next *NextEpoch, entry *LogAppend) error {
-	return vault.removeMember(ctx, userID, entry, func(ctx context.Context, tx pgx.Tx, state KeyState) error {
+	var (
+		check     EpochCheck
+		prevState KeyState
+	)
+
+	rekey := func(ctx context.Context, tx pgx.Tx, state KeyState) error {
 		switch {
 		case state.Encryption == EncryptionE2EE && removedBy == userID:
 			return ErrSelfRemoval
@@ -545,10 +552,26 @@ func (vault *VaultStore) RemoveMember(ctx context.Context, removedBy, userID uui
 			return ErrNextEpochRequired
 		}
 
-		_, err := createEpoch(ctx, tx, vault.vaultID, state, removedBy, *next)
+		// The record is checked once the remove-member entry is in the log.
+		unchecked := *next
+		check, unchecked.Check, prevState = next.Check, nil, state
+
+		_, err := createEpoch(ctx, tx, vault.vaultID, state, removedBy, unchecked)
 
 		return err
-	})
+	}
+
+	verify := func(ctx context.Context, tx pgx.Tx) error {
+		if check == nil {
+			return nil
+		}
+
+		_, err := checkSignedEpoch(ctx, tx, vault.vaultID, prevState, NextEpoch{Check: check})
+
+		return err
+	}
+
+	return vault.removeMember(ctx, userID, entry, rekey, verify)
 }
 
 // LeaveVault removes userID from the vault at their own request, like
@@ -568,12 +591,15 @@ func (vault *VaultStore) LeaveVault(ctx context.Context, userID uuid.UUID, entry
 		}
 
 		return nil
-	})
+	}, nil)
 }
 
-// removeMember removes userID and the invitations they created, runs rekey
-// and then appends entry, in one transaction under the vault row lock.
-func (vault *VaultStore) removeMember(ctx context.Context, userID uuid.UUID, entry *LogAppend, rekey func(context.Context, pgx.Tx, KeyState) error) error {
+// removeMember removes userID and the invitations they created, runs rekey,
+// appends entry and then runs verify (when set), in one transaction under
+// the vault row lock: an error from any of them changes nothing.
+func (vault *VaultStore) removeMember(ctx context.Context, userID uuid.UUID, entry *LogAppend,
+	rekey func(context.Context, pgx.Tx, KeyState) error, verify func(context.Context, pgx.Tx) error,
+) error {
 	return pgx.BeginFunc(ctx, vault.store.pool, func(tx pgx.Tx) error {
 		current, otherOwners, headSeq, err := lockMember(ctx, tx, vault.vaultID, userID)
 		if err != nil {
@@ -605,6 +631,12 @@ func (vault *VaultStore) removeMember(ctx context.Context, userID uuid.UUID, ent
 
 		if err := appendLog(ctx, tx, vault.vaultID, uuid.Nil, entry); err != nil {
 			return err
+		}
+
+		if verify != nil {
+			if err := verify(ctx, tx); err != nil {
+				return err
+			}
 		}
 
 		return notifyVaultChanged(ctx, tx, VaultChange{VaultID: vault.vaultID, Seq: headSeq})

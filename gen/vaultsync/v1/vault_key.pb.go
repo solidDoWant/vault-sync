@@ -190,7 +190,7 @@ type KeyEpoch struct {
 	// When the epoch was created.
 	CreateTime *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=create_time,json=createTime,proto3" json:"create_time,omitempty"`
 	// The owner's signed epoch record (docs/design/crypto.md), as RotateEpoch
-	// stored it. Unset for an epoch created without one (a member removal).
+	// or RemoveMember stored it. Unset for an epoch created without one.
 	Record        *EpochRecord `protobuf:"bytes,5,opt,name=record,proto3" json:"record,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
