@@ -5,8 +5,11 @@ import { VaultRole } from "../../gen/vaultsync/v1/types_pb";
 import { generateKey } from "../e2ee/e2ee";
 import { generateKeyPair } from "../e2ee/hybrid";
 import { keyCommitment, openKeySlot, sealKeySlot } from "../e2ee/keyslot";
+import { entryHash } from "../e2ee/memberlog";
 import { createProtocolClient } from "../protocol/client";
+import { addAnchor } from "./anchor-list";
 import { MemoryVaultKeyServer } from "./memory-vault-keys";
+import { MemoryVerifiedLogStore, type LogTrust } from "./verified-log";
 import type { UserKeyPair } from "./user-key";
 import {
   MemoryEpochKeyStore,
@@ -61,6 +64,16 @@ function device(
     store,
   });
   return { manager, store };
+}
+
+/** What `member`'s device verifies the vault's log with, its anchor list naming the vault's genesis. */
+async function trust(server: MemoryVaultKeyServer, member: User): Promise<LogTrust> {
+  const client = createProtocolClient({ transport: server.transport(member.id) });
+  const verifiedLogs = new MemoryVerifiedLogStore();
+  const genesis = server.log[0];
+  if (genesis === undefined) throw new Error("no genesis");
+  await addAnchor(client.userKeys, member.key, verifiedLogs, { vaultId, genesisHash: entryHash(genesis) });
+  return { userKey: member.key, log: client.vaultKeys, anchors: client.userKeys, verifiedLogs };
 }
 
 /** The key of `epoch` that `member`'s stored slot holds, if it opens with their key. */
@@ -262,7 +275,7 @@ describe("removing a member from an E2EE vault", () => {
   it("sends the next epoch with the removal, without a slot for the removed member", async () => {
     const { server, owner } = await sharedVault();
 
-    await owner.manager.removeMember(mallory.id);
+    await owner.manager.removeMember(mallory.id, await trust(server, alice));
 
     expect(server.count("RemoveMember")).toBe(1);
     expect(server.members.has(mallory.id)).toBe(false);
@@ -282,7 +295,7 @@ describe("removing a member from an E2EE vault", () => {
     server.holdEpochChanges = 2;
 
     await Promise.all([
-      owner.manager.removeMember(mallory.id),
+      owner.manager.removeMember(mallory.id, await trust(server, alice)),
       other.manager.sync(),
     ]);
 
@@ -299,7 +312,7 @@ describe("removing a member from an E2EE vault", () => {
     const { server } = await sharedVault();
 
     await expect(
-      device(server, carol, false).manager.removeMember(mallory.id),
+      device(server, carol, false).manager.removeMember(mallory.id, await trust(server, carol)),
     ).rejects.toThrow(/only an owner/);
 
     expect(server.members.has(mallory.id)).toBe(true);
@@ -458,7 +471,7 @@ describe("epoch key storage", () => {
     const states: VaultKeyState[] = [await owner.manager.sync()];
     const member = device(server, erin, false);
     states.push(await member.manager.sync());
-    await owner.manager.removeMember(carol.id);
+    await owner.manager.removeMember(carol.id, await trust(server, alice));
     states.push(await member.manager.sync());
 
     expect(lines).toEqual([]);

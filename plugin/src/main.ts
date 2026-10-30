@@ -9,7 +9,7 @@ import type { VaultAdapter } from "./core/vault/adapter";
 import { PROTOCOL_VERSION } from "./core/version";
 import { ConflictView, conflictViewType } from "./obsidian/conflict-view";
 import { connectedVault, connectNeedsConfirmation, connectProblem, currentAccount, listRemoteVaults, SyncController } from "./obsidian/controller";
-import { loadDeviceSecrets, refreshTokenLost, savePluginData } from "./obsidian/device-storage";
+import { deviceVerifiedLogStore, loadDeviceSecrets, refreshTokenLost, savePluginData } from "./obsidian/device-storage";
 import { oidcConfig, parsePluginData, persistRefreshToken, serialized, serverBaseUrl, signInProblem, type ConnectedVault, type IdentityProvider, type PluginData } from "./obsidian/data";
 import { currentDeviceId, deviceRows, listDevices, removeOtherDevice, type DeviceRow } from "./obsidian/devices";
 import { discoverIdentityProvider } from "./obsidian/discovery";
@@ -404,6 +404,7 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
       userKey,
       vaults: client.vaults,
       anchors: client.userKeys,
+      verifiedLogs: deviceVerifiedLogStore(this.app, account),
       keys: client.vaultKeys,
       membership: client.membership,
       store: (vaultId) => pluginDataEpochKeyStore(this.data, () => this.saveSettings(), account, vaultId),
@@ -473,7 +474,8 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
       store: pluginDataEpochKeyStore(this.data, () => this.saveSettings(), account, vaultId),
       escrow,
     });
-    return { context: { vaultId, userKey, membership: client.membership, log: client.vaultKeys }, manager };
+    const verifiedLogs = deviceVerifiedLogStore(this.app, account);
+    return { context: { vaultId, userKey, membership: client.membership, log: client.vaultKeys, anchors: client.userKeys, verifiedLogs }, manager };
   }
 
   /**
@@ -495,12 +497,12 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
   /** Redeems an invite code; resolves with the vault joined, which the caller then connects. */
   joinVault(code: string): Promise<Vault> {
     const client = this.protocolClient();
-    return joinVault(client, code, async () => ({
-      userKey: await unlockedUserKey(this.encryptionOptions()),
-      membership: client.membership,
-      log: client.vaultKeys,
-      anchors: client.userKeys,
-    }));
+    return joinVault(client, code, async () => {
+      const options = this.encryptionOptions();
+      const userKey = await unlockedUserKey(options);
+      const account = await currentAccount(this.data, options.accessToken);
+      return { userKey, membership: client.membership, log: client.vaultKeys, anchors: client.userKeys, verifiedLogs: deviceVerifiedLogStore(this.app, account) };
+    });
   }
 
   /** The connected vault's id, for the Sharing section, which is shown only while one is connected. */

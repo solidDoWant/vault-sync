@@ -15,7 +15,7 @@ import {
 import { openKeySlot, verifyKeyCommitment } from "../e2ee/keyslot";
 import { Role, entryHash, replayLog } from "../e2ee/memberlog";
 import { createProtocolClient } from "../protocol/client";
-import { readAnchorList } from "./anchor-list";
+import { addAnchor, readAnchorList } from "./anchor-list";
 import { createEncryptedVault } from "./encrypted-vault";
 import {
   createEncryptedInvitation,
@@ -30,6 +30,7 @@ import {
 import { MemoryVaultKeyServer } from "./memory-vault-keys";
 import type { UserKeyPair } from "./user-key";
 import { MemoryEpochKeyStore, VaultKeyManager } from "./vault-keys";
+import { MemoryVerifiedLogStore } from "./verified-log";
 
 function user(n: number): UserKeyPair {
   return {
@@ -54,12 +55,20 @@ async function aliceVault() {
     transport: server.transport(alice.userId),
   });
   const store = new MemoryEpochKeyStore();
+  /** Each user's device: what it has verified. */
+  const devices = new Map<string, MemoryVerifiedLogStore>();
+  const verifiedLogs = (key: UserKeyPair): MemoryVerifiedLogStore => {
+    const stored = devices.get(key.userId) ?? new MemoryVerifiedLogStore();
+    devices.set(key.userId, stored);
+    return stored;
+  };
   const vault = await createEncryptedVault({
     name: "Secret",
     escrow: undefined,
     userKey: alice,
     vaults: client.vaults,
     anchors: client.userKeys,
+    verifiedLogs: verifiedLogs(alice),
     keys: client.vaultKeys,
     membership: client.membership,
     store: () => store,
@@ -82,6 +91,8 @@ async function aliceVault() {
       userKey: key,
       membership: own.membership,
       log: own.vaultKeys,
+      anchors: own.userKeys,
+      verifiedLogs: verifiedLogs(key),
     };
   };
   const redeemer = (key: UserKeyPair): RedeemContext => {
@@ -93,6 +104,7 @@ async function aliceVault() {
       membership: own.membership,
       log: own.vaultKeys,
       anchors: own.userKeys,
+      verifiedLogs: verifiedLogs(key),
     };
   };
   const keyManager = (key: UserKeyPair) => {
@@ -108,10 +120,21 @@ async function aliceVault() {
       store: new MemoryEpochKeyStore(),
     });
   };
+  /** Adds the vault's genesis to the anchor list of a member the server seeded. */
+  const anchor = async (key: UserKeyPair): Promise<void> => {
+    const genesis = server.log[0];
+    if (genesis === undefined) throw new Error("no genesis");
+    await addAnchor(context(key).anchors, key, verifiedLogs(key), {
+      vaultId: vault.id,
+      genesisHash: entryHash(genesis),
+    });
+  };
   return {
     server,
     vault,
     manager,
+    anchor,
+    verifiedLogs,
     context,
     redeemer,
     keyManager,
@@ -226,7 +249,7 @@ describe("membership changes of an encrypted vault", () => {
 
     await setEncryptedMemberRole(context(alice), bob.userId, VaultRole.OWNER);
     expect(server.members.get(bob.userId)?.role).toBe(VaultRole.OWNER);
-    await manager.removeMember(carol.userId);
+    await manager.removeMember(carol.userId, context(alice));
     expect(server.members.has(carol.userId)).toBe(false);
     await leaveEncryptedVault(context(alice));
     expect(server.members.has(alice.userId)).toBe(false);
@@ -235,8 +258,9 @@ describe("membership changes of an encrypted vault", () => {
   });
 
   it("rebuilds its entry on top of the new head when another change took the log's next position", async () => {
-    const { server, context, epochKey } = await aliceVault();
+    const { server, context, epochKey, anchor } = await aliceVault();
     server.seedMember(bob, VaultRole.OWNER, alice);
+    await anchor(bob);
     const head = server.log.length;
 
     // bob's change lands between alice's read of the log and her request.
@@ -286,7 +310,11 @@ describe("membership changes of an encrypted vault", () => {
     expect(bobs.epochKey(1)).toEqual(epochKey(1));
     const genesis = server.log[0];
     if (genesis === undefined) throw new Error("no genesis");
-    const { anchors } = await readAnchorList(redeemer(bob).anchors, bob);
+    const { anchors } = await readAnchorList(
+      redeemer(bob).anchors,
+      bob,
+      new MemoryVerifiedLogStore(),
+    );
     expect(anchors).toEqual([
       { vaultId: vault.id, genesisHash: entryHash(genesis) },
     ]);

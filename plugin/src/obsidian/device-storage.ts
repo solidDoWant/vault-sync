@@ -1,3 +1,7 @@
+import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
+
+import type { VerifiedLogStore } from "../core/keys/verified-log";
+import { sameAccount, type Account } from "./controller";
 import { parseUserKey, parseVaultKeys, type PluginData } from "./data";
 
 /**
@@ -74,4 +78,54 @@ export async function savePluginData(data: PluginData, storage: DeviceStorage, s
  */
 export function refreshTokenLost(data: PluginData): boolean {
   return data.refreshToken === undefined && data.identityProvider !== undefined;
+}
+
+/** The local storage key of the membership log positions and anchor list version this device verified. */
+export const verifiedLogsStorageKey = "vault-sync-verified-logs";
+
+interface StoredVerifiedLogs {
+  account: Account;
+  anchorListVersion: number;
+  checkpoints: Record<string, { seq: number; hash: string }>;
+}
+
+function parseVerifiedLogs(value: unknown, account: Account): StoredVerifiedLogs {
+  const empty: StoredVerifiedLogs = { account, anchorListVersion: 0, checkpoints: {} };
+  if (typeof value !== "object" || value === null) return empty;
+  const stored = value as Partial<StoredVerifiedLogs>;
+  if (typeof stored.account !== "object" || !sameAccount(stored.account, account)) return empty;
+  const checkpoints: StoredVerifiedLogs["checkpoints"] = {};
+  if (typeof stored.checkpoints === "object") {
+    for (const [vaultId, checkpoint] of Object.entries(stored.checkpoints)) {
+      if (Number.isSafeInteger(checkpoint.seq) && checkpoint.seq > 0 && /^[0-9a-f]{64}$/u.test(checkpoint.hash)) checkpoints[vaultId] = checkpoint;
+    }
+  }
+  const version = Number.isSafeInteger(stored.anchorListVersion) ? Number(stored.anchorListVersion) : 0;
+  return { account, anchorListVersion: version, checkpoints };
+}
+
+/**
+ * The {@link VerifiedLogStore} of `account` on this device, in local
+ * storage: like the epoch keys, it must not travel with the vault folder,
+ * or an old copy of it would hide a rollback.
+ */
+export function deviceVerifiedLogStore(storage: DeviceStorage, account: Account): VerifiedLogStore {
+  const load = (): StoredVerifiedLogs => parseVerifiedLogs(storage.loadLocalStorage(verifiedLogsStorageKey), account);
+  const save = (stored: StoredVerifiedLogs): Promise<void> => {
+    storage.saveLocalStorage(verifiedLogsStorageKey, stored);
+    return Promise.resolve();
+  };
+  return {
+    checkpoint: (vaultId) => {
+      const checkpoint = load().checkpoints[vaultId];
+      return Promise.resolve(checkpoint === undefined ? undefined : { seq: checkpoint.seq, hash: hexToBytes(checkpoint.hash) });
+    },
+    saveCheckpoint: (vaultId, checkpoint) => {
+      const stored = load();
+      stored.checkpoints[vaultId] = { seq: checkpoint.seq, hash: bytesToHex(checkpoint.hash) };
+      return save(stored);
+    },
+    anchorListVersion: () => Promise.resolve(load().anchorListVersion),
+    saveAnchorListVersion: (version) => save({ ...load(), anchorListVersion: version }),
+  };
 }

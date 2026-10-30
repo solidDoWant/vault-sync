@@ -6,8 +6,8 @@
  * another change took that position first, the server answers ABORTED and
  * the device rebuilds the entry on top of the new head.
  *
- * Verifying the log a device reads is not done here; this only places and
- * signs the entry the change needs.
+ * The log an entry is placed on is read verified (verified-log.ts), so the
+ * device never signs on top of entries it has not checked.
  */
 import type { MessageInitShape } from "@bufbuild/protobuf";
 import { Code, ConnectError, type Client } from "@connectrpc/connect";
@@ -74,19 +74,19 @@ export function nextEntry(vaultId: string, log: readonly Entry[], unsigned: Unsi
 }
 
 /**
- * Sends one membership change with its entry: reads the log, builds the
- * entry with `build` on top of its head, and sends it with `send`. When the
- * server answers ABORTED (another change took that position), reads the
- * new head and tries again.
+ * Sends one membership change with its entry: reads the log with `read`,
+ * builds the entry with `build` on top of its head, and sends it with
+ * `send`. When the server answers ABORTED (another change took that
+ * position), reads the new head and tries again.
  */
 export async function appendLogEntry<Result>(
-  client: LogReadClient,
+  read: () => Promise<readonly Entry[]>,
   vaultId: string,
   build: (log: readonly Entry[]) => UnsignedEntry,
   send: (entry: LogEntryInit) => Promise<Result>,
 ): Promise<Result> {
   for (let attempt = 1; ; attempt++) {
-    const log = await readLog(client, vaultId);
+    const log = await read();
     try {
       return await send(toLogEntry(nextEntry(vaultId, log, build(log))));
     } catch (error) {

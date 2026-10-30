@@ -19,8 +19,9 @@ import { KeyRecipientKind, type KeySlotSchema, type NextEpochSchema, type VaultK
 import { DecryptError, generateKey } from "../e2ee/e2ee";
 import { KeyCommitmentError, keyCommitment, openKeySlot, sealKeySlot, verifyKeyCommitment } from "../e2ee/keyslot";
 import { EntryType, idPayload } from "../e2ee/memberlog";
-import { nextEntry, readLog, toLogEntry } from "./member-log";
+import { nextEntry, toLogEntry } from "./member-log";
 import type { UserKeyPair } from "./user-key";
+import { readMemberLog, type LogTrust } from "./verified-log";
 
 /** The VaultKeyService calls the manager makes (ProtocolClient.vaultKeys). */
 export type VaultKeyClient = Pick<Client<typeof VaultKeyService>, "listKeySlots" | "listEpochs" | "listMissingSlots" | "rotateEpoch" | "addKeySlots" | "listLogEntries">;
@@ -195,16 +196,17 @@ export class VaultKeyManager {
    * Removes `userId` from the vault: sends RemoveMember with the next epoch,
    * wrapped for every remaining member with a user key and not for the
    * removed member, so the removal and the new epoch take effect together,
-   * and with the remove-member entry signed on top of the log's head.
+   * and with the remove-member entry signed on top of the log's head, read
+   * verified with `trust`.
    * When another epoch change or log entry wins meanwhile, adopts it and
    * builds the epoch and the entry after it.
    */
-  async removeMember(userId: string): Promise<void> {
+  async removeMember(userId: string, trust: LogTrust): Promise<void> {
     if (!this.options.owner) throw new Error("only an owner can remove a member");
     const { vaultId, userKey } = this.options;
     for (let attempt = 1; ; attempt++) {
       const view = await this.read();
-      const log = await readLog(this.options.keys, vaultId);
+      const { entries: log } = await readMemberLog(trust, vaultId);
       const logEntry = toLogEntry(nextEntry(vaultId, log, { type: EntryType.removeMember, payload: idPayload(userId), signSeeds: [userKey.signSeed] }));
       try {
         await this.createEpoch(view.currentEpoch, userId, (nextEpoch) => this.options.membership.removeMember({ vaultId, userId, nextEpoch, logEntry }));
