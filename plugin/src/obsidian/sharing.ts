@@ -1,11 +1,14 @@
 import { Code, ConnectError } from "@connectrpc/connect";
 import { timestampDate } from "@bufbuild/protobuf/wkt";
+import { bytesToHex } from "@noble/hashes/utils.js";
 
 import type { Invitation, Member } from "../gen/vaultsync/v1/membership_pb";
 import { VaultEncryption, VaultRole, type Vault } from "../gen/vaultsync/v1/types_pb";
 import type { ProtocolClient } from "../core/protocol/client";
 import { createEncryptedInvitation, leaveEncryptedVault, parseInviteLink, redeemEncryptedInvitation, revokeEncryptedInvitation, setEncryptedMemberRole, type EncryptedMembershipContext, type RedeemContext } from "../core/keys/encrypted-membership";
 import type { VaultKeyManager } from "../core/keys/vault-keys";
+import { readMemberLog, type LogTrust } from "../core/keys/verified-log";
+import { fingerprint, formatFingerprint } from "../core/e2ee/identity";
 import { listRemoteVaults } from "./controller";
 import { isolated, shownName } from "./display-text";
 import { errorMessage } from "./status";
@@ -56,7 +59,20 @@ export interface MemberRow {
   role: VaultRole;
   /** Their role and when they joined. */
   description: string;
+  /**
+   * In an encrypted vault whose log verified: the fingerprint of the
+   * member's key in the verified membership log, for comparing out of band;
+   * undefined when the log names no key for them.
+   */
+  fingerprint?: string;
 }
+
+/**
+ * An encrypted vault's keys as the Sharing section shows them: the vault
+ * fingerprint (its genesis hash) once the membership log verified from the
+ * user's anchor list, or why it could not be read (such as a locked key).
+ */
+export type VaultKeys = { kind: "verified"; vaultFingerprint: string } | { kind: "unavailable"; reason: string };
 
 /** One pending invitation as the Sharing section lists it. */
 export interface InvitationRow {
@@ -72,28 +88,82 @@ export interface InvitationRow {
  * invitations; for an editor or viewer only their role; `not-member` when the
  * server no longer lists the vault (the user was removed or left).
  */
-export type Sharing = { kind: "owner"; members: MemberRow[]; invitations: InvitationRow[]; encrypted: boolean } | { kind: "member"; role: VaultRole } | { kind: "not-member" };
+export type Sharing =
+  | { kind: "owner"; members: MemberRow[]; invitations: InvitationRow[]; encrypted: boolean; keys?: VaultKeys }
+  | { kind: "member"; role: VaultRole; keys?: VaultKeys }
+  | { kind: "not-member" };
 
 /** Formats a time in the user's locale. */
 export type FormatDate = (date: Date) => string;
 
-/** The signed-in user's role in `vaultId` (from ListVaults), or undefined when they are not a member. */
-export async function roleIn(client: ProtocolClient, vaultId: string): Promise<VaultRole | undefined> {
-  return (await listRemoteVaults(client)).find((vault) => vault.id === vaultId)?.role;
-}
-
-/** Reads the Sharing section of `vaultId`: management lists only for its owners. */
-export async function loadSharing(client: ProtocolClient, vaultId: string, formatDate: FormatDate): Promise<Sharing> {
+/**
+ * Reads the Sharing section of `vaultId`: management lists only for its
+ * owners. In an end-to-end encrypted vault it also verifies the membership
+ * log with `trust` and shows the vault fingerprint and, to owners, each
+ * member's key fingerprint (docs/design/encryption.md, "Identity keys").
+ * When the log cannot be read or does not verify, the lists are still shown,
+ * without fingerprints, together with the reason.
+ */
+export async function loadSharing(client: ProtocolClient, vaultId: string, formatDate: FormatDate, trust?: () => Promise<LogTrust>): Promise<Sharing> {
   const vault = (await listRemoteVaults(client)).find((listed) => listed.id === vaultId);
   if (vault === undefined) return { kind: "not-member" };
-  if (vault.role !== VaultRole.OWNER) return { kind: "member", role: vault.role };
+  const encrypted = vault.encryption === VaultEncryption.E2EE && trust !== undefined ? await verifiedKeys(vaultId, trust) : undefined;
+  const keys = encrypted === undefined ? {} : { keys: encrypted.keys };
+  if (vault.role !== VaultRole.OWNER) return { kind: "member", role: vault.role, ...keys };
   const [members, invitations] = await Promise.all([client.membership.listMembers({ vaultId }), client.membership.listInvitations({ vaultId })]);
   return {
     kind: "owner",
-    members: members.members.map((member) => memberRow(member, formatDate)),
+    members: members.members.map((member) => {
+      const row = memberRow(member, formatDate);
+      const shown = encrypted?.fingerprints.get(member.userId);
+      return shown === undefined ? row : { ...row, fingerprint: shown };
+    }),
     invitations: invitations.invitations.map((invitation) => invitationRow(invitation, formatDate)),
     encrypted: vault.encryption === VaultEncryption.E2EE,
+    ...keys,
   };
+}
+
+/** The vault fingerprint and the members' key fingerprints from the vault's verified log, or why they are unavailable. */
+async function verifiedKeys(vaultId: string, trust: () => Promise<LogTrust>): Promise<{ keys: VaultKeys; fingerprints: ReadonlyMap<string, string> }> {
+  try {
+    const { states } = await readMemberLog(await trust(), vaultId);
+    const genesis = states[0];
+    const head = states.at(-1);
+    if (genesis === undefined || head === undefined) throw new Error("the vault's membership log is empty");
+    const fingerprints = new Map<string, string>();
+    for (const [userId, member] of head.members) fingerprints.set(userId, formatFingerprint(fingerprint(member.bundle)));
+    return { keys: { kind: "verified", vaultFingerprint: vaultFingerprint(genesis.hash) }, fingerprints };
+  } catch (error) {
+    return { keys: { kind: "unavailable", reason: errorMessage(error) }, fingerprints: new Map() };
+  }
+}
+
+/**
+ * The vault fingerprint: the whole genesis hash as 64 lowercase hex digits
+ * in groups of four, the form the escrow import's `-genesis` takes
+ * (docs/import.md).
+ */
+export function vaultFingerprint(genesisHash: Uint8Array): string {
+  return (bytesToHex(genesisHash).match(/.{1,4}/gu) ?? []).join(" ");
+}
+
+/**
+ * What the member list says about a member's key in an encrypted vault whose
+ * log verified: their fingerprint, or that the log names no key for them.
+ * Undefined in a plaintext vault, and when the fingerprints are unavailable
+ * (the vault fingerprint's line says why).
+ */
+export function memberKeyText(member: MemberRow, keys: VaultKeys | undefined): string | undefined {
+  if (keys?.kind !== "verified") return undefined;
+  return member.fingerprint === undefined ? "No key for this member in the verified membership log." : `Key fingerprint: ${member.fingerprint}`;
+}
+
+/** What the Sharing section says about an encrypted vault's fingerprint, or why no fingerprints are shown. */
+export function vaultKeysText(keys: VaultKeys): string {
+  return keys.kind === "verified"
+    ? `Vault fingerprint: ${keys.vaultFingerprint}. Compare fingerprints with the other members outside Vault Sync; the server cannot forge them. An operator restoring the vault from escrow needs this vault fingerprint.`
+    : `Key fingerprints are not shown: ${keys.reason}`;
 }
 
 export function memberRow(member: Member, formatDate: FormatDate): MemberRow {
