@@ -387,7 +387,8 @@ describe("an owner rotating an escrowed vault's key", () => {
     });
   }
 
-  it("[P4-22] refuses to rotate to an escrow key other than the one the vault's log names: the new epoch is escrowed to the log's key", async () => {
+  // The swapped key gets no slot: the new epoch is escrowed to the key the log names.
+  it("[P4-22] refuses to rotate to an escrow key other than the one the vault's log names, and wraps the key to no one", async () => {
     const named = escrowKey(9);
     const created = await create(named.recipient);
     const swapped = escrowKey(10);
