@@ -80,6 +80,7 @@ func LoadEscrowChain(ctx context.Context, chains EscrowChainStore, escrow api.Es
 	}
 
 	escrow.Chain = api.EscrowChain{Root: stored.Root, Rotations: published}
+	escrow.Rotations = rotations
 
 	return escrow, nil
 }

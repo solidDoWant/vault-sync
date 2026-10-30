@@ -36,16 +36,18 @@ type signedEpoch struct {
 	// position is the seq of the entry appended with the epoch, which the
 	// record must name as its log position; 0 when there is none.
 	position uint64
+	// replay is what the log is replayed with: the deployment's escrow chain.
+	replay e2ee.ReplayOptions
 }
 
 // parseSignedEpoch checks the bounds of a RotateEpoch's record and escrow
 // entry; whether they verify is decided under the vault row lock (check).
-func parseSignedEpoch(vaultID uuid.UUID, record *vaultsyncv1.EpochRecord, escrowEntry *vaultsyncv1.LogEntry) (signedEpoch, error) {
+func parseSignedEpoch(vaultID uuid.UUID, record *vaultsyncv1.EpochRecord, escrowEntry *vaultsyncv1.LogEntry, replay e2ee.ReplayOptions) (signedEpoch, error) {
 	if len(record.GetRecipients()) > MaxEpochRecordRecipients {
 		return signedEpoch{}, invalidArgument("record.recipients must hold at most %d recipients", MaxEpochRecordRecipients)
 	}
 
-	signed := signedEpoch{vaultID: vaultID, record: record}
+	signed := signedEpoch{vaultID: vaultID, record: record, replay: replay}
 
 	if escrowEntry != nil {
 		if escrowEntry.GetType() != uint32(e2ee.EntryEscrow) {
@@ -72,8 +74,8 @@ func parseSignedEpoch(vaultID uuid.UUID, record *vaultsyncv1.EpochRecord, escrow
 // parseRemovalEpoch checks the bounds of a RemoveMember's record; entry is
 // the remove-member entry (nil in a plaintext vault), the record's log
 // position. The store runs the check once entry is in the log.
-func parseRemovalEpoch(vaultID uuid.UUID, record *vaultsyncv1.EpochRecord, entry *store.LogAppend) (signedEpoch, error) {
-	signed, err := parseSignedEpoch(vaultID, record, nil)
+func parseRemovalEpoch(vaultID uuid.UUID, record *vaultsyncv1.EpochRecord, entry *store.LogAppend, replay e2ee.ReplayOptions) (signedEpoch, error) {
+	signed, err := parseSignedEpoch(vaultID, record, nil, replay)
 	if err != nil {
 		return signedEpoch{}, err
 	}
@@ -113,7 +115,7 @@ func (signed signedEpoch) check(next store.NextEpoch) store.EpochCheck {
 			}
 		}
 
-		states, err := e2ee.ReplayLog(signed.vaultID.String(), entries, e2ee.ReplayOptions{})
+		states, err := e2ee.ReplayLog(signed.vaultID.String(), entries, signed.replay)
 		if err != nil {
 			return false, refuseEpoch("the membership log does not verify with the entry appended with the epoch")
 		}

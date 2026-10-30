@@ -65,7 +65,8 @@ func e2eeEntry(vaultID uuid.UUID, entry store.LogEntry) e2ee.Entry {
 // nil when the request carries none (the store decides whether the vault
 // needs one). records reports whether the entry records the requested
 // change; invitationID is the invitation being redeemed, uuid.Nil otherwise.
-func logAppend(message *vaultsyncv1.LogEntry, records func(entry store.LogEntry, invitationID uuid.UUID) bool) (*store.LogAppend, error) {
+// replay carries the deployment's escrow chain.
+func logAppend(message *vaultsyncv1.LogEntry, records func(entry store.LogEntry, invitationID uuid.UUID) bool, replay e2ee.ReplayOptions) (*store.LogAppend, error) {
 	if message == nil {
 		return nil, nil
 	}
@@ -87,7 +88,7 @@ func logAppend(message *vaultsyncv1.LogEntry, records func(entry store.LogEntry,
 				entries = append(entries, e2eeEntry(vaultID, stored))
 			}
 
-			_, err := e2ee.ReplayLog(vaultID.String(), append(entries, e2eeEntry(vaultID, entry)), e2ee.ReplayOptions{})
+			_, err := e2ee.ReplayLog(vaultID.String(), append(entries, e2eeEntry(vaultID, entry)), replay)
 			if err != nil {
 				return errLogEntryRefused
 			}

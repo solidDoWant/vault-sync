@@ -59,6 +59,16 @@ type Escrow struct {
 	// Chain is the deployment's escrow chain, whose head is Bundle. The
 	// server reads and checks it at startup.
 	Chain EscrowChain
+	// Rotations are Chain's rotation statements, parsed. Log replays take
+	// them, so that an escrow entry moving a vault to a later key of the
+	// chain verifies.
+	Rotations []e2ee.EscrowRotation
+}
+
+// replayOptions are what the server replays a vault's membership log with:
+// the deployment's escrow chain.
+func (escrow Escrow) replayOptions() e2ee.ReplayOptions {
+	return e2ee.ReplayOptions{EscrowRotations: escrow.Rotations}
 }
 
 // EscrowChain is the deployment's escrow chain (docs/design/encryption.md,

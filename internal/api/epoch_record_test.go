@@ -30,6 +30,8 @@ type signedVault struct {
 	escrow                     *e2ee.EscrowBundle
 	escrowKeyID                string
 	escrowPublic               []byte
+	// rotations is the deployment's escrow chain the service is configured with.
+	rotations []e2ee.EscrowRotation
 }
 
 func newSignedVault(t *testing.T) *signedVault {
@@ -100,7 +102,7 @@ func (vault *signedVault) check(t *testing.T, request *vaultsyncv1.RotateEpochRe
 	recorder := &keyRecorder{}
 	service := api.VaultKeyService{
 		Keys:   func(uuid.UUID) api.VaultKeyStore { return recorder },
-		Escrow: api.Escrow{PublicKey: vault.escrowPublic, KeyID: vault.escrowKeyID},
+		Escrow: api.Escrow{PublicKey: vault.escrowPublic, KeyID: vault.escrowKeyID, Rotations: vault.rotations},
 	}
 	ctx := authz.WithMembership(auth.WithUser(context.Background(), auth.User{ID: vault.ownerID}), authz.Membership{VaultID: vault.vaultID, Role: store.RoleOwner})
 
@@ -315,5 +317,58 @@ func TestRotateEpochChecksTheEscrowEntryWithTheRecord(t *testing.T) {
 		_, err := service.RotateEpoch(ctx, connect.NewRequest(request))
 		requireCode(t, connect.CodeInvalidArgument, err)
 		assert.Zero(t, recorder.calls)
+	})
+}
+
+func TestRotateEpochMovesAnEscrowedVaultToTheNextKeyOfTheEscrowChain(t *testing.T) {
+	// moved is a vault whose log names an older escrow key, the rotation
+	// statement from it to the vault's current escrow key (signed by the
+	// older key), and the owner's request moving the vault to the current
+	// key: its escrow entry, an escrow slot for the current key and the
+	// record signed at the entry, with the log the store holds.
+	moved := func(t *testing.T) (*signedVault, *vaultsyncv1.RotateEpochRequest, []e2ee.Entry, e2ee.EscrowRotation) {
+		t.Helper()
+
+		vault := newSignedVault(t)
+
+		_, oldPublic, err := e2ee.GenerateKeyPair()
+		require.NoError(t, err)
+
+		oldRecipient, err := e2ee.AgeRecipient(oldPublic)
+		require.NoError(t, err)
+
+		oldSignPub, oldSignKey, err := ed25519.GenerateKey(rand.Reader)
+		require.NoError(t, err)
+
+		old := e2ee.EscrowBundle{SignPub: oldSignPub, Recipient: oldRecipient}
+		vault.log.Escrow(t, vault.ownerID, &old)
+		stored := vault.log.Entries
+
+		rotation, err := e2ee.SignEscrowRotation(oldSignKey, old, *vault.escrow)
+		require.NoError(t, err)
+
+		vault.log.Rotations = []e2ee.EscrowRotation{rotation}
+		entry := vault.log.Escrow(t, vault.ownerID, vault.escrow)
+		request := vault.request(t)
+		request.EscrowEntry = logtest.EntryMessage(entry)
+		request.NextEpoch.Slots = append(request.NextEpoch.Slots, vault.slot(vaultsyncv1.KeyRecipientKind_KEY_RECIPIENT_KIND_ESCROW, vault.escrowKeyID))
+
+		return vault, request, stored, rotation
+	}
+
+	t.Run("with the escrow chain the entry and the epoch are accepted", func(t *testing.T) {
+		vault, request, stored, rotation := moved(t)
+		vault.rotations = []e2ee.EscrowRotation{rotation}
+
+		escrow, err := vault.check(t, request, stored)
+		require.NoError(t, err)
+		assert.True(t, escrow)
+	})
+
+	t.Run("without a chained statement the new key is refused", func(t *testing.T) {
+		vault, request, stored, _ := moved(t)
+
+		_, err := vault.check(t, request, stored)
+		require.ErrorIs(t, err, store.ErrEpochRecord)
 	})
 }

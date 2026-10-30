@@ -20,6 +20,8 @@ type Log struct {
 	Entries []e2ee.Entry
 	// Secrets holds every member's user secret, by user id.
 	Secrets map[string]e2ee.UserSecret
+	// Rotations is the escrow chain the log is replayed with.
+	Rotations []e2ee.EscrowRotation
 }
 
 // New returns the log of vaultID: its genesis entry, signed by creatorID
@@ -130,7 +132,7 @@ func (log *Log) SignKey(userID uuid.UUID) ed25519.PrivateKey {
 func (log *Log) States(t *testing.T) []e2ee.LogState {
 	t.Helper()
 
-	states, err := e2ee.ReplayLog(log.VaultID, log.Entries, e2ee.ReplayOptions{})
+	states, err := e2ee.ReplayLog(log.VaultID, log.Entries, e2ee.ReplayOptions{EscrowRotations: log.Rotations})
 	require.NoError(t, err)
 
 	return states

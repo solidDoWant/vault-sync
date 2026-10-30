@@ -91,6 +91,15 @@ function parsedBundle(encoded: Uint8Array): EscrowBundle {
   }
 }
 
+/** The escrow rotation statements a GetServerInfo response publishes, parsed. */
+export function publishedEscrowRotations(info: Pick<GetServerInfoResponse, "escrowRotations">): EscrowRotation[] {
+  return info.escrowRotations.map((statement) => ({
+    oldBundleHash: statement.oldBundleHash,
+    newBundle: parsedBundle(statement.newBundle),
+    signature: statement.signature,
+  }));
+}
+
 /**
  * The escrow offer of a GetServerInfo response. A published key must be a
  * hybrid public key named by its id, `sha256:` and the hex SHA-256 of the
@@ -110,11 +119,7 @@ export async function escrowOffer(info: EscrowInfo, pin: EscrowPin): Promise<Esc
   if (info.escrowPublicKey.length !== PUBLIC_KEY_SIZE) throw new Error("the server's escrow key is malformed");
   if (info.escrowKeyId !== `sha256:${sha256Hex(info.escrowPublicKey)}`) throw new Error("the server's escrow key id does not name its escrow key");
   const root = parsedBundle(info.escrowRootBundle);
-  const rotations: EscrowRotation[] = info.escrowRotations.map((statement) => ({
-    oldBundleHash: statement.oldBundleHash,
-    newBundle: parsedBundle(statement.newBundle),
-    signature: statement.signature,
-  }));
+  const rotations = publishedEscrowRotations(info);
   const bundle = rotations.at(-1)?.newBundle ?? root;
   if (escrowKeyId(bundle) !== info.escrowKeyId) throw new Error("the server's escrow bundle does not name its escrow key");
   const pinned = await pin.load();

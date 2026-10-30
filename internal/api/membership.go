@@ -175,7 +175,7 @@ func (service MembershipService) CreateInvitation(ctx context.Context, request *
 		return nil, err
 	}
 
-	entry, err := logAppend(request.Msg.GetLogEntry(), recordsInvite(invitationID, role))
+	entry, err := logAppend(request.Msg.GetLogEntry(), recordsInvite(invitationID, role), service.Escrow.replayOptions())
 	if err != nil {
 		return nil, err
 	}
@@ -234,7 +234,7 @@ func (service MembershipService) RevokeInvitation(ctx context.Context, request *
 
 	payload, _ := e2ee.IDPayload(invitationID.String()) // a parsed id is canonical.
 
-	entry, err := logAppend(request.Msg.GetLogEntry(), records(e2ee.EntryRevokeInvitation, payload))
+	entry, err := logAppend(request.Msg.GetLogEntry(), records(e2ee.EntryRevokeInvitation, payload), service.Escrow.replayOptions())
 	if err != nil {
 		return nil, err
 	}
@@ -272,7 +272,7 @@ func (service MembershipService) RedeemInvitation(ctx context.Context, request *
 		return nil, err
 	}
 
-	entry, err := logAppend(request.Msg.GetLogEntry(), recordsRedeem(user.ID))
+	entry, err := logAppend(request.Msg.GetLogEntry(), recordsRedeem(user.ID), service.Escrow.replayOptions())
 	if err != nil {
 		return nil, err
 	}
@@ -359,7 +359,7 @@ func (service MembershipService) UpdateMemberRole(ctx context.Context, request *
 
 	payload, _ := e2ee.SetRolePayload(userID.String(), logRole(role)) // a parsed id and a known role.
 
-	entry, err := logAppend(request.Msg.GetLogEntry(), records(e2ee.EntrySetRole, payload))
+	entry, err := logAppend(request.Msg.GetLogEntry(), records(e2ee.EntrySetRole, payload), service.Escrow.replayOptions())
 	if err != nil {
 		return nil, err
 	}
@@ -405,7 +405,7 @@ func (service MembershipService) RemoveMember(ctx context.Context, request *conn
 
 	payload, _ := e2ee.IDPayload(userID.String()) // a parsed id is canonical.
 
-	entry, err := logAppend(request.Msg.GetLogEntry(), records(e2ee.EntryRemoveMember, payload))
+	entry, err := logAppend(request.Msg.GetLogEntry(), records(e2ee.EntryRemoveMember, payload), service.Escrow.replayOptions())
 	if err != nil {
 		return nil, err
 	}
@@ -417,7 +417,7 @@ func (service MembershipService) RemoveMember(ctx context.Context, request *conn
 	}
 
 	if next != nil {
-		signed, err := parseRemovalEpoch(membership.VaultID, request.Msg.GetRecord(), entry)
+		signed, err := parseRemovalEpoch(membership.VaultID, request.Msg.GetRecord(), entry, service.Escrow.replayOptions())
 		if err != nil {
 			return nil, err
 		}
@@ -450,7 +450,7 @@ func (service MembershipService) LeaveVault(ctx context.Context, request *connec
 
 	payload, _ := e2ee.IDPayload(user.ID.String()) // a user id is canonical.
 
-	entry, err := logAppend(request.Msg.GetLogEntry(), records(e2ee.EntryLeave, payload))
+	entry, err := logAppend(request.Msg.GetLogEntry(), records(e2ee.EntryLeave, payload), service.Escrow.replayOptions())
 	if err != nil {
 		return nil, err
 	}
