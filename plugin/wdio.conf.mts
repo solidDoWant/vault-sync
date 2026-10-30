@@ -19,12 +19,13 @@ import { argon2WorkerDefine } from "./scripts/argon2-worker.js";
 const obsidianVersion = "1.14.5";
 export { obsidianVersion };
 
-// The SHA-256 of that version's Android app (Obsidian-<version>.apk in the
-// obsidianmd/obsidian-releases release), as GitHub reports it for the asset
-// (`gh api repos/obsidianmd/obsidian-releases/releases/tags/v<version>`,
-// `digest`). The Android job (wdio.android.conf.mts) installs the APK only
-// if it matches, so a bump of obsidianVersion must update this too; until it
-// does, that job fails and the desktop jobs are unaffected.
+// The Obsidian version the Android job (wdio.android.conf.mts) installs, and
+// the SHA-256 of its APK (Obsidian-<version>.apk in the obsidianmd/obsidian-
+// releases release, as `gh api repos/obsidianmd/obsidian-releases/releases/
+// tags/v<version>` reports its `digest`). Pinned separately from
+// obsidianVersion because Obsidian publishes an APK only for some releases
+// (none for 1.14.5). Bump both together, by hand, to a release that has one.
+export const obsidianAndroidVersion = "1.14.4";
 export const obsidianApkSha256 = "b3e5bfa107bb01c4c121d810622ff2de03fd298f55fcf6268b9db50186f192a3";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
