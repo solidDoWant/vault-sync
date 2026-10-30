@@ -78,6 +78,9 @@ type Epoch struct {
 	Record    []byte
 	CreatedBy uuid.UUID
 	CreatedAt time.Time
+	// Retired is set once the epoch is retired (RetireEpoch): no revision
+	// uses it and it has no key slots.
+	Retired bool
 }
 
 // KeyState is a vault's key state.
@@ -425,7 +428,8 @@ func insertKeySlots(ctx context.Context, tx pgx.Tx, vaultID, creatorID uuid.UUID
 // recipient is not a member with a user key, an escrow slot in a vault
 // without escrow, or a second escrow slot for an epoch (in slots, or one
 // already stored for another recipient). Nothing is stored unless every
-// slot is valid.
+// slot is valid. A valid slot for a retired epoch is accepted but not
+// stored, and not counted.
 func (vault *VaultStore) AddKeySlots(ctx context.Context, creatorID uuid.UUID, slots []KeySlot) (int, error) {
 	var added int
 
@@ -477,7 +481,12 @@ func (vault *VaultStore) AddKeySlots(ctx context.Context, creatorID uuid.UUID, s
 			return err
 		}
 
-		added, err = insertKeySlots(ctx, tx, vault.vaultID, creatorID, slots)
+		retired, err := retiredEpochs(ctx, tx, vault.vaultID)
+		if err != nil {
+			return err
+		}
+
+		added, err = insertKeySlots(ctx, tx, vault.vaultID, creatorID, withoutRetired(slots, retired))
 
 		return err
 	})
@@ -526,7 +535,7 @@ func checkStoredEscrowSlots(ctx context.Context, tx pgx.Tx, vaultID uuid.UUID, e
 // in ascending order.
 func (vault *VaultStore) ListEpochs(ctx context.Context, after int32, limit int) ([]Epoch, error) {
 	rows, err := vault.store.pool.Query(ctx, `
-		SELECT epoch, commitment, record, created_by, created_at FROM vault_key_epochs
+		SELECT epoch, commitment, record, created_by, created_at, retired_at IS NOT NULL FROM vault_key_epochs
 		WHERE vault_id = $1 AND epoch > $2
 		ORDER BY epoch LIMIT $3`, vault.vaultID, after, limit)
 	if err != nil {
@@ -536,7 +545,7 @@ func (vault *VaultStore) ListEpochs(ctx context.Context, after int32, limit int)
 	epochs, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Epoch, error) {
 		var epoch Epoch
 
-		err := row.Scan(&epoch.Epoch, &epoch.Commitment, &epoch.Record, &epoch.CreatedBy, &epoch.CreatedAt)
+		err := row.Scan(&epoch.Epoch, &epoch.Commitment, &epoch.Record, &epoch.CreatedBy, &epoch.CreatedAt, &epoch.Retired)
 
 		return epoch, err
 	})
@@ -599,7 +608,8 @@ func (vault *VaultStore) ListEscrowSlots(ctx context.Context, after int32, limit
 }
 
 // ListMissingSlots returns up to limit of the slots the vault's members
-// with a user key lack, one per (epoch, member), ordered by epoch and then
+// with a user key lack, one per (epoch, member) for every epoch that is not
+// retired, ordered by epoch and then
 // user id, after (afterEpoch, afterUser).
 func (vault *VaultStore) ListMissingSlots(ctx context.Context, afterEpoch int32, afterUser uuid.UUID, limit int) ([]MissingSlot, error) {
 	rows, err := vault.store.pool.Query(ctx, `
@@ -607,7 +617,7 @@ func (vault *VaultStore) ListMissingSlots(ctx context.Context, afterEpoch int32,
 		FROM vault_key_epochs e
 		JOIN vault_members m ON m.vault_id = e.vault_id
 		JOIN user_keys k ON k.user_id = m.user_id
-		WHERE e.vault_id = $1 AND (e.epoch, m.user_id) > ($2, $3)
+		WHERE e.vault_id = $1 AND e.retired_at IS NULL AND (e.epoch, m.user_id) > ($2, $3)
 			AND NOT EXISTS (
 				SELECT 1 FROM key_slots s
 				WHERE s.vault_id = e.vault_id AND s.epoch = e.epoch

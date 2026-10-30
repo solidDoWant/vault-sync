@@ -114,7 +114,12 @@ func (vault *VaultStore) CreateInvitation(ctx context.Context, creatorID, id uui
 		case state.Encryption != EncryptionE2EE && keys != nil:
 			return ErrUnexpectedInvitationKeys
 		case keys != nil:
-			missing, err := checkOneSlotPerEpoch(keys.Slots, state.CurrentEpoch, RecipientInvitation, id.String())
+			retired, err := retiredEpochs(ctx, tx, vault.vaultID)
+			if err != nil {
+				return err
+			}
+
+			missing, err := checkOneSlotPerEpoch(keys.Slots, state.CurrentEpoch, retired, RecipientInvitation, id.String())
 			if err != nil {
 				return err
 			}
@@ -122,6 +127,8 @@ func (vault *VaultStore) CreateInvitation(ctx context.Context, creatorID, id uui
 			if missing {
 				return ErrEpochNotCurrent
 			}
+
+			keys = &InvitationKeys{Slots: withoutRetired(keys.Slots, retired), Anchor: keys.Anchor}
 		}
 
 		if err := appendLog(ctx, tx, vault.vaultID, uuid.Nil, entry); err != nil {
@@ -330,7 +337,8 @@ func (store *Store) RedeemInvitation(ctx context.Context, userID uuid.UUID, code
 			return ErrMemberLimit
 		}
 
-		if err := checkRedeemSlots(ctx, tx, joined.ID, userID, slots); err != nil {
+		slots, err = checkRedeemSlots(ctx, tx, joined.ID, userID, slots)
+		if err != nil {
 			return err
 		}
 
@@ -412,42 +420,48 @@ func deleteInvitationsBy(ctx context.Context, tx pgx.Tx, vaultID, userID uuid.UU
 
 // checkRedeemSlots checks a redeeming user's own key slots against the
 // vault's key state, under the vault row lock held by tx (see
-// RedeemInvitation).
-func checkRedeemSlots(ctx context.Context, tx pgx.Tx, vaultID, userID uuid.UUID, slots []KeySlot) error {
+// RedeemInvitation), and returns the slots to store: those for a retired
+// epoch are accepted but dropped.
+func checkRedeemSlots(ctx context.Context, tx pgx.Tx, vaultID, userID uuid.UUID, slots []KeySlot) ([]KeySlot, error) {
 	state, err := keyState(ctx, tx, vaultID, "")
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if state.Encryption != EncryptionE2EE {
 		if len(slots) > 0 {
-			return ErrUnexpectedInvitationKeys
+			return nil, ErrUnexpectedInvitationKeys
 		}
 
-		return nil
+		return slots, nil
 	}
 
 	var keyed bool
 
 	err = tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM user_keys WHERE user_id = $1)`, userID).Scan(&keyed)
 	if err != nil {
-		return fmt.Errorf("look up user key: %w", err)
+		return nil, fmt.Errorf("look up user key: %w", err)
 	}
 
 	if !keyed {
-		return ErrNoUserKey
+		return nil, ErrNoUserKey
 	}
 
-	missing, err := checkOneSlotPerEpoch(slots, state.CurrentEpoch, RecipientUser, userID.String())
+	retired, err := retiredEpochs(ctx, tx, vaultID)
 	if err != nil {
-		return err
+		return nil, err
+	}
+
+	missing, err := checkOneSlotPerEpoch(slots, state.CurrentEpoch, retired, RecipientUser, userID.String())
+	if err != nil {
+		return nil, err
 	}
 
 	if missing {
-		return ErrEpochNotCurrent
+		return nil, ErrEpochNotCurrent
 	}
 
-	return nil
+	return withoutRetired(slots, retired), nil
 }
 
 // lockMember returns userID's role in the vault, under lockVault. It returns
