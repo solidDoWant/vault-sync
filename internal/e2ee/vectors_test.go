@@ -805,251 +805,253 @@ func TestSharedVectorsAreCurrent(t *testing.T) {
 }
 
 func TestSharedVectors(t *testing.T) {
-	file := loadVectorFile(t)
+	t.Run("[P4-17] the shared cross-language vectors pass in Go", func(t *testing.T) {
+		file := loadVectorFile(t)
 
-	t.Run("standards", func(t *testing.T) {
-		for _, vector := range file.Standards.HKDFSHA256 {
-			t.Run(vector.Name, func(t *testing.T) {
-				okm, err := hkdf.Key(sha256.New, unhex(t, vector.IKM), unhex(t, vector.Salt), string(unhex(t, vector.Info)), vector.Length)
-				require.NoError(t, err)
-				assert.Equal(t, vector.OKM, hex.EncodeToString(okm))
-			})
-		}
+		t.Run("standards", func(t *testing.T) {
+			for _, vector := range file.Standards.HKDFSHA256 {
+				t.Run(vector.Name, func(t *testing.T) {
+					okm, err := hkdf.Key(sha256.New, unhex(t, vector.IKM), unhex(t, vector.Salt), string(unhex(t, vector.Info)), vector.Length)
+					require.NoError(t, err)
+					assert.Equal(t, vector.OKM, hex.EncodeToString(okm))
+				})
+			}
 
-		for _, vector := range file.Standards.XChaCha20Poly1305 {
-			t.Run(vector.Name, func(t *testing.T) {
-				aead, err := chacha20poly1305.NewX(unhex(t, vector.Key))
-				require.NoError(t, err)
-				assert.Equal(t, vector.Ciphertext, hex.EncodeToString(aead.Seal(nil, unhex(t, vector.Nonce), unhex(t, vector.Plaintext), unhex(t, vector.AAD))))
-			})
-		}
+			for _, vector := range file.Standards.XChaCha20Poly1305 {
+				t.Run(vector.Name, func(t *testing.T) {
+					aead, err := chacha20poly1305.NewX(unhex(t, vector.Key))
+					require.NoError(t, err)
+					assert.Equal(t, vector.Ciphertext, hex.EncodeToString(aead.Seal(nil, unhex(t, vector.Nonce), unhex(t, vector.Plaintext), unhex(t, vector.AAD))))
+				})
+			}
 
-		for _, vector := range file.Standards.X25519 {
-			t.Run(vector.Name, func(t *testing.T) {
-				private := must(ecdh.X25519().NewPrivateKey(unhex(t, vector.PrivateKey)))
-				assert.Equal(t, vector.PublicKey, hex.EncodeToString(private.PublicKey().Bytes()))
-				peer := must(ecdh.X25519().NewPublicKey(unhex(t, vector.PeerPublicKey)))
-				assert.Equal(t, vector.SharedSecret, hex.EncodeToString(must(private.ECDH(peer))))
-			})
-		}
-	})
+			for _, vector := range file.Standards.X25519 {
+				t.Run(vector.Name, func(t *testing.T) {
+					private := must(ecdh.X25519().NewPrivateKey(unhex(t, vector.PrivateKey)))
+					assert.Equal(t, vector.PublicKey, hex.EncodeToString(private.PublicKey().Bytes()))
+					peer := must(ecdh.X25519().NewPublicKey(unhex(t, vector.PeerPublicKey)))
+					assert.Equal(t, vector.SharedSecret, hex.EncodeToString(must(private.ECDH(peer))))
+				})
+			}
+		})
 
-	t.Run("subkeys", func(t *testing.T) {
-		require.NotEmpty(t, file.Subkeys)
+		t.Run("subkeys", func(t *testing.T) {
+			require.NotEmpty(t, file.Subkeys)
 
-		for _, vector := range file.Subkeys {
-			t.Run(vector.Name, func(t *testing.T) {
-				subkey, err := DeriveSubkey(unhex(t, vector.EpochKey), Label(vector.Label))
-				require.NoError(t, err)
-				assert.Equal(t, vector.Subkey, hex.EncodeToString(subkey))
-			})
-		}
-	})
+			for _, vector := range file.Subkeys {
+				t.Run(vector.Name, func(t *testing.T) {
+					subkey, err := DeriveSubkey(unhex(t, vector.EpochKey), Label(vector.Label))
+					require.NoError(t, err)
+					assert.Equal(t, vector.Subkey, hex.EncodeToString(subkey))
+				})
+			}
+		})
 
-	t.Run("aead", func(t *testing.T) {
-		require.NotEmpty(t, file.AEAD)
+		t.Run("aead", func(t *testing.T) {
+			require.NotEmpty(t, file.AEAD)
 
-		for _, vector := range file.AEAD {
-			t.Run(vector.Name, func(t *testing.T) {
-				key, aad := unhex(t, vector.Key), unhex(t, vector.AAD)
-				sealed := must(sealWithNonce(key, unhex(t, vector.Nonce), unhex(t, vector.Plaintext), aad))
-				assert.Equal(t, vector.Sealed, hex.EncodeToString(sealed))
+			for _, vector := range file.AEAD {
+				t.Run(vector.Name, func(t *testing.T) {
+					key, aad := unhex(t, vector.Key), unhex(t, vector.AAD)
+					sealed := must(sealWithNonce(key, unhex(t, vector.Nonce), unhex(t, vector.Plaintext), aad))
+					assert.Equal(t, vector.Sealed, hex.EncodeToString(sealed))
 
-				plaintext := must(Open(key, unhex(t, vector.Sealed), aad))
-				assert.Equal(t, vector.Plaintext, hex.EncodeToString(plaintext))
-			})
-		}
-	})
+					plaintext := must(Open(key, unhex(t, vector.Sealed), aad))
+					assert.Equal(t, vector.Plaintext, hex.EncodeToString(plaintext))
+				})
+			}
+		})
 
-	t.Run("hybrid", func(t *testing.T) {
-		require.NotEmpty(t, file.Hybrid)
+		t.Run("hybrid", func(t *testing.T) {
+			require.NotEmpty(t, file.Hybrid)
 
-		for _, vector := range file.Hybrid {
-			t.Run(vector.Name, func(t *testing.T) {
-				recipient := unhex(t, vector.RecipientPrivateKey)
-				assert.Equal(t, vector.RecipientPublicKey, hex.EncodeToString(must(PublicKey(recipient))))
-				assert.Equal(t, vector.AgeIdentity, must(AgeIdentity(recipient)))
-				assert.Equal(t, vector.AgeRecipient, must(AgeRecipient(unhex(t, vector.RecipientPublicKey))))
+			for _, vector := range file.Hybrid {
+				t.Run(vector.Name, func(t *testing.T) {
+					recipient := unhex(t, vector.RecipientPrivateKey)
+					assert.Equal(t, vector.RecipientPublicKey, hex.EncodeToString(must(PublicKey(recipient))))
+					assert.Equal(t, vector.AgeIdentity, must(AgeIdentity(recipient)))
+					assert.Equal(t, vector.AgeRecipient, must(AgeRecipient(unhex(t, vector.RecipientPublicKey))))
 
-				// The age strings are age's own encoding of the raw keys.
-				identity := must(age.ParseHybridIdentity(vector.AgeIdentity))
-				assert.Equal(t, vector.AgeRecipient, identity.Recipient().String())
+					// The age strings are age's own encoding of the raw keys.
+					identity := must(age.ParseHybridIdentity(vector.AgeIdentity))
+					assert.Equal(t, vector.AgeRecipient, identity.Recipient().String())
 
-				plaintext := must(OpenFrom(recipient, unhex(t, vector.Sealed)))
-				assert.Equal(t, vector.Plaintext, hex.EncodeToString(plaintext))
+					plaintext := must(OpenFrom(recipient, unhex(t, vector.Sealed)))
+					assert.Equal(t, vector.Plaintext, hex.EncodeToString(plaintext))
 
-				// age itself opens it with the identity.
-				reader := must(age.Decrypt(bytes.NewReader(unhex(t, vector.Sealed)), identity))
-				assert.Equal(t, vector.Plaintext, hex.EncodeToString(must(io.ReadAll(reader))))
-			})
-		}
-	})
+					// age itself opens it with the identity.
+					reader := must(age.Decrypt(bytes.NewReader(unhex(t, vector.Sealed)), identity))
+					assert.Equal(t, vector.Plaintext, hex.EncodeToString(must(io.ReadAll(reader))))
+				})
+			}
+		})
 
-	t.Run("path_key", func(t *testing.T) {
-		require.NotEmpty(t, file.PathKey)
+		t.Run("path_key", func(t *testing.T) {
+			require.NotEmpty(t, file.PathKey)
 
-		for _, vector := range file.PathKey {
-			t.Run(vector.Name, func(t *testing.T) {
-				assert.Equal(t, vector.PathKey, hex.EncodeToString(must(PathKey(unhex(t, vector.Secret), vector.Path))))
-			})
-		}
-	})
+			for _, vector := range file.PathKey {
+				t.Run(vector.Name, func(t *testing.T) {
+					assert.Equal(t, vector.PathKey, hex.EncodeToString(must(PathKey(unhex(t, vector.Secret), vector.Path))))
+				})
+			}
+		})
 
-	t.Run("blob_id", func(t *testing.T) {
-		require.NotEmpty(t, file.BlobID)
+		t.Run("blob_id", func(t *testing.T) {
+			require.NotEmpty(t, file.BlobID)
 
-		for _, vector := range file.BlobID {
-			t.Run(vector.Name, func(t *testing.T) {
-				assert.Equal(t, vector.BlobID, hex.EncodeToString(must(BlobID(unhex(t, vector.Secret), unhex(t, vector.Plaintext)))))
-			})
-		}
-	})
+			for _, vector := range file.BlobID {
+				t.Run(vector.Name, func(t *testing.T) {
+					assert.Equal(t, vector.BlobID, hex.EncodeToString(must(BlobID(unhex(t, vector.Secret), unhex(t, vector.Plaintext)))))
+				})
+			}
+		})
 
-	t.Run("passphrase", func(t *testing.T) {
-		require.NotEmpty(t, file.Passphrase)
+		t.Run("passphrase", func(t *testing.T) {
+			require.NotEmpty(t, file.Passphrase)
 
-		for _, vector := range file.Passphrase {
-			t.Run(vector.Name, func(t *testing.T) {
-				params := Argon2Params{Memory: vector.Memory, Iterations: vector.Iterations, Parallelism: vector.Parallelism}
-				aad := unhex(t, vector.AAD)
-				salt := unhex(t, vector.Salt)
-				wrapped, keys, err := wrapWith(vector.Passphrase, params, salt, unhex(t, vector.Nonce), unhex(t, vector.Secret), aad)
-				require.NoError(t, err)
-				assert.Equal(t, vector.Wrapped, hex.EncodeToString(wrapped))
-				assert.Equal(t, vector.WrapKey, hex.EncodeToString(keys.WrapKey))
-				assert.Equal(t, vector.AuthKey, hex.EncodeToString(keys.AuthKey))
+			for _, vector := range file.Passphrase {
+				t.Run(vector.Name, func(t *testing.T) {
+					params := Argon2Params{Memory: vector.Memory, Iterations: vector.Iterations, Parallelism: vector.Parallelism}
+					aad := unhex(t, vector.AAD)
+					salt := unhex(t, vector.Salt)
+					wrapped, keys, err := wrapWith(vector.Passphrase, params, salt, unhex(t, vector.Nonce), unhex(t, vector.Secret), aad)
+					require.NoError(t, err)
+					assert.Equal(t, vector.Wrapped, hex.EncodeToString(wrapped))
+					assert.Equal(t, vector.WrapKey, hex.EncodeToString(keys.WrapKey))
+					assert.Equal(t, vector.AuthKey, hex.EncodeToString(keys.AuthKey))
 
-				// The keys follow docs/design/crypto.md, computed here from the
-				// primitives and the documented labels, not by the package.
-				stretched := argon2.IDKey([]byte(pathkey.NFC(vector.Passphrase)), salt, vector.Iterations, vector.Memory, vector.Parallelism, KeySize)
-				assert.Equal(t, vector.WrapKey, hex.EncodeToString(must(hkdf.Key(sha256.New, stretched, nil, "vault-sync/v1/passphrase/wrap", KeySize))))
-				assert.Equal(t, vector.AuthKey, hex.EncodeToString(must(hkdf.Key(sha256.New, stretched, nil, "vault-sync/v1/passphrase/auth", KeySize))))
+					// The keys follow docs/design/crypto.md, computed here from the
+					// primitives and the documented labels, not by the package.
+					stretched := argon2.IDKey([]byte(pathkey.NFC(vector.Passphrase)), salt, vector.Iterations, vector.Memory, vector.Parallelism, KeySize)
+					assert.Equal(t, vector.WrapKey, hex.EncodeToString(must(hkdf.Key(sha256.New, stretched, nil, "vault-sync/v1/passphrase/wrap", KeySize))))
+					assert.Equal(t, vector.AuthKey, hex.EncodeToString(must(hkdf.Key(sha256.New, stretched, nil, "vault-sync/v1/passphrase/auth", KeySize))))
 
-				secret := must(UnwrapWithPassphrase(vector.Passphrase, unhex(t, vector.Wrapped), aad))
-				assert.Equal(t, vector.Secret, hex.EncodeToString(secret))
+					secret := must(UnwrapWithPassphrase(vector.Passphrase, unhex(t, vector.Wrapped), aad))
+					assert.Equal(t, vector.Secret, hex.EncodeToString(secret))
 
-				parsedParams, parsedSalt, err := ParsePassphraseHeader(unhex(t, vector.Wrapped))
-				require.NoError(t, err)
-				assert.Equal(t, params, parsedParams)
-				assert.Equal(t, vector.Salt, hex.EncodeToString(parsedSalt))
+					parsedParams, parsedSalt, err := ParsePassphraseHeader(unhex(t, vector.Wrapped))
+					require.NoError(t, err)
+					assert.Equal(t, params, parsedParams)
+					assert.Equal(t, vector.Salt, hex.EncodeToString(parsedSalt))
 
-				secret = must(UnwrapWithKey(unhex(t, vector.WrapKey), unhex(t, vector.Wrapped), aad))
-				assert.Equal(t, vector.Secret, hex.EncodeToString(secret))
-			})
-		}
-	})
+					secret = must(UnwrapWithKey(unhex(t, vector.WrapKey), unhex(t, vector.Wrapped), aad))
+					assert.Equal(t, vector.Secret, hex.EncodeToString(secret))
+				})
+			}
+		})
 
-	// The pairs share their salt and nonce, so equal wrapped values show that
-	// both normalization forms of a passphrase derive the same key.
-	t.Run("passphrase normalization pairs", func(t *testing.T) {
-		wrapped := map[string]string{}
-		for _, vector := range file.Passphrase {
-			wrapped[vector.Name] = vector.Wrapped
-		}
+		// The pairs share their salt and nonce, so equal wrapped values show that
+		// both normalization forms of a passphrase derive the same key.
+		t.Run("passphrase normalization pairs", func(t *testing.T) {
+			wrapped := map[string]string{}
+			for _, vector := range file.Passphrase {
+				wrapped[vector.Name] = vector.Wrapped
+			}
 
-		for _, pair := range [][2]string{
-			{"precomposed passphrase", "decomposed passphrase"},
-			{"Unicode 15.0 mark, precomposed passphrase", "Unicode 15.0 mark, decomposed passphrase"},
-		} {
-			require.Contains(t, wrapped, pair[0])
-			require.Contains(t, wrapped, pair[1])
-			assert.Equal(t, wrapped[pair[0]], wrapped[pair[1]], pair[1])
-		}
-	})
+			for _, pair := range [][2]string{
+				{"precomposed passphrase", "decomposed passphrase"},
+				{"Unicode 15.0 mark, precomposed passphrase", "Unicode 15.0 mark, decomposed passphrase"},
+			} {
+				require.Contains(t, wrapped, pair[0])
+				require.Contains(t, wrapped, pair[1])
+				assert.Equal(t, wrapped[pair[0]], wrapped[pair[1]], pair[1])
+			}
+		})
 
-	t.Run("key slot", func(t *testing.T) {
-		require.NotEmpty(t, file.KeySlot)
+		t.Run("key slot", func(t *testing.T) {
+			require.NotEmpty(t, file.KeySlot)
 
-		for _, vector := range file.KeySlot {
-			t.Run(vector.Name, func(t *testing.T) {
-				slot := vector.slot()
+			for _, vector := range file.KeySlot {
+				t.Run(vector.Name, func(t *testing.T) {
+					slot := vector.slot()
 
-				// The associated data follows docs/design/crypto.md, built here
-				// from the documented layout, not by the package.
-				assert.Equal(t, vector.AD, hex.EncodeToString(documentedSlotAD(t, vector)))
-				assert.Equal(t, vector.AD, hex.EncodeToString(must(slot.AD())))
+					// The associated data follows docs/design/crypto.md, built here
+					// from the documented layout, not by the package.
+					assert.Equal(t, vector.AD, hex.EncodeToString(documentedSlotAD(t, vector)))
+					assert.Equal(t, vector.AD, hex.EncodeToString(must(slot.AD())))
 
-				assert.Equal(t, vector.RecipientPublicKey, hex.EncodeToString(must(PublicKey(unhex(t, vector.RecipientPrivateKey)))))
+					assert.Equal(t, vector.RecipientPublicKey, hex.EncodeToString(must(PublicKey(unhex(t, vector.RecipientPrivateKey)))))
 
-				// The slot is an age file whose payload is the epoch key
-				// followed by the documented associated data.
-				payload := must(OpenFrom(unhex(t, vector.RecipientPrivateKey), unhex(t, vector.Sealed)))
-				assert.Equal(t, vector.EpochKey+vector.AD, hex.EncodeToString(payload))
+					// The slot is an age file whose payload is the epoch key
+					// followed by the documented associated data.
+					payload := must(OpenFrom(unhex(t, vector.RecipientPrivateKey), unhex(t, vector.Sealed)))
+					assert.Equal(t, vector.EpochKey+vector.AD, hex.EncodeToString(payload))
 
-				epochKey := must(OpenKeySlot(unhex(t, vector.RecipientPrivateKey), unhex(t, vector.Sealed), slot))
-				assert.Equal(t, vector.EpochKey, hex.EncodeToString(epochKey))
-			})
-		}
-	})
+					epochKey := must(OpenKeySlot(unhex(t, vector.RecipientPrivateKey), unhex(t, vector.Sealed), slot))
+					assert.Equal(t, vector.EpochKey, hex.EncodeToString(epochKey))
+				})
+			}
+		})
 
-	t.Run("key commitment", func(t *testing.T) {
-		require.NotEmpty(t, file.KeyCommitment)
+		t.Run("key commitment", func(t *testing.T) {
+			require.NotEmpty(t, file.KeyCommitment)
 
-		for _, vector := range file.KeyCommitment {
-			t.Run(vector.Name, func(t *testing.T) {
-				epochKey := unhex(t, vector.EpochKey)
+			for _, vector := range file.KeyCommitment {
+				t.Run(vector.Name, func(t *testing.T) {
+					epochKey := unhex(t, vector.EpochKey)
 
-				// HMAC-SHA256 over the documented layout, not computed by the
-				// package.
-				documented := hmac.New(sha256.New, epochKey)
-				documented.Write([]byte("vault-sync/v1/key-commitment"))
-				documented.Write(uuidBytes(t, vector.VaultID))
-				documented.Write(binary.BigEndian.AppendUint64(nil, vector.Epoch))
-				assert.Equal(t, vector.Commitment, hex.EncodeToString(documented.Sum(nil)))
+					// HMAC-SHA256 over the documented layout, not computed by the
+					// package.
+					documented := hmac.New(sha256.New, epochKey)
+					documented.Write([]byte("vault-sync/v1/key-commitment"))
+					documented.Write(uuidBytes(t, vector.VaultID))
+					documented.Write(binary.BigEndian.AppendUint64(nil, vector.Epoch))
+					assert.Equal(t, vector.Commitment, hex.EncodeToString(documented.Sum(nil)))
 
-				assert.Equal(t, vector.Commitment, hex.EncodeToString(must(KeyCommitment(epochKey, vector.VaultID, vector.Epoch))))
-				require.NoError(t, VerifyKeyCommitment(epochKey, unhex(t, vector.Commitment), vector.VaultID, vector.Epoch))
-			})
-		}
-	})
+					assert.Equal(t, vector.Commitment, hex.EncodeToString(must(KeyCommitment(epochKey, vector.VaultID, vector.Epoch))))
+					require.NoError(t, VerifyKeyCommitment(epochKey, unhex(t, vector.Commitment), vector.VaultID, vector.Epoch))
+				})
+			}
+		})
 
-	t.Run("rejected key slots", func(t *testing.T) {
-		require.NotEmpty(t, file.RejectedKeySlots)
+		t.Run("rejected key slots", func(t *testing.T) {
+			require.NotEmpty(t, file.RejectedKeySlots)
 
-		for _, vector := range file.RejectedKeySlots {
-			t.Run(vector.Name, func(t *testing.T) {
-				_, err := OpenKeySlot(unhex(t, vector.RecipientPrivateKey), unhex(t, vector.Sealed), vector.slot())
-				require.ErrorIs(t, err, ErrDecrypt)
-			})
-		}
-	})
+			for _, vector := range file.RejectedKeySlots {
+				t.Run(vector.Name, func(t *testing.T) {
+					_, err := OpenKeySlot(unhex(t, vector.RecipientPrivateKey), unhex(t, vector.Sealed), vector.slot())
+					require.ErrorIs(t, err, ErrDecrypt)
+				})
+			}
+		})
 
-	t.Run("rejected key commitments", func(t *testing.T) {
-		require.NotEmpty(t, file.RejectedKeyCommitments)
+		t.Run("rejected key commitments", func(t *testing.T) {
+			require.NotEmpty(t, file.RejectedKeyCommitments)
 
-		for _, vector := range file.RejectedKeyCommitments {
-			t.Run(vector.Name, func(t *testing.T) {
-				err := VerifyKeyCommitment(unhex(t, vector.EpochKey), unhex(t, vector.Commitment), vector.VaultID, vector.Epoch)
-				require.ErrorIs(t, err, ErrKeyCommitment)
-			})
-		}
-	})
+			for _, vector := range file.RejectedKeyCommitments {
+				t.Run(vector.Name, func(t *testing.T) {
+					err := VerifyKeyCommitment(unhex(t, vector.EpochKey), unhex(t, vector.Commitment), vector.VaultID, vector.Epoch)
+					require.ErrorIs(t, err, ErrKeyCommitment)
+				})
+			}
+		})
 
-	t.Run("rejected", func(t *testing.T) {
-		require.NotEmpty(t, file.Rejected)
+		t.Run("rejected", func(t *testing.T) {
+			require.NotEmpty(t, file.Rejected)
 
-		for _, vector := range file.Rejected {
-			t.Run(vector.Name, func(t *testing.T) {
-				sealed, aad := unhex(t, vector.Sealed), unhex(t, vector.AAD)
+			for _, vector := range file.Rejected {
+				t.Run(vector.Name, func(t *testing.T) {
+					sealed, aad := unhex(t, vector.Sealed), unhex(t, vector.AAD)
 
-				var err error
+					var err error
 
-				switch vector.Kind {
-				case "aead":
-					_, err = Open(unhex(t, vector.Key), sealed, aad)
-				case "hybrid":
-					require.Empty(t, aad)
+					switch vector.Kind {
+					case "aead":
+						_, err = Open(unhex(t, vector.Key), sealed, aad)
+					case "hybrid":
+						require.Empty(t, aad)
 
-					_, err = OpenFrom(unhex(t, vector.Key), sealed)
-				case "passphrase":
-					_, err = UnwrapWithPassphrase(vector.Passphrase, sealed, aad)
-				default:
-					require.Failf(t, "unknown kind", "%q", vector.Kind)
-				}
+						_, err = OpenFrom(unhex(t, vector.Key), sealed)
+					case "passphrase":
+						_, err = UnwrapWithPassphrase(vector.Passphrase, sealed, aad)
+					default:
+						require.Failf(t, "unknown kind", "%q", vector.Kind)
+					}
 
-				require.ErrorIs(t, err, ErrDecrypt)
-			})
-		}
+					require.ErrorIs(t, err, ErrDecrypt)
+				})
+			}
+		})
 	})
 }
 

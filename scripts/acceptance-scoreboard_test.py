@@ -14,12 +14,15 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "scripts" / "acceptance-scoreboard.py"
 CHECKLIST = ROOT / "docs" / "acceptance" / "phase-2.md"
 PHASE_3_CHECKLIST = ROOT / "docs" / "acceptance" / "phase-3.md"
+PHASE_4_CHECKLIST = ROOT / "docs" / "acceptance" / "phase-4.md"
 
 # The checklist's scenarios, written out here rather than read the way the
 # script reads them: AC-02 to AC-26, AC-01 having been removed by the owner.
 SCENARIOS = [f"AC-{number:02d}" for number in range(2, 27)]
 # The Phase 3 checklist's scenarios, a table of P3-01 to P3-13.
 PHASE_3_SCENARIOS = [f"P3-{number:02d}" for number in range(1, 14)]
+# The Phase 4 checklist's scenarios, a table of P4-01 to P4-23.
+PHASE_4_SCENARIOS = [f"P4-{number:02d}" for number in range(1, 24)]
 
 
 class Scoreboard(unittest.TestCase):
@@ -43,7 +46,7 @@ class Scoreboard(unittest.TestCase):
     def statuses(self, output):
         lines = {}
         for line in output.splitlines():
-            match = re.match(r"^((?:AC|P3)-\d\d)\s+(.+?)\s*$", line)
+            match = re.match(r"^((?:AC|P3|P4)-\d\d)\s+(.+?)\s*$", line)
             if match:
                 lines[match.group(1)] = match.group(2)
         return lines
@@ -202,6 +205,26 @@ class Scoreboard(unittest.TestCase):
         self.assertEqual(statuses["P3-06"], "no test")
         self.assertNotIn("AC-04", output)
         self.assertEqual(output.strip().splitlines()[-1], "passing 2/13")
+
+    def test_reads_the_phase_4_table_and_its_tagged_tests(self):
+        (self.sources / "plugin" / "src" / "core").mkdir(parents=True)
+        (self.sources / "plugin" / "src" / "core" / "vectors.test.ts").write_text('it("[P4-17] wraps to the hybrid recipient", async () => {});\n', encoding="utf-8")
+        (self.sources / "plugin" / "src" / "core" / "unlock.test.ts").write_text('it("[P4-03] refuses a wrong passphrase", async () => {});\n', encoding="utf-8")
+        (self.sources / "plugin" / "src" / "core" / "helper.ts").write_text('it("[P4-05] not a test file", async () => {});\n', encoding="utf-8")
+        report = {"testResults": [{"assertionResults": [{"title": "[P4-17] wraps to the hybrid recipient", "status": "passed"}]}]}
+        (self.results / "vitest-unit.json").write_text(json.dumps(report), encoding="utf-8")
+        events = [{"Action": "pass", "Test": "TestEscrowRotation/[P4-12]_re-wraps_every_slot"}, {"Action": "fail", "Test": "TestExport/[P4-11]_decrypts"}]
+        (self.results / "go-integration.json").write_text("".join(json.dumps(event) + "\n" for event in events), encoding="utf-8")
+        output = self.run_scoreboard(PHASE_4_CHECKLIST)
+        statuses = self.statuses(output)
+
+        self.assertEqual(sorted(statuses), PHASE_4_SCENARIOS)
+        self.assertEqual(statuses["P4-17"], "pass")
+        self.assertEqual(statuses["P4-12"], "pass")
+        self.assertEqual(statuses["P4-11"], "fail")
+        self.assertEqual(statuses["P4-03"], "not run")
+        self.assertEqual(statuses["P4-05"], "no test")
+        self.assertEqual(output.strip().splitlines()[-1], "passing 2/23")
 
     def test_the_go_run_pattern_selects_the_tests_holding_phase_3_subtests(self):
         (self.sources / "internal" / "store" / "role_integration_test.go").write_text(
