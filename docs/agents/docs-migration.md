@@ -29,7 +29,7 @@ The reference tables marked "machine-read" in the first version of this map are 
 
 | Table | Source | Output page | How | Readers to switch |
 |---|---|---|---|---|
-| Environment variables (`VAULT_SYNC_*`, server and export) | The `*Env` constants in `internal/config/config.go` and their defaults and validation in the same package. | `admin/configuration-reference.md` | A small Go generator (`go run ./internal/config/docgen` or similar, using `go/ast` and `go/doc` from the standard library) that reads each constant's doc comment, default and allowed range. The descriptions move from today's table into those doc comments first. | `scripts/chart_test.sh` (documented_vars) |
+| Environment variables (`VAULT_SYNC_*`, server and export) | The `*Env` constants in `internal/config/config.go` and their defaults and validation in the same package. | `admin/configuration-reference.md` | A small Go generator (`go run ./internal/config/docgen` or similar, using `go/ast` and `go/doc` from the standard library) that reads each constant's doc comment, default and allowed range. The descriptions move from today's table into those doc comments first. Done: `internal/config/configuration_reference_test.go` (`make generate-docs`, `make check-generate-docs`); the export's own table in `export.md` moves with the data pages. | `scripts/chart_test.sh` (documented_vars) |
 | Metrics (`vault_sync_*`, per-replica and service-wide) | The collectors' `prometheus.*Opts` (`Name`, `Help`, label names) in `internal/server`, `internal/store`, `internal/blobstore`, `internal/auth`, `internal/retention`, `internal/realtime`, `internal/servicemetrics`. | `admin/metrics-reference.md` | A Go test or `go run` program that registers every collector on a fresh registry and prints name, type, labels and help. `Help` strings are lengthened where today's table says more. Replaces the hand check in `internal/server/metrics_doc_test.go`. Done: `internal/server/metrics_reference_test.go` (`make generate-docs`, `make check-generate-docs`). | `internal/server/metrics_doc_test.go`, `scripts/chart_test.sh` (documented_metrics), `scripts/dashboard_test.py`, comment in `internal/servicemetrics/servicemetrics.go` |
 | Chart values | `deploy/charts/vault-sync/values.yaml` comments and `values.schema.json`. | `admin/chart-values.md` | `helm-docs` (established tool; add it to `flake.nix`) with `# --` comments in `values.yaml`. The prose now in `deployment.md` "Chart values" moves into those comments. | `scripts/chart_test.sh` (values documented check) |
 | RPC errors | Proto comments in `proto/`. | none | Already in the proto comments and the generated code. No page; `dev/protocol.md` links to `proto/`. | none |
@@ -158,7 +158,7 @@ SPEC keeps its section numbers and its rules. The SPEC readability issue applies
 | Section | W | Class | Destination | Notes |
 |---|---|---|---|---|
 | [ ] Intro (env-only config, validation, exit status) | 88 | keep | `admin/configuration.md`; failure messages to `admin/troubleshooting.md` | |
-| [ ] Environment variables (table) | 2,884 | generate | `admin/configuration-reference.md` (generated) | See Generators. Descriptions move into the constants' doc comments first; `admin/configuration.md` keeps only the grouped concepts below. |
+| [x] Environment variables (table) | 2,884 | generate | `admin/configuration-reference.md` (generated) | See Generators. Descriptions move into the constants' doc comments first; `admin/configuration.md` keeps only the grouped concepts below. |
 | [ ] Authentication | 437 | keep | `admin/identity-provider.md`; token checks to `admin/security.md` | |
 | [ ] Authorization | 1,004 | keep | `admin/security.md` (≈300 W) | Per-procedure role lists duplicate SPEC §9.2 and the proto comments: delete. |
 | [ ] Blob storage | 404 | keep | `admin/postgresql-and-s3.md`; size and chunk limits to `admin/security.md` (limits) | |
@@ -240,15 +240,15 @@ All sections stay and keep their rules: the engine design is fixed. The develope
 | Section | W | Class | Destination | Notes |
 |---|---|---|---|---|
 | [x] `design/engine.md` (all) | 3,914 | keep | stays | Owner-fixed. Delete only issue numbers. |
-| [ ] `design/engine.md` §10 Status and user interface | — | keep | stays; user view to `user/syncing.md` | User view done in `user/syncing.md`; the developer-reader pass on `docs/design/` is left. |
+| [x] `design/engine.md` §10 Status and user interface | — | keep | stays; user view to `user/syncing.md` | User view done in `user/syncing.md`. Done: the page has the reader line and no issue numbers. |
 | [x] `design/engine-situations.md` (all) | 5,128 | keep | stays | Each situation has a decision-table test; the situations stay because they explain the rows. Delete only issue numbers. |
-| [ ] `design/sharing.md` Roles, Losing access, Deleting a vault | 684 (file) | keep | stays; user view to `user/sharing.md` | User view done in `user/sharing.md`; the developer-reader pass on `docs/design/` is left. |
-| [ ] `design/encryption.md` Escrow, Protection against an active server | — | keep | stays; operator view in `admin/encryption.md`, `admin/security.md` | |
+| [x] `design/sharing.md` Roles, Losing access, Deleting a vault | 684 (file) | keep | stays; user view to `user/sharing.md` | User view done in `user/sharing.md`. Done: the page has the reader line and no issue numbers. |
+| [x] `design/encryption.md` Escrow, Protection against an active server | — | keep | stays; operator view in `admin/encryption.md`, `admin/security.md` | Design page done: reader line, no issue numbers. The operator pages are part of the admin rewrite. |
 | [x] `design/encryption.md` Formats and rules settled during implementation | 800 | move | byte formats pinned by `testdata/crypto/vectors.json` and described in `design/crypto.md` | Delete the duplicates; move what remains to `design/crypto.md`. Done: the formats that remained (the invitation code, the passphrase rule) moved to `crypto.md`. The other bullets are design rules, not formats, so they stay in `encryption.md` under the heading *Rules for contents, invitations and escrow*. `SPEC.md` and `plugin/src/core/sync/codec.ts` cite the new heading. |
-| [ ] `design/encryption.md` Interaction matrix | 1,128 | keep | stays | Design-review artefact the design reviewer reads. |
-| [ ] `design/encryption.md` Documentation | — | keep | stays | Says which user docs must exist; update its links to the new paths. |
+| [x] `design/encryption.md` Interaction matrix | 1,128 | keep | stays | Design-review artefact the design reviewer reads. |
+| [x] `design/encryption.md` Documentation | — | keep | stays | Says which user docs must exist; update its links to the new paths. Done: it names `user/encryption.md` for users and `docs/encryption.md` for operators until `admin/encryption.md` exists. |
 | [x] `design/crypto.md` (all) | 4,592 | keep | stays | Parameters and formats stay (developer depth); vectors are the contract, so prose that only restates a vector's bytes is a delete. Target ≈3,500. Done at about 4,200 (from 4,834): the vector list and the escrow-chain rules that repeated `encryption.md` are cut. The rest is rules and parameters, and cutting it would lose facts. |
-| [ ] every other design section | — | keep | stays | |
+| [x] every other design section | — | keep | stays | |
 
 ## docs/testing/ (stays; developer; 13.9k W → target 6k)
 

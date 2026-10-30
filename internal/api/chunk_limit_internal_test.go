@@ -11,7 +11,8 @@ import (
 // chunk limit, whatever its parameters; binary ones keep MaxChunkBytes.
 func TestChunkLimitFollowsTheRequestsCodec(t *testing.T) {
 	// The defaults: a 1 MiB message limit and 768 KiB chunks. 784878 is
-	// the JSON chunk docs/configuration.md documents for them.
+	// the JSON chunk docs/admin/configuration-reference.md documents
+	// for them.
 	service := BlobService{Limits: BlobLimits{MaxChunkBytes: 768 << 10, MaxMessageBytes: 1 << 20}}
 
 	tests := []struct {

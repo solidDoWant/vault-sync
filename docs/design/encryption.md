@@ -263,8 +263,6 @@ Agents never implement a cipher, hash, KDF or KEM themselves, nor hand-encode We
 
 ## Documentation
 
-`docs/encryption.md` explains all of this for users and operators:
-- what the server can and can't see;
-- passphrases, and what is lost without escrow;
-- invitations, rotation, re-encryption and conversion;
-- escrow, and recovery with `age`.
+Two pages explain this design to people who do not read it:
+- `docs/user/encryption.md`, for users: what the server can and cannot see, the passphrase and what is lost without escrow, invitations, rotation, re-encryption, conversion and escrow.
+- `docs/encryption.md`, for operators: the escrow key, recovery with `age`, and what an actively malicious server can and cannot do.

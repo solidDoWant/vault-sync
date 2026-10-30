@@ -30,8 +30,8 @@
 #     its unit tests (ci/alerts-test.yaml) pass; every metric it reads is in
 #     docs/admin/metrics-reference.md and every alert has a docs/admin/alerts.md section
 #     (and a heading in the docs/alerts.md stub);
-#   - every VAULT_SYNC_* variable in docs/configuration.md can be set through
-#     the chart, and every config value is documented in docs/deployment.md.
+#   - every VAULT_SYNC_* variable in docs/admin/configuration-reference.md can
+#     be set through the chart, and every config value is documented in docs/deployment.md.
 #
 # Needs helm, yq, jq and promtool (all in the dev shell) and, on the first run, network
 # access to fetch the pinned bjw-s common chart (Chart.lock).
@@ -608,9 +608,9 @@ render --set config.logLevel=debug --set config.s3.region=r --set config.s3.forc
 	--set config.server.realtime.maxConnectionsPerUser=1 --set config.server.realtime.maxSubscriptions=1 \
 	--set config.server.escrow.recipient=age1pq1x --set config.server.escrow.signingKey=c2lnbg== --set config.server.escrow.default=false \
 	--set config.server.escrow.retiringKeyIds=sha256:00 --set config.server.metrics.serviceWide.interval=1m
-documented_vars="$(grep -oE '^\| `VAULT_SYNC_[A-Z0-9_]+`' "$repo_root/docs/configuration.md" | tr -d '|` ')"
+documented_vars="$(grep -oE '^\| `VAULT_SYNC_[A-Z0-9_]+`' "$repo_root/docs/admin/configuration-reference.md" | tr -d '|` ')"
 if [[ -z $documented_vars ]]; then
-	fail "found the environment variables in docs/configuration.md"
+	fail "found the environment variables in docs/admin/configuration-reference.md"
 fi
 # The escrow identity is the export job's only, so it is looked for
 # there. The escrow signing keys stay offline: the chart never sets their

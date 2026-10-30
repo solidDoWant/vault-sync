@@ -31,7 +31,8 @@ func TestLoadRequiresTheRequestLimitToFitOneRevision(t *testing.T) {
 }
 
 // The allowed range startup reports for the request limit starts at the
-// smallest limit it accepts, 16384 bytes, as docs/configuration.md says.
+// smallest limit it accepts, 16384 bytes, as docs/admin/configuration-reference.md
+// says.
 func TestLoadReportsTheRequestLimitRangeItEnforces(t *testing.T) {
 	const allowedRange = "allowed range 16384 to 67108864 bytes"
 
