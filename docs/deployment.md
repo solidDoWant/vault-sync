@@ -259,7 +259,7 @@ The chart has two top-level keys. `config` is the chart's own interface, describ
 
 ### Server
 
-The listen addresses are fixed by the chart: `VAULT_SYNC_LISTEN_ADDRESS` is `:8080` (port `http`) and `VAULT_SYNC_METRICS_LISTEN_ADDRESS` is `:9090` (port `metrics`, which the probes and the ServiceMonitor use). Every value below sets the variable named, documented in configuration.md; null uses the server's default. Byte sizes, counts and limits are integers, `config.server.escrow.default` is a boolean, and the rest are Go durations, except the escrow keys and ids (strings).
+The listen addresses are fixed by the chart: `VAULT_SYNC_LISTEN_ADDRESS` is `:8080` (port `http`) `VAULT_SYNC_METRICS_LISTEN_ADDRESS` is `:9090` (port `metrics`, which the probes and the ServiceMonitor use), and `VAULT_SYNC_SERVICE_METRICS_LISTEN_ADDRESS` is `:9091`. Every value below sets the variable named, documented in configuration.md; null uses the server's default. Byte sizes, counts and limits are integers, `config.server.escrow.default` is a boolean, and the rest are Go durations, except the escrow keys and ids (strings).
 
 | Value | Variable |
 |---|---|
@@ -286,6 +286,7 @@ The listen addresses are fixed by the chart: `VAULT_SYNC_LISTEN_ADDRESS` is `:80
 | `config.server.escrow.signingKey` | `VAULT_SYNC_ESCROW_SIGNING_KEY` (the escrow signing public key) |
 | `config.server.escrow.default` | `VAULT_SYNC_ESCROW_DEFAULT` |
 | `config.server.escrow.retiringKeyIds` | `VAULT_SYNC_ESCROW_RETIRING_KEY_IDS` (comma-separated) |
+| `config.server.metrics.serviceWide.interval` | `VAULT_SYNC_SERVICE_METRICS_INTERVAL` |
 
 | Value | Default | Description |
 |---|---|---|

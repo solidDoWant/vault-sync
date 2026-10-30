@@ -407,6 +407,22 @@
                       "$ref": "#/$defs/duration"
                     }
                   }
+                },
+                "serviceWide": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "interval": {
+                      "oneOf": [
+                        {
+                          "type": "null"
+                        },
+                        {
+                          "$ref": "#/$defs/duration"
+                        }
+                      ]
+                    }
+                  }
                 }
               }
             }

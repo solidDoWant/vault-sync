@@ -11,6 +11,7 @@
 {{/* Ports match the env vars set below and the image's ExposedPorts. */}}
 {{- $httpPort := 8080 -}}
 {{- $metricsPort := 9090 -}}
+{{- $serviceMetricsPort := 9091 -}}
 
 {{- $mountRoot := "/etc/vault-sync" -}}
 {{- $exportMount := "/export" -}}
@@ -235,6 +236,7 @@
 {{/* ============================================================ */}}
 {{- $_ := set $serverEnv "VAULT_SYNC_LISTEN_ADDRESS" (printf ":%d" $httpPort) -}}
 {{- $_ := set $serverEnv "VAULT_SYNC_METRICS_LISTEN_ADDRESS" (printf ":%d" $metricsPort) -}}
+{{- $_ := set $serverEnv "VAULT_SYNC_SERVICE_METRICS_LISTEN_ADDRESS" (printf ":%d" $serviceMetricsPort) -}}
 {{- $_ := set $serverEnv "VAULT_SYNC_DATABASE_URL" $databaseURL.env -}}
 {{- $_ := set $exportEnv "VAULT_SYNC_DATABASE_URL" $exportDatabaseURL.env -}}
 {{- $_ := set $serverEnv "VAULT_SYNC_OIDC_ISSUER_URL" $config.oidc.issuerUrl -}}
@@ -279,6 +281,7 @@
   "VAULT_SYNC_ESCROW_SIGNING_KEY" $config.server.escrow.signingKey
   "VAULT_SYNC_ESCROW_DEFAULT" $config.server.escrow.default
   "VAULT_SYNC_ESCROW_RETIRING_KEY_IDS" $config.server.escrow.retiringKeyIds
+  "VAULT_SYNC_SERVICE_METRICS_INTERVAL" $config.server.metrics.serviceWide.interval
 -}}
 {{- range $name, $value := $shared -}}
   {{- if and (not (kindIs "invalid" $value)) (ne (toString $value) "") -}}
