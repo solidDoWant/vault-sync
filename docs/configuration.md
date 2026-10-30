@@ -30,7 +30,7 @@ End-to-end encrypted vaults keep one key per epoch, which the server never sees.
 
 Where blobs and staged chunks live in the bucket, the S3 permissions and the upload cleanup moved to [PostgreSQL and S3](admin/postgresql-and-s3.md#what-lives-where).
 
-The chunk and request limits moved to [Request size and the WAF](admin/security.md#request-size-and-the-waf) and [Fixed limits](admin/security.md#fixed-limits). A `CommitBlob` of a blob that the same replica is already committing waits for that commit and returns its result instead of composing the blob again. At startup the server checks that the bucket is reachable (`HeadBucket`, 30 seconds) and exits with status 1 if not.
+The chunk and request limits moved to [Request size and the WAF](admin/security.md#request-size-and-the-waf) and [Fixed limits](admin/security.md#fixed-limits). A `CommitBlob` of a blob that the same replica is already committing waits for that commit and returns its result instead of composing the blob again. The startup check of the bucket moved to [Troubleshooting](admin/troubleshooting.md#cannot-use-the-s3-object-store).
 
 ### Revisions and the change feed
 
@@ -77,7 +77,7 @@ This section moved to [Monitoring](admin/monitoring.md#service-wide-metrics).
 
 Migrations, the startup order, graceful shutdown and database connection resets moved to [Upgrades and high availability](admin/upgrades.md#migrations) and [PostgreSQL and S3](admin/postgresql-and-s3.md#switchover-and-restarts).
 
-On startup the server exits with status 1 if it cannot connect to PostgreSQL. The server requires PostgreSQL 14 or newer; on older versions the schema migrations fail and the server exits.
+What the server logs when it cannot start, and what to do, moved to [Troubleshooting](admin/troubleshooting.md#the-server-does-not-start).
 
 ## High-availability deployment
 
