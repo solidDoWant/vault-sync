@@ -1,8 +1,6 @@
 module github.com/solidDoWant/vault-sync
 
-go 1.26.0
-
-toolchain go1.26.10
+go 1.26.10
 
 require (
 	connectrpc.com/connect v1.21.1
@@ -12,7 +10,7 @@ require (
 	github.com/aws/aws-sdk-go-v2 v1.47.5
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.114.6
 	github.com/aws/smithy-go v1.28.7
-	github.com/btcsuite/btcd/btcutil v1.2.0
+	github.com/btcsuite/btcd/address/v2 v2.0.1
 	github.com/coder/websocket v1.8.15
 	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/go-jose/go-jose/v4 v4.1.6

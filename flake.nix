@@ -47,16 +47,22 @@
         # catches up; once the pinned Go is at least the go.mod toolchain
         # version it is used as is and this override can be deleted.
         #
-        # The minimum is the `toolchain` directive of go.mod, the one place it
-        # is set (#171); setup-go in CI reads the same line. Raising it there
-        # without a nixpkgs Go or a patched Go below that is at least as new
-        # makes every evaluation of the flake fail with a message saying so.
-        goModToolchain = builtins.match ".*\ntoolchain go([0-9.]+)\n.*" (builtins.readFile ./go.mod);
+        # The minimum is the toolchain go.mod selects: its `toolchain`
+        # directive, or its `go` line when there is none (`go mod tidy` drops
+        # a toolchain equal to the go version); setup-go in CI reads go.mod
+        # the same way. Raising it there without a nixpkgs Go or a patched Go
+        # below that is at least as new makes every evaluation of the flake
+        # fail with a message saying so.
+        goMod = builtins.readFile ./go.mod;
+        goModToolchain = builtins.match ".*\ntoolchain go([0-9.]+)\n.*" goMod;
+        goModGo = builtins.match ".*\ngo ([0-9.]+)\n.*" goMod;
         minimumGoVersion =
-          if goModToolchain == null then
-            throw "vault-sync: go.mod has no `toolchain goX.Y.Z` line; flake.nix reads the minimum Go version from it"
+          if goModToolchain != null then
+            builtins.head goModToolchain
+          else if goModGo != null then
+            builtins.head goModGo
           else
-            builtins.head goModToolchain;
+            throw "vault-sync: go.mod has neither a `toolchain goX.Y.Z` nor a `go X.Y.Z` line; flake.nix reads the minimum Go version from it";
         patchedGoVersion = "1.26.10";
         go =
           if pkgs.lib.versionAtLeast pkgs.go.version minimumGoVersion then
