@@ -459,8 +459,9 @@ func TestDatabaseHoldsNoUnwrappedKeyMaterialAgainstPostgres(t *testing.T) {
 	derived := argon2.IDKey([]byte(passphrase), salt, params.Iterations, params.Memory, params.Parallelism, e2ee.KeySize)
 
 	material := userKeyMaterial{
-		publicKey: publicKey,
-		wrapped:   wrapped,
+		publicKey:     publicKey,
+		signPublicKey: randomBytes(t, 32),
+		wrapped:       wrapped,
 		params: &vaultsyncv1.PassphraseParams{
 			Suite: 2, MemoryKib: params.Memory, Iterations: params.Iterations, Parallelism: uint32(params.Parallelism), Salt: salt,
 		},
