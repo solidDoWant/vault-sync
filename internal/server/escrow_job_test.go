@@ -358,6 +358,7 @@ func TestResetEscrowChainAppendsAResetPoint(t *testing.T) {
 	require.NoError(t, reset(first.encoded, second.encoded))
 
 	require.Len(t, fixture.store.chain.Rotations, 1)
+
 	firstHash := sha256.Sum256(first.encoded)
 	assert.Equal(t, store.EscrowRotationStatement{OldBundleHash: firstHash[:], NewBundle: second.encoded, Reset: true}, fixture.store.chain.Rotations[0])
 
