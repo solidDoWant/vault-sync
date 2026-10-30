@@ -118,7 +118,7 @@ age-keygen -y escrow.key         # prints the public key: age1pq1…
 
 Give the identity to the export job only, through the Secret that `config.export.escrow.secretName` names in the Helm chart (see [deployment.md](deployment.md)), under the key `escrow.key`; the chart refuses to mount it into the server. Outside the chart, point the export's `VAULT_SYNC_ESCROW_IDENTITY_FILE` at the file. Give the public key to the server as `VAULT_SYNC_ESCROW_RECIPIENT` (`config.server.escrow.recipient` in the chart). The server publishes it and the escrow default (`VAULT_SYNC_ESCROW_DEFAULT`) to clients; [configuration.md](configuration.md) lists the variables. Treat the identity like the plaintext of every escrowed vault. Publish the escrow fingerprint to your users, as the next paragraphs describe.
 
-**Publishing the escrow fingerprint.** The escrow fingerprint is a short value that identifies the escrow key and the escrow signing key together. The plugin shows it next to the escrow toggle when an owner creates a vault. Owners compare it with the value that you publish, so they know that their devices use your real escrow key. To print it, run this command on any host with the `vault-sync-server` binary:
+**Publishing the escrow fingerprint.** The escrow fingerprint is a short value that identifies the escrow key and the escrow signing key together. The plugin shows it next to the escrow toggle when an owner creates a vault, and in the fingerprints of a vault with escrow. Owners compare it with the value that you publish, so they know that their devices use your real escrow key. To print it, run this command on any host with the `vault-sync-server` binary:
 
 ```sh
 vault-sync-server escrow fingerprint --recipient age1pq1… --signing-key BASE64

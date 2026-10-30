@@ -68,7 +68,22 @@ Without escrow, only the members can read the vault, and former members what the
 
 If an owner turns escrow off later, new changes are no longer readable by the backup. Older versions stay readable by it until the owner re-encrypts the history.
 
-If your admin publishes a fingerprint of the escrow key, compare it when you create a vault. For more detail, see [How encryption works](../encryption.md#escrow).
+### The escrow fingerprint
+
+The escrow fingerprint is a short code that identifies the server's escrow key. It has eight groups of four characters, for example `7Z1Z Z8ND Z01N DEDJ AYZY KQZ8 R7YY 9X99`. Your device remembers the escrow key that it saw first on this server. The plugin always shows the fingerprint of that remembered key, not only the key that the server offers now.
+
+The plugin shows the escrow fingerprint in two places:
+
+- Under the **Escrow** toggle, when you create a vault.
+- In the **Fingerprints** line of the **Sharing** section, for a vault with escrow. If your device remembers a different escrow key than the vault uses, the plugin shows both fingerprints, each with its label.
+
+Your admin can publish the fingerprint, for example on an internal web page. Compare the two before you create a vault with escrow:
+
+1. Get the fingerprint from your admin over a channel that you trust, for example your company's intranet or in person.
+2. Compare it, group by group, with the fingerprint that the plugin shows.
+3. If they are different, do not turn on escrow, and tell your admin. A different fingerprint can mean that someone swapped the escrow key.
+
+For more detail, see [How encryption works](../encryption.md#escrow).
 
 ## If you forget your passphrase
 

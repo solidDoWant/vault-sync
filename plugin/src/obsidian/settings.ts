@@ -9,7 +9,7 @@ import { connectProblem } from "./controller";
 import { type ConnectedVault, type PluginData } from "./data";
 import { DeviceListLoads, DeviceRemovals, type DeviceRow } from "./devices";
 import { quotedVaultLabel, vaultLabel } from "./display-text";
-import { conversionConfirmable, conversionMemberText, deleteConfirmed, memberKeyText, membershipErrorMessage, parseInvitationDays, vaultKeysText, roleDescription, roleName, roles, type CreatedInvitation, type MemberRow, type Sharing } from "./sharing";
+import { conversionConfirmable, conversionMemberText, deleteConfirmed, memberKeyText, membershipErrorMessage, newVaultEscrowText, parseInvitationDays, vaultKeysText, roleDescription, roleName, roles, type CreatedInvitation, type MemberRow, type Sharing } from "./sharing";
 import type { EncryptionState } from "./encryption";
 import { PassphraseModal, type PassphraseMode } from "./passphrase-modal";
 import { errorMessage, statusDescription, statusText, type SyncStatus } from "./status";
@@ -839,8 +839,8 @@ export class VaultSyncSettingTab extends PluginSettingTab {
         escrowToggle?.setValue(escrow);
         updateEscrowToggle();
         escrowSetting.setDesc(
-          escrowAvailable
-            ? "For an encrypted vault: also wrap its keys to the server's escrow key, so the operator's backups hold your notes in plaintext and can restore the vault if you lose your passphrase. Turn it off to keep the operator out; without escrow, a lost passphrase loses the server's copy."
+          offer.recipient !== undefined
+            ? `For an encrypted vault: also wrap its keys to the server's escrow key, so the operator's backups hold your notes in plaintext and can restore the vault if you lose your passphrase. Turn it off to keep the operator out; without escrow, a lost passphrase loses the server's copy. ${newVaultEscrowText(offer.recipient.bundle)}`
             : "This server has no escrow key, so encrypted vaults are created without escrow.",
         );
       },

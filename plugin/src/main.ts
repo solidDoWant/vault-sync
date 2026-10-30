@@ -479,7 +479,13 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
    * fingerprints from its verified membership log.
    */
   loadSharing(): Promise<Sharing> {
-    return loadSharing(this.protocolClient(), this.sharedVaultId(), formatDate, () => this.logTrust());
+    return loadSharing(
+      this.protocolClient(),
+      this.sharedVaultId(),
+      formatDate,
+      () => this.logTrust(),
+      () => pluginDataEscrowPin(this.data, () => this.saveSettings(), serverBaseUrl(this.data)).load(),
+    );
   }
 
   /** What this device verifies an encrypted vault's membership log with: the unlocked user key (an error while it is locked). */
