@@ -50,6 +50,7 @@ const (
 	EntrySetRole          EntryType = 0x07
 	EntryEscrow           EntryType = 0x08
 	EntryMembers          EntryType = 0x09
+	EntryEscrowReset      EntryType = 0x0A
 )
 
 // membersEntrySeq is the only position of a members entry: directly after genesis.
@@ -275,6 +276,63 @@ func EscrowPayload(escrow *EscrowBundle) ([]byte, error) {
 	}
 
 	return append([]byte{0x01}, encoded...), nil
+}
+
+// EscrowResetPayload returns SHA-256(lastEscrow) || new escrow bundle, the
+// payload of an escrow reset entry: an owner moves the vault from the
+// escrow bundle its log named last to one no signed rotation leads to.
+func EscrowResetPayload(lastEscrow, escrow EscrowBundle) ([]byte, error) {
+	last, err := lastEscrow.Encode()
+	if err != nil {
+		return nil, err
+	}
+
+	encoded, err := escrow.Encode()
+	if err != nil {
+		return nil, err
+	}
+
+	hash := sha256.Sum256(last)
+
+	return append(hash[:], encoded...), nil
+}
+
+// applyEscrowReset checks an escrow reset entry against state and returns
+// its new bundle: an owner signed it, its hash names the log's lastEscrow
+// and its bundle differs from that one. No escrow chain is checked.
+func applyEscrowReset(state LogState, body, payload, signature []byte) (EscrowBundle, error) {
+	if len(payload) <= HashSize {
+		return EscrowBundle{}, errors.New("malformed escrow reset")
+	}
+
+	escrow, err := ParseEscrowBundle(payload[HashSize:])
+	if err != nil {
+		return EscrowBundle{}, errors.New("malformed escrow reset")
+	}
+
+	if !state.ownerSigned(body, signature) {
+		return EscrowBundle{}, errors.New("wrong signer")
+	}
+
+	if state.lastEscrow == nil {
+		return EscrowBundle{}, errors.New("escrow reset in a log that never named an escrow bundle")
+	}
+
+	last, err := state.lastEscrow.Encode()
+	if err != nil {
+		return EscrowBundle{}, err
+	}
+
+	hash := sha256.Sum256(last)
+	if !bytes.Equal(hash[:], payload[:HashSize]) {
+		return EscrowBundle{}, errors.New("escrow reset does not name the last escrow bundle")
+	}
+
+	if escrowEqual(*state.lastEscrow, escrow) {
+		return EscrowBundle{}, errors.New("escrow reset to the same bundle")
+	}
+
+	return escrow, nil
 }
 
 func parseEscrowPayload(payload []byte) (*EscrowBundle, bool) {
@@ -614,6 +672,16 @@ func applyEntry(vaultID string, state LogState, used map[string]bool, entry Entr
 		next.Escrow = escrow
 		if escrow != nil {
 			next.lastEscrow = escrow
+		}
+	case EntryEscrowReset:
+		escrow, err := applyEscrowReset(state, body, payload, signature)
+		if err != nil {
+			return LogState{}, err
+		}
+
+		next.lastEscrow = &escrow
+		if state.Escrow != nil {
+			next.Escrow = &escrow
 		}
 	case EntryMembers:
 		if entry.Seq != membersEntrySeq {

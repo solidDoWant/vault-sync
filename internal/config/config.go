@@ -232,9 +232,11 @@ const (
 	// Comma-separated ids of escrow keys being rotated away from (each 1 to 255
 	// printable ASCII bytes, as `GetServerInfo` names an escrow key: `sha256:`
 	// and the hex SHA-256 of the key). Every epoch of an escrowed vault has
-	// exactly one escrow slot, and its `recipient_id` must be the current
-	// escrow key's id or one of these; `RotateEpoch`, `AddKeySlots` and
-	// `RemoveMember` refuse any other escrow slot with `invalid_argument`. Set
+	// exactly one escrow slot. An escrow slot that `AddKeySlots` adds must
+	// name the current escrow key's id or one of these, or the server refuses
+	// it with `invalid_argument`. The escrow slot of a new epoch names the
+	// escrow key that the vault's membership log names, which can be an older
+	// key until an owner of the vault moves it to the current key. Set
 	// it to the old key's id while the export job re-wraps the existing escrow
 	// slots during an escrow key rotation, and unset it once no slot names the
 	// old key. Needs `VAULT_SYNC_ESCROW_RECIPIENT`; any other value stops the

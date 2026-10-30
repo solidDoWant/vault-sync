@@ -38,7 +38,7 @@ func (service VaultKeyService) ConvertVault(ctx context.Context, request *connec
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("this server has no escrow key"))
 	}
 
-	_, genesis, err := verifyGenesis(membership.VaultID.String(), message.GetGenesis(), user.ID, message.GetEscrow())
+	_, genesis, err := verifyGenesis(membership.VaultID.String(), message.GetGenesis(), user.ID, message.GetEscrow(), service.Escrow)
 	if err != nil {
 		return nil, err
 	}
@@ -68,7 +68,7 @@ func (service VaultKeyService) ConvertVault(ctx context.Context, request *connec
 		return nil, connect.NewError(connect.CodeInvalidArgument, errLogEntryRefused)
 	}
 
-	next, err := ParseNextEpoch(message.GetNextEpoch(), service.Escrow)
+	next, err := ParseNextEpoch(message.GetNextEpoch())
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +77,7 @@ func (service VaultKeyService) ConvertVault(ctx context.Context, request *connec
 		return nil, invalidArgument("next_epoch.expected_epoch must be 0: a converted vault starts at epoch 1")
 	}
 
-	signed, err := parseSignedEpoch(membership.VaultID, message.GetRecord(), nil, service.Escrow.replayOptions())
+	signed, err := parseSignedEpoch(membership.VaultID, message.GetRecord(), nil, nil, service.Escrow)
 	if err != nil {
 		return nil, err
 	}

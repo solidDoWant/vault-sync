@@ -123,6 +123,17 @@ func (log *Log) Escrow(t *testing.T, ownerID uuid.UUID, bundle *e2ee.EscrowBundl
 	return log.append(t, e2ee.EntryEscrow, payload, log.SignKey(ownerID))
 }
 
+// EscrowReset appends the escrow reset entry from last to bundle, signed by
+// the member signerID.
+func (log *Log) EscrowReset(t *testing.T, signerID uuid.UUID, last, bundle e2ee.EscrowBundle) e2ee.Entry {
+	t.Helper()
+
+	payload, err := e2ee.EscrowResetPayload(last, bundle)
+	require.NoError(t, err)
+
+	return log.append(t, e2ee.EntryEscrowReset, payload, log.SignKey(signerID))
+}
+
 // SignKey returns the signing key of the member userID.
 func (log *Log) SignKey(userID uuid.UUID) ed25519.PrivateKey {
 	return log.Secrets[userID.String()].SignKey()

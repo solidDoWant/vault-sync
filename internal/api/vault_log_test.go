@@ -119,6 +119,7 @@ func TestCreateVaultVerifiesTheGenesisEntry(t *testing.T) {
 		request     *vaultsyncv1.CreateVaultRequest
 		storeErr    error
 		wantCode    connect.Code
+		wantReason  vaultsyncv1.ErrorReason
 		wantGenesis bool
 	}{
 		{name: "signed genesis", request: &vaultsyncv1.CreateVaultRequest{Encryption: encrypted, NewVaultId: vaultID.String(), Genesis: valid}, wantGenesis: true},
@@ -182,6 +183,14 @@ func TestCreateVaultVerifiesTheGenesisEntry(t *testing.T) {
 			},
 		},
 		{
+			name: "genesis with an escrow key that is not the escrow chain's head", wantCode: connect.CodeFailedPrecondition,
+			wantReason: vaultsyncv1.ErrorReason_ERROR_REASON_ESCROW_NOT_CURRENT,
+			request: &vaultsyncv1.CreateVaultRequest{
+				Encryption: encrypted, Escrow: true, NewVaultId: vaultID.String(),
+				Genesis: signed(genesisEntry(t, vaultID, caller.ID, secret, escrowBundle(t)), secret.SignKey()),
+			},
+		},
+		{
 			name: "vault id taken", storeErr: store.ErrVaultExists, wantCode: connect.CodeAlreadyExists,
 			request: &vaultsyncv1.CreateVaultRequest{Encryption: encrypted, NewVaultId: vaultID.String(), Genesis: valid},
 		},
@@ -193,13 +202,14 @@ func TestCreateVaultVerifiesTheGenesisEntry(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			recorder := &creatingStore{err: test.storeErr}
-			service := api.VaultService{Vaults: recorder, Escrow: api.Escrow{PublicKey: escrowKey}}
+			service := api.VaultService{Vaults: recorder, Escrow: api.Escrow{PublicKey: escrowKey, Bundle: escrow}}
 
 			test.request.Name = "Notes"
 
 			response, err := service.CreateVault(auth.WithUser(t.Context(), caller), connect.NewRequest(test.request))
 			if test.wantCode != 0 {
 				requireCode(t, test.wantCode, err)
+				assert.Equal(t, test.wantReason, api.ErrorReasonOf(err))
 
 				if test.storeErr == nil {
 					assert.Zero(t, recorder.writes, "refused before the store")

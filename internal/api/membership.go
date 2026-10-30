@@ -50,8 +50,8 @@ var errInvitationNotFound = authz.ErrInvitationNotFound
 // interceptor before it runs: owners only, except LeaveVault (any member).
 type MembershipService struct {
 	Store *store.Store
-	// Escrow is the deployment's escrow key, which the escrow slot of a
-	// removal's next epoch must name (Escrow.AcceptsSlot).
+	// Escrow is the deployment's escrow key and chain, which log entries
+	// are replayed with.
 	Escrow Escrow
 	// Logger receives internal errors, which are not returned to callers.
 	Logger *slog.Logger
@@ -395,7 +395,7 @@ func (service MembershipService) RemoveMember(ctx context.Context, request *conn
 	var next *store.NextEpoch
 
 	if request.Msg.GetNextEpoch() != nil {
-		parsed, err := ParseNextEpoch(request.Msg.GetNextEpoch(), service.Escrow)
+		parsed, err := ParseNextEpoch(request.Msg.GetNextEpoch())
 		if err != nil {
 			return nil, err
 		}
@@ -417,7 +417,7 @@ func (service MembershipService) RemoveMember(ctx context.Context, request *conn
 	}
 
 	if next != nil {
-		signed, err := parseRemovalEpoch(membership.VaultID, request.Msg.GetRecord(), entry, service.Escrow.replayOptions())
+		signed, err := parseRemovalEpoch(membership.VaultID, request.Msg.GetRecord(), entry, service.Escrow)
 		if err != nil {
 			return nil, err
 		}

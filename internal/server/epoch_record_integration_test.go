@@ -277,7 +277,7 @@ func TestRotateEpochVerifiesTheSignedRecordAgainstPostgres(t *testing.T) {
 	escrowID, err := e2ee.EscrowKeyID(escrowPublic)
 	require.NoError(t, err)
 
-	entry := log.Escrow(t, alice.userID, escrowBundleOf(t, escrowPublic))
+	entry := log.Escrow(t, alice.userID, fixture.escrowBundle)
 	next := nextEpoch(t, alice.vaultID, 1, epochKey, alice)
 	next.Slots = append(next.Slots, &vaultsyncv1.KeySlot{
 		RecipientKind: vaultsyncv1.KeyRecipientKind_KEY_RECIPIENT_KIND_ESCROW, RecipientId: escrowID, WrappedKey: bytes.Repeat([]byte{9}, 105),
@@ -473,4 +473,77 @@ func TestRemoveMemberOfAPlaintextVaultTakesNoRecordAgainstPostgres(t *testing.T)
 	}
 
 	require.NoError(t, fixture.removeWithEpoch(t, alice, bob, nil))
+}
+
+// A vault whose log names an escrow key before the escrow chain's head
+// takes new epochs escrowed to that key until its owner adopts the head.
+// After turning escrow off, the owner turns it on again with the head
+// through an escrow reset entry and an escrow on entry, which are appended
+// with the epoch in one transaction.
+func TestRotateEpochAdoptsTheEscrowChainHeadAfterAnEscrowResetAgainstPostgres(t *testing.T) {
+	fixture := newSyncFixture(t, api.SyncLimits{})
+	alice := fixture.keyedMember(t, "alice")
+
+	_, oldPublic, err := e2ee.GenerateKeyPair()
+	require.NoError(t, err)
+
+	old := escrowBundleOf(t, oldPublic)
+	oldKeyID, err := e2ee.EscrowKeyID(oldPublic)
+	require.NoError(t, err)
+
+	headKeyID, err := e2ee.EscrowKeyID(fixture.escrowPublic)
+	require.NoError(t, err)
+
+	vaultID := uuid.Must(uuid.NewV7())
+	log := logtest.New(t, vaultID, alice.userID, old)
+	genesis := log.Entries[0]
+
+	_, err = store.New(fixture.pool).CreateVault(t.Context(), alice.userID, store.NewVault{
+		ID: vaultID, Name: "Secret", Encryption: store.EncryptionE2EE, Escrow: true,
+		Genesis: &store.LogEntry{Seq: 1, PrevHash: genesis.PrevHash, Type: byte(genesis.Type), Payload: genesis.Payload, Signatures: genesis.Signatures},
+	}, 100)
+	require.NoError(t, err)
+
+	alice.vaultID = vaultID.String()
+	epochKey := bytes.Repeat([]byte{1}, 32)
+	escrowSlot := func(keyID string) *vaultsyncv1.KeySlot {
+		return &vaultsyncv1.KeySlot{RecipientKind: vaultsyncv1.KeyRecipientKind_KEY_RECIPIENT_KIND_ESCROW, RecipientId: keyID, WrappedKey: bytes.Repeat([]byte{9}, 105)}
+	}
+
+	// Until adoption: epoch 1 is escrowed to the key the log names.
+	next := nextEpoch(t, alice.vaultID, 0, epochKey, alice)
+	next.Slots = append(next.Slots, escrowSlot(oldKeyID))
+	first, err := fixture.rotateSigned(t, alice, &vaultsyncv1.RotateEpochRequest{NextEpoch: next, Record: fixture.signedRecord(t, log, alice.vaultID, alice.userID, next)})
+	require.NoError(t, err)
+
+	// Escrow off.
+	off := log.Escrow(t, alice.userID, nil)
+	next = nextEpoch(t, alice.vaultID, 1, epochKey, alice)
+	second, err := fixture.rotateSigned(t, alice, &vaultsyncv1.RotateEpochRequest{
+		NextEpoch: next, EscrowEntry: logtest.EntryMessage(off),
+		Record: logtest.RecordMessage(log.Record(t, alice.userID, 2, next.GetCommitment(), first.GetCommitment())),
+	})
+	require.NoError(t, err)
+
+	// Escrow on again with the head: the reset entry, then the on entry.
+	reset := log.EscrowReset(t, alice.userID, *old, *fixture.escrowBundle)
+	on := log.Escrow(t, alice.userID, fixture.escrowBundle)
+	next = nextEpoch(t, alice.vaultID, 2, epochKey, alice)
+	next.Slots = append(next.Slots, escrowSlot(headKeyID))
+	adopt := &vaultsyncv1.RotateEpochRequest{
+		NextEpoch: next, EscrowResetEntry: logtest.EntryMessage(reset), EscrowEntry: logtest.EntryMessage(on),
+		Record: logtest.RecordMessage(log.Record(t, alice.userID, 3, next.GetCommitment(), second.GetCommitment())),
+	}
+
+	_, err = fixture.rotateSigned(t, alice, adopt)
+	require.NoError(t, err)
+
+	assert.Equal(t, vaultSnapshot{currentEpoch: 3, escrow: true, epochs: 3, slots: 5, logEntries: 4}, fixture.snapshot(t, alice.vaultID),
+		"both entries, the epoch and escrow land together")
+
+	page, err := fixture.logEntries(t, alice, 0, "")
+	require.NoError(t, err)
+	require.Len(t, page.GetEntries(), 4)
+	assert.True(t, proto.Equal(adopt.GetEscrowResetEntry(), page.GetEntries()[2]), "the escrow reset entry is appended as signed")
+	assert.True(t, proto.Equal(adopt.GetEscrowEntry(), page.GetEntries()[3]), "the escrow on entry is appended after it")
 }

@@ -76,21 +76,29 @@ const (
 	// (docs/design/encryption.md, "Escrow reset on the server"). The export
 	// job reports the vault and does not retry.
 	ErrorReason_ERROR_REASON_ESCROW_NOT_ADOPTED ErrorReason = 9
+	// FAILED_PRECONDITION from CreateVault, ConvertVault and RotateEpoch: a
+	// genesis, a conversion, an escrow "on" entry or an escrow reset entry
+	// named an escrow bundle that is not the escrow chain's head. The client
+	// re-reads GetServerInfo and evaluates its pin again, and does not send
+	// the request again until the head changes (docs/design/encryption.md,
+	// "Until the owner adopts").
+	ErrorReason_ERROR_REASON_ESCROW_NOT_CURRENT ErrorReason = 10
 )
 
 // Enum value maps for ErrorReason.
 var (
 	ErrorReason_name = map[int32]string{
-		0: "ERROR_REASON_UNSPECIFIED",
-		1: "ERROR_REASON_DEVICE_LIMIT",
-		2: "ERROR_REASON_TOO_MANY_CONCURRENT_REQUESTS",
-		3: "ERROR_REASON_DEVICE_NOT_FOUND",
-		4: "ERROR_REASON_WRONG_PASSPHRASE",
-		5: "ERROR_REASON_PASSPHRASE_ATTEMPTS_EXHAUSTED",
-		6: "ERROR_REASON_EPOCH_NOT_CURRENT",
-		7: "ERROR_REASON_VAULT_DELETED",
-		8: "ERROR_REASON_VAULT_ENCRYPTED",
-		9: "ERROR_REASON_ESCROW_NOT_ADOPTED",
+		0:  "ERROR_REASON_UNSPECIFIED",
+		1:  "ERROR_REASON_DEVICE_LIMIT",
+		2:  "ERROR_REASON_TOO_MANY_CONCURRENT_REQUESTS",
+		3:  "ERROR_REASON_DEVICE_NOT_FOUND",
+		4:  "ERROR_REASON_WRONG_PASSPHRASE",
+		5:  "ERROR_REASON_PASSPHRASE_ATTEMPTS_EXHAUSTED",
+		6:  "ERROR_REASON_EPOCH_NOT_CURRENT",
+		7:  "ERROR_REASON_VAULT_DELETED",
+		8:  "ERROR_REASON_VAULT_ENCRYPTED",
+		9:  "ERROR_REASON_ESCROW_NOT_ADOPTED",
+		10: "ERROR_REASON_ESCROW_NOT_CURRENT",
 	}
 	ErrorReason_value = map[string]int32{
 		"ERROR_REASON_UNSPECIFIED":                   0,
@@ -103,6 +111,7 @@ var (
 		"ERROR_REASON_VAULT_DELETED":                 7,
 		"ERROR_REASON_VAULT_ENCRYPTED":               8,
 		"ERROR_REASON_ESCROW_NOT_ADOPTED":            9,
+		"ERROR_REASON_ESCROW_NOT_CURRENT":            10,
 	}
 )
 
@@ -198,7 +207,7 @@ const file_vaultsync_v1_errors_proto_rawDesc = "" +
 	"\vErrorDetail\x121\n" +
 	"\x06reason\x18\x01 \x01(\x0e2\x19.vaultsync.v1.ErrorReasonR\x06reason\x129\n" +
 	"\n" +
-	"retry_time\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\tretryTime*\xfa\x02\n" +
+	"retry_time\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\tretryTime*\x9f\x03\n" +
 	"\vErrorReason\x12\x1c\n" +
 	"\x18ERROR_REASON_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19ERROR_REASON_DEVICE_LIMIT\x10\x01\x12-\n" +
@@ -209,7 +218,9 @@ const file_vaultsync_v1_errors_proto_rawDesc = "" +
 	"\x1eERROR_REASON_EPOCH_NOT_CURRENT\x10\x06\x12\x1e\n" +
 	"\x1aERROR_REASON_VAULT_DELETED\x10\a\x12 \n" +
 	"\x1cERROR_REASON_VAULT_ENCRYPTED\x10\b\x12#\n" +
-	"\x1fERROR_REASON_ESCROW_NOT_ADOPTED\x10\tB@Z>github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyncv1b\x06proto3"
+	"\x1fERROR_REASON_ESCROW_NOT_ADOPTED\x10\t\x12#\n" +
+	"\x1fERROR_REASON_ESCROW_NOT_CURRENT\x10\n" +
+	"B@Z>github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyncv1b\x06proto3"
 
 var (
 	file_vaultsync_v1_errors_proto_rawDescOnce sync.Once

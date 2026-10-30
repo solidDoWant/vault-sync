@@ -963,12 +963,20 @@ type RotateEpochRequest struct {
 	// exactly those the log names there and match next_epoch's slots.
 	Record *EpochRecord `protobuf:"bytes,3,opt,name=record,proto3" json:"record,omitempty"`
 	// The owner's signed escrow on/off entry (type 8), to turn the vault's
-	// escrow on or off with this rotation. It is appended to the membership
-	// log in the same transaction as the epoch, and the record's log
-	// position must be this entry.
-	EscrowEntry   *LogEntry `protobuf:"bytes,4,opt,name=escrow_entry,json=escrowEntry,proto3" json:"escrow_entry,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// escrow on or off with this rotation, or escrow reset entry (type 10),
+	// to move an escrowed vault to the escrow chain's head. It is appended to
+	// the membership log in the same transaction as the epoch, and the
+	// record's log position must be this entry. An escrow "on" entry and an
+	// escrow reset entry must name the chain's head, or the call fails with
+	// ERROR_REASON_ESCROW_NOT_CURRENT.
+	EscrowEntry *LogEntry `protobuf:"bytes,4,opt,name=escrow_entry,json=escrowEntry,proto3" json:"escrow_entry,omitempty"`
+	// An escrow reset entry (type 10) of a vault with escrow off, appended
+	// directly before escrow_entry, which must then be an escrow "on" entry
+	// naming the same bundle. Both are appended with the epoch in one
+	// transaction.
+	EscrowResetEntry *LogEntry `protobuf:"bytes,5,opt,name=escrow_reset_entry,json=escrowResetEntry,proto3" json:"escrow_reset_entry,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *RotateEpochRequest) Reset() {
@@ -1025,6 +1033,13 @@ func (x *RotateEpochRequest) GetRecord() *EpochRecord {
 func (x *RotateEpochRequest) GetEscrowEntry() *LogEntry {
 	if x != nil {
 		return x.EscrowEntry
+	}
+	return nil
+}
+
+func (x *RotateEpochRequest) GetEscrowResetEntry() *LogEntry {
+	if x != nil {
+		return x.EscrowResetEntry
 	}
 	return nil
 }
@@ -2026,13 +2041,14 @@ const file_vaultsync_v1_vault_key_proto_rawDesc = "" +
 	"page_token\x18\x03 \x01(\tR\tpageToken\"\x82\x01\n" +
 	"\x18ListMissingSlotsResponse\x12>\n" +
 	"\rmissing_slots\x18\x01 \x03(\v2\x19.vaultsync.v1.MissingSlotR\fmissingSlots\x12&\n" +
-	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\xd5\x01\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\x9b\x02\n" +
 	"\x12RotateEpochRequest\x12\x19\n" +
 	"\bvault_id\x18\x01 \x01(\tR\avaultId\x126\n" +
 	"\n" +
 	"next_epoch\x18\x02 \x01(\v2\x17.vaultsync.v1.NextEpochR\tnextEpoch\x121\n" +
 	"\x06record\x18\x03 \x01(\v2\x19.vaultsync.v1.EpochRecordR\x06record\x129\n" +
-	"\fescrow_entry\x18\x04 \x01(\v2\x16.vaultsync.v1.LogEntryR\vescrowEntry\"C\n" +
+	"\fescrow_entry\x18\x04 \x01(\v2\x16.vaultsync.v1.LogEntryR\vescrowEntry\x12D\n" +
+	"\x12escrow_reset_entry\x18\x05 \x01(\v2\x16.vaultsync.v1.LogEntryR\x10escrowResetEntry\"C\n" +
 	"\x13RotateEpochResponse\x12,\n" +
 	"\x05epoch\x18\x01 \x01(\v2\x16.vaultsync.v1.KeyEpochR\x05epoch\"\\\n" +
 	"\x12AddKeySlotsRequest\x12\x19\n" +
@@ -2174,42 +2190,43 @@ var file_vaultsync_v1_vault_key_proto_depIdxs = []int32{
 	5,  // 10: vaultsync.v1.RotateEpochRequest.next_epoch:type_name -> vaultsync.v1.NextEpoch
 	4,  // 11: vaultsync.v1.RotateEpochRequest.record:type_name -> vaultsync.v1.EpochRecord
 	30, // 12: vaultsync.v1.RotateEpochRequest.escrow_entry:type_name -> vaultsync.v1.LogEntry
-	2,  // 13: vaultsync.v1.RotateEpochResponse.epoch:type_name -> vaultsync.v1.KeyEpoch
-	1,  // 14: vaultsync.v1.AddKeySlotsRequest.slots:type_name -> vaultsync.v1.KeySlot
-	30, // 15: vaultsync.v1.ListLogEntriesResponse.entries:type_name -> vaultsync.v1.LogEntry
-	31, // 16: vaultsync.v1.ListStaleRevisionsResponse.revisions:type_name -> vaultsync.v1.Revision
-	32, // 17: vaultsync.v1.ReplaceRevisionCiphertextRequest.content_ref:type_name -> vaultsync.v1.ContentRef
-	30, // 18: vaultsync.v1.ConvertVaultRequest.genesis:type_name -> vaultsync.v1.LogEntry
-	30, // 19: vaultsync.v1.ConvertVaultRequest.members_entry:type_name -> vaultsync.v1.LogEntry
-	5,  // 20: vaultsync.v1.ConvertVaultRequest.next_epoch:type_name -> vaultsync.v1.NextEpoch
-	4,  // 21: vaultsync.v1.ConvertVaultRequest.record:type_name -> vaultsync.v1.EpochRecord
-	25, // 22: vaultsync.v1.ConvertVaultRequest.path_keys:type_name -> vaultsync.v1.DocumentPathKey
-	2,  // 23: vaultsync.v1.ConvertVaultResponse.epoch:type_name -> vaultsync.v1.KeyEpoch
-	7,  // 24: vaultsync.v1.VaultKeyService.ListKeySlots:input_type -> vaultsync.v1.ListKeySlotsRequest
-	9,  // 25: vaultsync.v1.VaultKeyService.ListEpochs:input_type -> vaultsync.v1.ListEpochsRequest
-	11, // 26: vaultsync.v1.VaultKeyService.ListMissingSlots:input_type -> vaultsync.v1.ListMissingSlotsRequest
-	13, // 27: vaultsync.v1.VaultKeyService.RotateEpoch:input_type -> vaultsync.v1.RotateEpochRequest
-	15, // 28: vaultsync.v1.VaultKeyService.AddKeySlots:input_type -> vaultsync.v1.AddKeySlotsRequest
-	17, // 29: vaultsync.v1.VaultKeyService.ListLogEntries:input_type -> vaultsync.v1.ListLogEntriesRequest
-	19, // 30: vaultsync.v1.VaultKeyService.ListStaleRevisions:input_type -> vaultsync.v1.ListStaleRevisionsRequest
-	21, // 31: vaultsync.v1.VaultKeyService.ReplaceRevisionCiphertext:input_type -> vaultsync.v1.ReplaceRevisionCiphertextRequest
-	23, // 32: vaultsync.v1.VaultKeyService.RetireEpoch:input_type -> vaultsync.v1.RetireEpochRequest
-	26, // 33: vaultsync.v1.VaultKeyService.ConvertVault:input_type -> vaultsync.v1.ConvertVaultRequest
-	8,  // 34: vaultsync.v1.VaultKeyService.ListKeySlots:output_type -> vaultsync.v1.ListKeySlotsResponse
-	10, // 35: vaultsync.v1.VaultKeyService.ListEpochs:output_type -> vaultsync.v1.ListEpochsResponse
-	12, // 36: vaultsync.v1.VaultKeyService.ListMissingSlots:output_type -> vaultsync.v1.ListMissingSlotsResponse
-	14, // 37: vaultsync.v1.VaultKeyService.RotateEpoch:output_type -> vaultsync.v1.RotateEpochResponse
-	16, // 38: vaultsync.v1.VaultKeyService.AddKeySlots:output_type -> vaultsync.v1.AddKeySlotsResponse
-	18, // 39: vaultsync.v1.VaultKeyService.ListLogEntries:output_type -> vaultsync.v1.ListLogEntriesResponse
-	20, // 40: vaultsync.v1.VaultKeyService.ListStaleRevisions:output_type -> vaultsync.v1.ListStaleRevisionsResponse
-	22, // 41: vaultsync.v1.VaultKeyService.ReplaceRevisionCiphertext:output_type -> vaultsync.v1.ReplaceRevisionCiphertextResponse
-	24, // 42: vaultsync.v1.VaultKeyService.RetireEpoch:output_type -> vaultsync.v1.RetireEpochResponse
-	27, // 43: vaultsync.v1.VaultKeyService.ConvertVault:output_type -> vaultsync.v1.ConvertVaultResponse
-	34, // [34:44] is the sub-list for method output_type
-	24, // [24:34] is the sub-list for method input_type
-	24, // [24:24] is the sub-list for extension type_name
-	24, // [24:24] is the sub-list for extension extendee
-	0,  // [0:24] is the sub-list for field type_name
+	30, // 13: vaultsync.v1.RotateEpochRequest.escrow_reset_entry:type_name -> vaultsync.v1.LogEntry
+	2,  // 14: vaultsync.v1.RotateEpochResponse.epoch:type_name -> vaultsync.v1.KeyEpoch
+	1,  // 15: vaultsync.v1.AddKeySlotsRequest.slots:type_name -> vaultsync.v1.KeySlot
+	30, // 16: vaultsync.v1.ListLogEntriesResponse.entries:type_name -> vaultsync.v1.LogEntry
+	31, // 17: vaultsync.v1.ListStaleRevisionsResponse.revisions:type_name -> vaultsync.v1.Revision
+	32, // 18: vaultsync.v1.ReplaceRevisionCiphertextRequest.content_ref:type_name -> vaultsync.v1.ContentRef
+	30, // 19: vaultsync.v1.ConvertVaultRequest.genesis:type_name -> vaultsync.v1.LogEntry
+	30, // 20: vaultsync.v1.ConvertVaultRequest.members_entry:type_name -> vaultsync.v1.LogEntry
+	5,  // 21: vaultsync.v1.ConvertVaultRequest.next_epoch:type_name -> vaultsync.v1.NextEpoch
+	4,  // 22: vaultsync.v1.ConvertVaultRequest.record:type_name -> vaultsync.v1.EpochRecord
+	25, // 23: vaultsync.v1.ConvertVaultRequest.path_keys:type_name -> vaultsync.v1.DocumentPathKey
+	2,  // 24: vaultsync.v1.ConvertVaultResponse.epoch:type_name -> vaultsync.v1.KeyEpoch
+	7,  // 25: vaultsync.v1.VaultKeyService.ListKeySlots:input_type -> vaultsync.v1.ListKeySlotsRequest
+	9,  // 26: vaultsync.v1.VaultKeyService.ListEpochs:input_type -> vaultsync.v1.ListEpochsRequest
+	11, // 27: vaultsync.v1.VaultKeyService.ListMissingSlots:input_type -> vaultsync.v1.ListMissingSlotsRequest
+	13, // 28: vaultsync.v1.VaultKeyService.RotateEpoch:input_type -> vaultsync.v1.RotateEpochRequest
+	15, // 29: vaultsync.v1.VaultKeyService.AddKeySlots:input_type -> vaultsync.v1.AddKeySlotsRequest
+	17, // 30: vaultsync.v1.VaultKeyService.ListLogEntries:input_type -> vaultsync.v1.ListLogEntriesRequest
+	19, // 31: vaultsync.v1.VaultKeyService.ListStaleRevisions:input_type -> vaultsync.v1.ListStaleRevisionsRequest
+	21, // 32: vaultsync.v1.VaultKeyService.ReplaceRevisionCiphertext:input_type -> vaultsync.v1.ReplaceRevisionCiphertextRequest
+	23, // 33: vaultsync.v1.VaultKeyService.RetireEpoch:input_type -> vaultsync.v1.RetireEpochRequest
+	26, // 34: vaultsync.v1.VaultKeyService.ConvertVault:input_type -> vaultsync.v1.ConvertVaultRequest
+	8,  // 35: vaultsync.v1.VaultKeyService.ListKeySlots:output_type -> vaultsync.v1.ListKeySlotsResponse
+	10, // 36: vaultsync.v1.VaultKeyService.ListEpochs:output_type -> vaultsync.v1.ListEpochsResponse
+	12, // 37: vaultsync.v1.VaultKeyService.ListMissingSlots:output_type -> vaultsync.v1.ListMissingSlotsResponse
+	14, // 38: vaultsync.v1.VaultKeyService.RotateEpoch:output_type -> vaultsync.v1.RotateEpochResponse
+	16, // 39: vaultsync.v1.VaultKeyService.AddKeySlots:output_type -> vaultsync.v1.AddKeySlotsResponse
+	18, // 40: vaultsync.v1.VaultKeyService.ListLogEntries:output_type -> vaultsync.v1.ListLogEntriesResponse
+	20, // 41: vaultsync.v1.VaultKeyService.ListStaleRevisions:output_type -> vaultsync.v1.ListStaleRevisionsResponse
+	22, // 42: vaultsync.v1.VaultKeyService.ReplaceRevisionCiphertext:output_type -> vaultsync.v1.ReplaceRevisionCiphertextResponse
+	24, // 43: vaultsync.v1.VaultKeyService.RetireEpoch:output_type -> vaultsync.v1.RetireEpochResponse
+	27, // 44: vaultsync.v1.VaultKeyService.ConvertVault:output_type -> vaultsync.v1.ConvertVaultResponse
+	35, // [35:45] is the sub-list for method output_type
+	25, // [25:35] is the sub-list for method input_type
+	25, // [25:25] is the sub-list for extension type_name
+	25, // [25:25] is the sub-list for extension extendee
+	0,  // [0:25] is the sub-list for field type_name
 }
 
 func init() { file_vaultsync_v1_vault_key_proto_init() }

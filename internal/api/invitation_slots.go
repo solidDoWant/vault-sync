@@ -51,7 +51,7 @@ func parseInvitationSlots(field string, messages []*vaultsyncv1.KeySlot) ([]stor
 		return nil, invalidArgument("%s must hold at most %d slots", field, MaxInvitationSlots)
 	}
 
-	return parseKeySlots(field, messages, true, Escrow{})
+	return parseKeySlots(field, messages, true, &Escrow{})
 }
 
 // parseInvitationKeys returns the key slots and invite anchor of an E2EE
