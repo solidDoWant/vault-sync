@@ -33,6 +33,7 @@ type Store interface {
 	CountPendingInvitations(ctx context.Context) (int64, error)
 	EstimateRows(ctx context.Context) (store.RowEstimates, error)
 	SchemaVersion(ctx context.Context) (int64, error)
+	LastRuns(ctx context.Context) (store.LastRuns, error)
 }
 
 // encryptions and sharing are the only label values of
@@ -54,6 +55,8 @@ type Metrics struct {
 	documents          prometheus.Gauge
 	revisions          prometheus.Gauge
 	schemaVersion      prometheus.Gauge
+	lastRetention      prometheus.Gauge
+	lastExport         prometheus.Gauge
 	lastSuccess        prometheus.Gauge
 }
 
@@ -79,6 +82,10 @@ func NewMetrics() *Metrics {
 		revisions: gauge("vault_sync_service_revisions_approximate",
 			"Approximate stored revisions, from PostgreSQL planner statistics (pg_class.reltuples), which autovacuum and ANALYZE update; 0 until the table is first analyzed."),
 		schemaVersion: gauge("vault_sync_service_schema_version", "Highest database migration version applied."),
+		lastRetention: gauge("vault_sync_service_retention_last_success_timestamp_seconds",
+			"Unix time at which a retention run last finished without errors, on any replica; 0 before the first."),
+		lastExport: gauge("vault_sync_service_export_last_success_timestamp_seconds",
+			"Unix time at which an export last finished with status ok; 0 before the first."),
 		lastSuccess: gauge("vault_sync_service_metrics_last_refresh_success_timestamp_seconds",
 			"Unix time of the last refresh in which every service-wide query succeeded; 0 before the first. A failed query keeps its metrics' previous values."),
 	}
@@ -99,7 +106,8 @@ func (metrics *Metrics) Collectors() []prometheus.Collector {
 	return []prometheus.Collector{
 		metrics.devices, metrics.usersWithDevices, metrics.activeDevicesDay, metrics.activeDevicesMonth,
 		metrics.vaults, metrics.memberships, metrics.pendingInvitations,
-		metrics.documents, metrics.revisions, metrics.schemaVersion, metrics.lastSuccess,
+		metrics.documents, metrics.revisions, metrics.schemaVersion,
+		metrics.lastRetention, metrics.lastExport, metrics.lastSuccess,
 	}
 }
 
@@ -217,6 +225,15 @@ func (refresher *Refresher) Refresh(ctx context.Context) bool {
 
 			return err
 		}},
+		{"last_runs", func(ctx context.Context) error {
+			runs, err := refresher.Store.LastRuns(ctx)
+			if err == nil {
+				metrics.lastRetention.Set(unixSeconds(runs.Retention))
+				metrics.lastExport.Set(unixSeconds(runs.Export))
+			}
+
+			return err
+		}},
 	}
 
 	timeout := refresher.QueryTimeout
@@ -251,8 +268,17 @@ func (refresher *Refresher) Refresh(ctx context.Context) bool {
 			now = refresher.Now
 		}
 
-		metrics.lastSuccess.Set(float64(now().UnixNano()) / float64(time.Second))
+		metrics.lastSuccess.Set(unixSeconds(now()))
 	}
 
 	return succeeded
+}
+
+// unixSeconds returns at as Unix seconds, or 0 for the zero time.
+func unixSeconds(at time.Time) float64 {
+	if at.IsZero() {
+		return 0
+	}
+
+	return float64(at.UnixNano()) / float64(time.Second)
 }

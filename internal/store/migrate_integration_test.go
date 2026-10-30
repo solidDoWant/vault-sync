@@ -65,11 +65,13 @@ func TestMigrateCreatesSchemaOnEmptyDatabase(t *testing.T) {
 	// sessions, pending blob deletions, the retention scan watermark, purge
 	// markers, per-vault retention overrides, pending vault invitations,
 	// users' wrapped keys and anchor lists, vault key epochs, the membership
-	// log, the escrow chain and the migration ledger.
+	// log, the escrow chain, the last retention and export runs and the
+	// migration ledger.
 	assert.ElementsMatch(t, []string{
 		"users", "devices", "vaults", "vault_members", "documents", "revisions", "blobs",
 		"blob_uploads", "blob_upload_chunks", "blob_deletions", "retention_scans", "purged_revisions", "vault_retention",
 		"vault_invitations", "user_keys", "vault_key_epochs", "key_slots", "vault_log_entries", "escrow_chain", "anchor_lists",
+		"maintenance_runs", "export_status",
 		"schema_migrations",
 	}, tables)
 }

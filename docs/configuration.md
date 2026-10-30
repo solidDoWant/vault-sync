@@ -214,6 +214,8 @@ These describe the whole deployment rather than one replica, and are served only
 | `vault_sync_service_live_documents_approximate` | gauge | | Approximate documents not deleted, read from PostgreSQL's planner statistics (`pg_class.reltuples`) instead of counting rows; autovacuum and `ANALYZE` update it, and it is 0 until the table is first analyzed. Deleted vaults' documents count until the vault is purged. |
 | `vault_sync_service_revisions_approximate` | gauge | | Approximate stored revisions, from the planner statistics like the live documents. |
 | `vault_sync_service_schema_version` | gauge | | Highest database migration version applied. During a rolling upgrade it shows when the schema is ahead of the replicas. |
+| `vault_sync_service_retention_last_success_timestamp_seconds` | gauge | | Unix time at which a retention run last finished without errors, on any replica; 0 before the first. Each replica runs the job every hour, so alert when it falls well behind. |
+| `vault_sync_service_export_last_success_timestamp_seconds` | gauge | | Unix time at which an export (`vault-sync-server export`, [export.md](export.md)) last finished with status `ok`; 0 before the first. A `partial` or `failed` export does not advance it. |
 | `vault_sync_service_metrics_last_refresh_success_timestamp_seconds` | gauge | | Unix time of the last refresh on this replica in which every service-wide query succeeded; 0 before the first. |
 
 ## Startup and shutdown

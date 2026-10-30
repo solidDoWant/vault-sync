@@ -430,3 +430,40 @@ func (fixture *fixture) awaitBlockedBy(t *testing.T, pid int32, check func()) {
 		backoff = min(2*backoff, 50*time.Millisecond)
 	}
 }
+
+// Only a run without errors is recorded as the last successful retention
+// run, and each such run advances it.
+func TestOnlyASuccessfulRetentionRunIsRecorded(t *testing.T) {
+	fixture := newFixture(t)
+	queries := store.New(fixture.pool)
+	job := fixture.job()
+
+	// Pruning purge markers fails while their table is missing; the rest
+	// of the run, and recording it, would work.
+	_, err := fixture.pool.Exec(t.Context(), `ALTER TABLE purged_revisions RENAME TO purged_revisions_hidden`)
+	require.NoError(t, err)
+
+	_, err = job.RunOnce(t.Context())
+	require.Error(t, err)
+
+	_, err = fixture.pool.Exec(t.Context(), `ALTER TABLE purged_revisions_hidden RENAME TO purged_revisions`)
+	require.NoError(t, err)
+
+	runs, err := queries.LastRuns(t.Context())
+	require.NoError(t, err)
+	assert.True(t, runs.Retention.IsZero(), "a failed run is not recorded")
+
+	_, err = job.RunOnce(t.Context())
+	require.NoError(t, err)
+
+	first, err := queries.LastRuns(t.Context())
+	require.NoError(t, err)
+	assert.False(t, first.Retention.IsZero(), "a successful run is recorded")
+
+	_, err = job.RunOnce(t.Context())
+	require.NoError(t, err)
+
+	second, err := queries.LastRuns(t.Context())
+	require.NoError(t, err)
+	assert.True(t, second.Retention.After(first.Retention), "the next run advances it")
+}
