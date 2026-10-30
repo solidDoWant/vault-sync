@@ -1,0 +1,2055 @@
+{
+  "uid": "vault-sync-overview",
+  "title": "vault-sync / Overview",
+  "description": "Service-wide view of a vault-sync deployment: users, devices, vaults, storage, backlogs and freshness.",
+  "tags": [
+    "vault-sync"
+  ],
+  "editable": true,
+  "graphTooltip": 1,
+  "schemaVersion": 39,
+  "version": 1,
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "refresh": "1m",
+  "timezone": "",
+  "links": [
+    {
+      "title": "vault-sync",
+      "type": "dashboards",
+      "tags": [
+        "vault-sync"
+      ],
+      "asDropdown": true,
+      "includeVars": true,
+      "keepTime": true
+    }
+  ],
+  "annotations": {
+    "list": []
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "label": "Data source",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0,
+        "refresh": 1,
+        "regex": "",
+        "options": []
+      },
+      {
+        "name": "namespace",
+        "label": "Namespace",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "query": {
+          "query": "label_values(vault_sync_service_devices, namespace)",
+          "refId": "namespace"
+        },
+        "definition": "label_values(vault_sync_service_devices, namespace)",
+        "refresh": 2,
+        "sort": 1,
+        "hide": 0,
+        "includeAll": false,
+        "multi": false,
+        "current": {},
+        "options": [],
+        "regex": ""
+      },
+      {
+        "name": "job",
+        "label": "Job",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "query": {
+          "query": "label_values(vault_sync_service_devices{namespace=\"$namespace\"}, job)",
+          "refId": "job"
+        },
+        "definition": "label_values(vault_sync_service_devices{namespace=\"$namespace\"}, job)",
+        "refresh": 2,
+        "sort": 1,
+        "hide": 0,
+        "includeAll": false,
+        "multi": false,
+        "current": {},
+        "options": [],
+        "regex": ""
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Alert states",
+      "id": 1,
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Service metrics refresh age",
+      "description": "Seconds since a replica last refreshed every service-wide metric. Growing ages mean the service-wide queries fail.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "time() - max(vault_sync_service_metrics_last_refresh_success_timestamp_seconds{namespace=\"$namespace\", job=\"$job\"})",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 300
+              },
+              {
+                "color": "red",
+                "value": 900
+              }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      },
+      "id": 2,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 1
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Realtime listeners down",
+      "description": "Replicas whose commit listener (PostgreSQL LISTEN) is reconnecting.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "count(vault_sync_realtime_listener_up{namespace=\"$namespace\", job=\"$job\"} == 0) or vector(0)",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      },
+      "id": 3,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 1
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Retention failures (1h)",
+      "description": "Retention runs that failed in part during the last hour, on any replica.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(increase(vault_sync_retention_run_failures_total{namespace=\"$namespace\", job=\"$job\"}[1h]))",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      },
+      "id": 4,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 1
+      }
+    },
+    {
+      "type": "stat",
+      "title": "OIDC key refresh failures (1h)",
+      "description": "Failed fetches of the issuer's discovery document or key set during the last hour.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(increase(vault_sync_oidc_jwks_refresh_failures_total{namespace=\"$namespace\", job=\"$job\"}[1h]))",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      },
+      "id": 5,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
+        "y": 1
+      }
+    },
+    {
+      "type": "stat",
+      "title": "RPC error ratio (5m)",
+      "description": "Share of RPCs not answered with ok, across all replicas.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(vault_sync_rpc_requests_total{namespace=\"$namespace\", job=\"$job\", code!=\"ok\"}[5m])) / sum(rate(vault_sync_rpc_requests_total{namespace=\"$namespace\", job=\"$job\"}[5m]))",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.05
+              },
+              {
+                "color": "red",
+                "value": 0.2
+              }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      },
+      "id": 6,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 1
+      }
+    },
+    {
+      "type": "stat",
+      "title": "S3 errors (5m)",
+      "description": "S3 operations that failed, across all replicas.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(vault_sync_s3_requests_total{namespace=\"$namespace\", job=\"$job\", outcome=\"error\"}[5m]))",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.01
+              }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      },
+      "id": 7,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 1
+      }
+    },
+    {
+      "type": "row",
+      "title": "Users, devices and vaults",
+      "id": 8,
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 5
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Users with devices",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max (vault_sync_service_users_with_devices{namespace=\"$namespace\", job=\"$job\"})",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      },
+      "id": 9,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 6
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Devices",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max (vault_sync_service_devices{namespace=\"$namespace\", job=\"$job\"})",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      },
+      "id": 10,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 6
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Active devices (24h)",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max (vault_sync_service_active_devices_24h{namespace=\"$namespace\", job=\"$job\"})",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      },
+      "id": 11,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 6
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Active devices (30d)",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max (vault_sync_service_active_devices_30d{namespace=\"$namespace\", job=\"$job\"})",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      },
+      "id": 12,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
+        "y": 6
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Vault memberships",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max (vault_sync_service_vault_memberships{namespace=\"$namespace\", job=\"$job\"})",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      },
+      "id": 13,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 6
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Pending invitations",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max (vault_sync_service_pending_invitations{namespace=\"$namespace\", job=\"$job\"})",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      },
+      "id": 14,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 6
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Vaults by encryption and sharing",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (encryption, shared) (vault_sync_service_vaults{namespace=\"$namespace\", job=\"$job\"})",
+          "legendFormat": "encryption={{encryption}} shared={{shared}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 15,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 10
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Devices over time",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max (vault_sync_service_devices{namespace=\"$namespace\", job=\"$job\"})",
+          "legendFormat": "devices",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max (vault_sync_service_active_devices_24h{namespace=\"$namespace\", job=\"$job\"})",
+          "legendFormat": "active 24h",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max (vault_sync_service_active_devices_30d{namespace=\"$namespace\", job=\"$job\"})",
+          "legendFormat": "active 30d",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 16,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 10
+      }
+    },
+    {
+      "type": "row",
+      "title": "Storage",
+      "id": 17,
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 18
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Stored blob bytes",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max (vault_sync_service_blob_bytes{namespace=\"$namespace\", job=\"$job\"})",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      },
+      "id": 18,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 19
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Stored blobs",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max (vault_sync_service_blobs{namespace=\"$namespace\", job=\"$job\"})",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      },
+      "id": 19,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 19
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Live documents (approx.)",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max (vault_sync_service_live_documents_approximate{namespace=\"$namespace\", job=\"$job\"})",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      },
+      "id": 20,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 19
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Revisions (approx.)",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max (vault_sync_service_revisions_approximate{namespace=\"$namespace\", job=\"$job\"})",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      },
+      "id": 21,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
+        "y": 19
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Deleted vaults awaiting purge",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max (vault_sync_service_deleted_vaults{namespace=\"$namespace\", job=\"$job\"})",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      },
+      "id": 22,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 19
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Schema version",
+      "description": "Highest database migration applied.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max (vault_sync_service_schema_version{namespace=\"$namespace\", job=\"$job\"})",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      },
+      "id": 23,
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 19
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Stored blob bytes",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max (vault_sync_service_blob_bytes{namespace=\"$namespace\", job=\"$job\"})",
+          "legendFormat": "blob bytes",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 24,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 23
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Stored bytes growth (per day)",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(delta(vault_sync_service_blob_bytes{namespace=\"$namespace\", job=\"$job\"}[1d]))",
+          "legendFormat": "growth over the last 24h",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 25,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 23
+      }
+    },
+    {
+      "type": "row",
+      "title": "Backlogs",
+      "id": 26,
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 31
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Upload sessions",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max (vault_sync_service_upload_sessions{namespace=\"$namespace\", job=\"$job\"})",
+          "legendFormat": "open sessions",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 27,
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 32
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Upload reserved bytes",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max (vault_sync_service_upload_session_reserved_bytes{namespace=\"$namespace\", job=\"$job\"})",
+          "legendFormat": "reserved",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 28,
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 32
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Oldest upload session",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max (vault_sync_service_upload_session_oldest_age_seconds{namespace=\"$namespace\", job=\"$job\"})",
+          "legendFormat": "age",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 29,
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 32
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "GC backlog (blobs)",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max (vault_sync_service_gc_pending_blobs{namespace=\"$namespace\", job=\"$job\"})",
+          "legendFormat": "pending blobs",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 30,
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 40
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "GC backlog (bytes)",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max (vault_sync_service_gc_pending_blob_bytes{namespace=\"$namespace\", job=\"$job\"})",
+          "legendFormat": "pending bytes",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 31,
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 40
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Re-key backlog",
+      "description": "E2EE vaults with a re-key in progress and the revisions not yet re-encrypted.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max (vault_sync_service_rekey_vaults{namespace=\"$namespace\", job=\"$job\"})",
+          "legendFormat": "vaults re-keying",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max (vault_sync_service_stale_epoch_revisions{namespace=\"$namespace\", job=\"$job\"})",
+          "legendFormat": "stale-epoch revisions",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 32,
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 40
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Escrow re-wrap backlog",
+      "description": "Escrow key slots that still name a retiring escrow key id.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max (vault_sync_service_escrow_rewrap_slots{namespace=\"$namespace\", job=\"$job\"})",
+          "legendFormat": "slots on retiring keys",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 33,
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 48
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Encrypted vaults by escrow",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (escrow) (vault_sync_service_encrypted_vaults_by_escrow{namespace=\"$namespace\", job=\"$job\"})",
+          "legendFormat": "escrow={{escrow}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 34,
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 48
+      }
+    },
+    {
+      "type": "row",
+      "title": "Freshness",
+      "id": 35,
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 56
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Last successful retention run",
+      "description": "Age of the last retention run that finished without errors, on any replica. Each replica runs it hourly.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "time() - max(vault_sync_service_retention_last_success_timestamp_seconds{namespace=\"$namespace\", job=\"$job\"} > 0)",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 7200
+              },
+              {
+                "color": "red",
+                "value": 86400
+              }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      },
+      "id": 36,
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 0,
+        "y": 57
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Last successful export",
+      "description": "Age of the last export that finished with status ok.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "time() - max(vault_sync_service_export_last_success_timestamp_seconds{namespace=\"$namespace\", job=\"$job\"} > 0)",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 129600
+              },
+              {
+                "color": "red",
+                "value": 259200
+              }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      },
+      "id": 37,
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 8,
+        "y": 57
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Last service metrics refresh",
+      "description": "Age of the newest complete service-wide refresh on any replica.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "time() - max(vault_sync_service_metrics_last_refresh_success_timestamp_seconds{namespace=\"$namespace\", job=\"$job\"} > 0)",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 300
+              },
+              {
+                "color": "red",
+                "value": 900
+              }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto",
+        "justifyMode": "auto",
+        "orientation": "auto"
+      },
+      "id": 38,
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 16,
+        "y": 57
+      }
+    }
+  ]
+}

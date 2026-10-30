@@ -21,6 +21,10 @@
 #     security context render as configured, and the
 #     server mounts nothing but Secrets (no per-replica state);
 #   - missing required values fail with a message naming them;
+#   - nothing Grafana is rendered by default; with the operator option one
+#     GrafanaDashboard per dashboard file with the given instanceSelector,
+#     with ConfigMaps the sidecar label, and the dashboards themselves pass
+#     scripts/dashboard_test.py (parse, unique UIDs, documented metrics only);
 #   - every VAULT_SYNC_* variable in docs/configuration.md can be set through
 #     the chart, and every config value is documented in docs/deployment.md.
 #
@@ -387,6 +391,64 @@ if render --set config.export.enabled=false --set-json 'config.export.output.per
 		"([$cronjob] | length) == 0 and ([\$docs[] | .. | strings | select(contains(\"$escrow_secret\"))] | length) == 0"
 else
 	fail "a disabled export renders without an export volume: $(cat "$work/err")"
+fi
+
+# --- Grafana dashboards -----------------------------------------------------
+
+if python3 -I "$repo_root/scripts/dashboard_test.py"; then
+	pass "the dashboards pass scripts/dashboard_test.py"
+else
+	fail "the dashboards pass scripts/dashboard_test.py"
+fi
+
+dashboard_files="$(find "$chart/dashboards" -name '*.json' | wc -l | tr -d ' ')"
+dashboard_uids="$(jq -s -c '[.[].uid] | sort' "$chart"/dashboards/*.json)"
+grafana_dashboards='[$docs[] | select(.kind == "GrafanaDashboard")]'
+dashboard_config_maps='[$docs[] | select(.kind == "ConfigMap" and (.metadata.name | contains("-dashboard-")))]'
+
+if render; then
+	check "renders no GrafanaDashboard or dashboard ConfigMap by default" \
+		"($grafana_dashboards | length) == 0 and ($dashboard_config_maps | length) == 0"
+else
+	fail "renders with the placeholder values: $(cat "$work/err")"
+fi
+
+if render --set config.grafana.dashboards.enabled=true --set-json 'config.grafana.dashboards.instanceSelector={"matchLabels":{"dashboards":"grafana"}}' \
+	--set config.grafana.dashboards.folder=vault-sync --set config.grafana.dashboards.resyncPeriod=10m \
+	--set config.grafana.dashboards.allowCrossNamespaceImport=true; then
+	check "renders one GrafanaDashboard per dashboard file" \
+		"($grafana_dashboards | length) == $dashboard_files and ($dashboard_config_maps | length) == 0"
+	check "each GrafanaDashboard has the given instanceSelector, folder, resyncPeriod and allowCrossNamespaceImport" \
+		"$grafana_dashboards | all(.apiVersion == \"grafana.integreatly.org/v1beta1\" and .spec.instanceSelector == {\"matchLabels\": {\"dashboards\": \"grafana\"}} and .spec.folder == \"vault-sync\" and .spec.resyncPeriod == \"10m\" and .spec.allowCrossNamespaceImport == true)"
+	check "the GrafanaDashboards embed the dashboard JSON with its UID" \
+		"[$grafana_dashboards[] | .spec.json | fromjson | .uid] | sort == $dashboard_uids"
+	check "the GrafanaDashboards are named after the release" \
+		"$grafana_dashboards | all(.metadata.name | startswith(\"$release-dashboard-\"))"
+else
+	fail "renders the GrafanaDashboards: $(cat "$work/err")"
+fi
+
+rejects "requires an instanceSelector for the GrafanaDashboards" "config.grafana.dashboards.instanceSelector is required" \
+	--set config.grafana.dashboards.enabled=true
+rejects "rejects more than one dashboard folder setting" "mutually exclusive" --set config.grafana.dashboards.enabled=true \
+	--set-json 'config.grafana.dashboards.instanceSelector={"matchLabels":{"dashboards":"grafana"}}' \
+	--set config.grafana.dashboards.folder=a --set config.grafana.dashboards.folderUID=b
+
+if render --set config.grafana.dashboards.configMaps.enabled=true; then
+	check "renders one sidecar ConfigMap per dashboard file, labelled grafana_dashboard: \"1\"" \
+		"($dashboard_config_maps | length) == $dashboard_files and ($grafana_dashboards | length) == 0 and ($dashboard_config_maps | all(.metadata.labels.grafana_dashboard == \"1\"))"
+	check "the sidecar ConfigMaps hold the dashboard JSON with its UID" \
+		"[$dashboard_config_maps[] | .data | to_entries[0].value | fromjson | .uid] | sort == $dashboard_uids"
+else
+	fail "renders the dashboard ConfigMaps: $(cat "$work/err")"
+fi
+
+if render --set config.grafana.dashboards.configMaps.enabled=true --set config.grafana.dashboards.configMaps.label=dashboards \
+	--set config.grafana.dashboards.configMaps.labelValue=vault-sync; then
+	check "the sidecar label is configurable" \
+		"($dashboard_config_maps | length) == $dashboard_files and ($dashboard_config_maps | all(.metadata.labels.dashboards == \"vault-sync\" and (.metadata.labels | has(\"grafana_dashboard\") | not)))"
+else
+	fail "renders the dashboard ConfigMaps with a custom label: $(cat "$work/err")"
 fi
 
 # --- required values --------------------------------------------------------

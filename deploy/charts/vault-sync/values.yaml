@@ -285,6 +285,46 @@ config:
     annotations: {}
     labels: {}
 
+  # grafana installs the vault-sync Grafana dashboards (Overview, Server,
+  # Dependencies; JSON in the chart's dashboards/ directory, UIDs
+  # vault-sync-overview, vault-sync-server and vault-sync-dependencies).
+  # Both ways are off by default and may be combined.
+  grafana:
+    dashboards:
+      # enabled renders one grafana-operator GrafanaDashboard
+      # (grafana.integreatly.org/v1beta1) per dashboard. Needs the operator's
+      # CRDs and instanceSelector.
+      enabled: false
+      # instanceSelector is the label selector of the Grafana resources to
+      # import into, for example {matchLabels: {dashboards: grafana}}.
+      # Required while enabled.
+      instanceSelector: {}
+      # At most one of folder (a folder title), folderRef (a GrafanaFolder
+      # in this namespace) and folderUID (an existing folder's UID).
+      folder: ""
+      folderRef: ""
+      folderUID: ""
+      # resyncPeriod: how often the operator re-applies the dashboards, for
+      # example 10m. null keeps the operator's default.
+      resyncPeriod: null
+      # allowCrossNamespaceImport lets Grafana instances in other namespaces
+      # import the dashboards. null keeps the operator's default (false).
+      allowCrossNamespaceImport: null
+      # labels are added to each GrafanaDashboard.
+      labels: {}
+      # configMaps renders each dashboard as a ConfigMap labelled for the
+      # Grafana chart's dashboard sidecar, for deployments without the
+      # operator.
+      configMaps:
+        enabled: false
+        # label and labelValue: the label the sidecar watches
+        # (sidecar.dashboards.label and labelValue in the Grafana chart).
+        label: grafana_dashboard
+        labelValue: "1"
+        # annotations of each ConfigMap, for example
+        # {grafana_folder: vault-sync} with the sidecar's folderAnnotation.
+        annotations: {}
+
 # resources follows the bjw-s common library schema
 # (https://github.com/bjw-s-labs/helm-charts/tree/main/charts/library/common)
 # and is deep-merged over what the chart computes; your values win.

@@ -592,6 +592,90 @@
               }
             }
           }
+        },
+        "grafana": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "dashboards": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "instanceSelector": {
+                  "type": "object",
+                  "description": "A Kubernetes label selector (matchLabels, matchExpressions).",
+                  "additionalProperties": false,
+                  "properties": {
+                    "matchLabels": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    },
+                    "matchExpressions": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    }
+                  }
+                },
+                "folder": {
+                  "type": "string"
+                },
+                "folderRef": {
+                  "type": "string"
+                },
+                "folderUID": {
+                  "type": "string"
+                },
+                "resyncPeriod": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"
+                },
+                "allowCrossNamespaceImport": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "labels": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                },
+                "configMaps": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "label": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "labelValue": {
+                      "type": "string"
+                    },
+                    "annotations": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
         }
       }
     },
