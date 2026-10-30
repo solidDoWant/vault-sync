@@ -2,7 +2,7 @@ import { Code, ConnectError } from "@connectrpc/connect";
 import { timestampDate } from "@bufbuild/protobuf/wkt";
 
 import type { Invitation, Member } from "../gen/vaultsync/v1/membership_pb";
-import { VaultRole, type Vault } from "../gen/vaultsync/v1/types_pb";
+import { VaultEncryption, VaultRole, type Vault } from "../gen/vaultsync/v1/types_pb";
 import type { ProtocolClient } from "../core/protocol/client";
 import { createEncryptedInvitation, leaveEncryptedVault, parseInviteLink, redeemEncryptedInvitation, revokeEncryptedInvitation, setEncryptedMemberRole, type EncryptedMembershipContext, type RedeemContext } from "../core/keys/encrypted-membership";
 import type { VaultKeyManager } from "../core/keys/vault-keys";
@@ -72,7 +72,7 @@ export interface InvitationRow {
  * invitations; for an editor or viewer only their role; `not-member` when the
  * server no longer lists the vault (the user was removed or left).
  */
-export type Sharing = { kind: "owner"; members: MemberRow[]; invitations: InvitationRow[] } | { kind: "member"; role: VaultRole } | { kind: "not-member" };
+export type Sharing = { kind: "owner"; members: MemberRow[]; invitations: InvitationRow[]; encrypted: boolean } | { kind: "member"; role: VaultRole } | { kind: "not-member" };
 
 /** Formats a time in the user's locale. */
 export type FormatDate = (date: Date) => string;
@@ -84,14 +84,15 @@ export async function roleIn(client: ProtocolClient, vaultId: string): Promise<V
 
 /** Reads the Sharing section of `vaultId`: management lists only for its owners. */
 export async function loadSharing(client: ProtocolClient, vaultId: string, formatDate: FormatDate): Promise<Sharing> {
-  const role = await roleIn(client, vaultId);
-  if (role === undefined) return { kind: "not-member" };
-  if (role !== VaultRole.OWNER) return { kind: "member", role };
+  const vault = (await listRemoteVaults(client)).find((listed) => listed.id === vaultId);
+  if (vault === undefined) return { kind: "not-member" };
+  if (vault.role !== VaultRole.OWNER) return { kind: "member", role: vault.role };
   const [members, invitations] = await Promise.all([client.membership.listMembers({ vaultId }), client.membership.listInvitations({ vaultId })]);
   return {
     kind: "owner",
     members: members.members.map((member) => memberRow(member, formatDate)),
     invitations: invitations.invitations.map((invitation) => invitationRow(invitation, formatDate)),
+    encrypted: vault.encryption === VaultEncryption.E2EE,
   };
 }
 
@@ -190,6 +191,12 @@ export async function setMemberRole(client: ProtocolClient, vaultId: string, use
 export async function removeMember(client: ProtocolClient, vaultId: string, userId: string, encrypted?: EncryptedSharing): Promise<void> {
   if (encrypted !== undefined) return encrypted.manager.removeMember(userId);
   await client.membership.removeMember({ vaultId, userId });
+}
+
+/** An owner's manual rotation of an encrypted vault's key: the next epoch, which every current member gets a key of, and other devices pick up at their next sync. */
+export async function rotateVaultKey(encrypted: EncryptedSharing | undefined): Promise<void> {
+  if (encrypted === undefined) throw new Error("only an end-to-end encrypted vault has a key to rotate");
+  await encrypted.manager.rotate();
 }
 
 export async function leaveVault(client: ProtocolClient, vaultId: string, encrypted?: EncryptedSharing): Promise<void> {

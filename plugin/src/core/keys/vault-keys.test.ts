@@ -286,7 +286,7 @@ describe("rotation on an owner device", () => {
 });
 
 describe("removing a member from an E2EE vault", () => {
-  it("sends the next epoch with the removal, without a slot for the removed member", async () => {
+  it("[P4-07] sends the next epoch with the removal, without a slot for the removed member", async () => {
     const { server, owner } = await sharedVault();
 
     await owner.manager.removeMember(mallory.id);
@@ -300,7 +300,7 @@ describe("removing a member from an E2EE vault", () => {
     expect(server.count("RotateEpoch")).toBe(1); // only epoch 1's
   });
 
-  it("removes the member under a fresh epoch even when another owner device's rotation wins the race", async () => {
+  it("[P4-07] removes the member under a fresh epoch even when another owner device's rotation wins the race", async () => {
     const { server, owner } = await sharedVault();
     await join(server, bob, VaultRole.OWNER);
     await owner.manager.sync(); // grants bob epoch 1
@@ -330,6 +330,67 @@ describe("removing a member from an E2EE vault", () => {
     ).rejects.toThrow(/only an owner/);
 
     expect(server.members.has(mallory.id)).toBe(true);
+  });
+});
+
+describe("an owner rotating the vault key by hand", () => {
+  it("[P4-08] creates the next epoch for every member, and another member's device picks up its key on its next sync", async () => {
+    const { server, owner } = await sharedVault();
+    const editor = device(server, carol, false);
+    await editor.manager.sync();
+
+    const rotated = await owner.manager.rotate();
+
+    expect(rotated).toMatchObject({ status: "ready", currentEpoch: 2, epochs: [1, 2], rotated: true });
+    expect(server.currentEpoch).toBe(2);
+    expect(recipients(server, 2)).toEqual([alice.id, carol.id, mallory.id].sort());
+    const key = owner.manager.epochKey(2);
+    expect(key).toBeDefined();
+    expect(key).not.toEqual(owner.manager.epochKey(1));
+    expect(commitmentOf(server, 2)).toEqual(keyCommitment(key ?? new Uint8Array(32), vaultId, 2));
+
+    expect(editor.manager.epochKey(2)).toBeUndefined();
+    const picked = await editor.manager.sync();
+    expect(picked).toMatchObject({ status: "ready", currentEpoch: 2, epochs: [1, 2] });
+    expect(editor.manager.epochKey(2)).toEqual(key);
+  });
+
+  it("[P4-07] after a removal and then a manual rotation, the removed member can open neither new epoch", async () => {
+    const { server, owner } = await sharedVault();
+
+    await owner.manager.removeMember(mallory.id);
+    await owner.manager.rotate();
+
+    expect(server.currentEpoch).toBe(3);
+    expect(await opensAnySlot(server, mallory, 2)).toBe(false);
+    expect(await opensAnySlot(server, mallory, 3)).toBe(false);
+    expect(await device(server, carol, false).manager.sync()).toMatchObject({ status: "ready", epochs: [1, 2, 3] });
+  });
+
+  it("[P4-08] given two owner devices rotating at once, leaves exactly one new epoch, and both devices hold its key", async () => {
+    const { server, owner } = await sharedVault();
+    await join(server, bob, VaultRole.OWNER);
+    await owner.manager.sync(); // grants bob epoch 1
+    const other = device(server, bob, true);
+    await other.manager.sync();
+    server.holdEpochChanges = 2;
+
+    const states = await Promise.all([owner.manager.rotate(), other.manager.rotate()]);
+
+    expect(server.count("RotateEpoch")).toBe(3); // epoch 1's and both rotations
+    expect(server.epochs.map((epoch) => epoch.epoch)).toEqual([1, 2]);
+    expect(states.map((state) => state.rotated).sort()).toEqual([false, true]);
+    for (const state of states) expect(state).toMatchObject({ status: "ready", currentEpoch: 2, epochs: [1, 2] });
+    expect(owner.manager.epochKey(2)).toEqual(other.manager.epochKey(2));
+    expect(await unwrap(server, carol, 2)).toEqual(owner.manager.epochKey(2));
+  });
+
+  it("is refused on a device that does not own the vault", async () => {
+    const { server } = await sharedVault();
+
+    await expect(device(server, carol, false).manager.rotate()).rejects.toThrow(/only an owner/);
+
+    expect(server.currentEpoch).toBe(1);
   });
 });
 

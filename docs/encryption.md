@@ -70,7 +70,7 @@ A vault's key changes over time. Each key is an **epoch**, numbered from 1.
 
 - **Removing a member** starts a new epoch at once, without the removed member. Everything committed afterwards is encrypted under a key they never get. What they could read before, they may already have copied, so the old epochs are not changed by the removal.
 - **Leaving a vault** does not start a new epoch by itself, because only an owner can sign one. The vault is marked as needing a rotation, and the new epoch is created when an owner's device next syncs. Until then, the member who left still holds the current key, and commits from the other members are still encrypted under it.
-- **An owner can rotate by hand** at any time.
+- **An owner can rotate by hand** at any time, with **Rotate key** in the vault's Sharing settings. The new epoch is wrapped for every current member and pending invitation, and for the escrow key if escrow is on. In a vault with escrow, the owner's device refuses to rotate when it does not have the deployment's escrow key it pinned.
 
 Other devices pick up a new epoch at their next sync. A device that tries to commit under an old epoch is told so, fetches the new key, encrypts again and retries, so its edit still lands. If two owner devices rotate at the same moment, exactly one new epoch is created and the other device adopts it. Devices keep every epoch key they have, so history stays readable.
 
