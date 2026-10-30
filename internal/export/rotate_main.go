@@ -192,6 +192,21 @@ func (writer *EscrowJobWriter) AppendEscrowRotation(ctx context.Context, stateme
 	return err
 }
 
+// ResetEscrowChain implements ResetWriter.
+func (writer *EscrowJobWriter) ResetEscrowChain(ctx context.Context, expectedHeadHash []byte, newBundle e2ee.EscrowBundle) error {
+	encoded, err := newBundle.Encode()
+	if err != nil {
+		return err
+	}
+
+	_, err = writer.client.ResetEscrowChain(ctx, connect.NewRequest(&vaultsyncv1.ResetEscrowChainRequest{
+		ExpectedHeadHash: expectedHeadHash,
+		NewBundle:        encoded,
+	}))
+
+	return err
+}
+
 // ReplaceEscrowSlot implements RotationWriter.
 func (writer *EscrowJobWriter) ReplaceEscrowSlot(ctx context.Context, replacement store.EscrowSlotReplacement) error {
 	_, err := writer.client.ReplaceEscrowSlot(ctx, connect.NewRequest(&vaultsyncv1.ReplaceEscrowSlotRequest{

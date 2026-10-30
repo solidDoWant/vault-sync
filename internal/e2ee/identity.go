@@ -495,10 +495,14 @@ func readEscrowBundle(encoded []byte) (EscrowBundle, []byte, error) {
 
 // EscrowRotation is a statement, signed by the old escrow signing key, that
 // the escrow key moves from the bundle hashed in OldBundleHash to NewBundle.
+// A reset point has Reset set and no signature: the chain continues from
+// NewBundle without the old signing key (docs/design/encryption.md, "The
+// escrow chain").
 type EscrowRotation struct {
 	OldBundleHash []byte
 	NewBundle     EscrowBundle
 	Signature     []byte
+	Reset         bool
 }
 
 func escrowRotationMessage(oldBundleHash []byte, newBundle EscrowBundle) ([]byte, error) {
@@ -531,11 +535,16 @@ func SignEscrowRotation(oldSignKey ed25519.PrivateKey, oldBundle, newBundle Escr
 // VerifyEscrowChain follows rotation statements from the pinned escrow
 // bundle and returns the bundle the chain ends at. Every statement must name
 // the hash of the bundle before it and be signed by that bundle's signing
-// key; otherwise it fails with ErrSignature.
+// key; otherwise it fails with ErrSignature. It never follows a reset
+// point.
 func VerifyEscrowChain(pinned EscrowBundle, rotations []EscrowRotation) (EscrowBundle, error) {
 	current := pinned
 
 	for _, rotation := range rotations {
+		if rotation.Reset {
+			return EscrowBundle{}, ErrSignature
+		}
+
 		encoded, err := current.Encode()
 		if err != nil {
 			return EscrowBundle{}, err
@@ -552,6 +561,58 @@ func VerifyEscrowChain(pinned EscrowBundle, rotations []EscrowRotation) (EscrowB
 		}
 
 		if !verifySignature(current.SignPub, message, rotation.Signature) {
+			return EscrowBundle{}, ErrSignature
+		}
+
+		current = rotation.NewBundle
+	}
+
+	return current, nil
+}
+
+// CheckEscrowChain checks a whole escrow chain from its root and returns its
+// head (docs/design/encryption.md, "The escrow chain"). Each statement names
+// the hash of the bundle before it, and is either a signed rotation (Reset
+// unset, signed by that bundle's signing key) or a reset point (Reset set,
+// empty signature). No bundle appears twice. Otherwise it fails with
+// ErrSignature.
+func CheckEscrowChain(root EscrowBundle, rotations []EscrowRotation) (EscrowBundle, error) {
+	current := root
+
+	rootEncoded, err := root.Encode()
+	if err != nil {
+		return EscrowBundle{}, err
+	}
+
+	seen := map[string]bool{string(rootEncoded): true}
+
+	for _, rotation := range rotations {
+		encoded, err := rotation.NewBundle.Encode()
+		if err != nil {
+			return EscrowBundle{}, ErrSignature
+		}
+
+		if seen[string(encoded)] {
+			return EscrowBundle{}, ErrSignature
+		}
+
+		seen[string(encoded)] = true
+
+		if !rotation.Reset {
+			if current, err = VerifyEscrowChain(current, []EscrowRotation{rotation}); err != nil {
+				return EscrowBundle{}, err
+			}
+
+			continue
+		}
+
+		currentEncoded, err := current.Encode()
+		if err != nil {
+			return EscrowBundle{}, err
+		}
+
+		hash := sha256.Sum256(currentEncoded)
+		if len(rotation.Signature) != 0 || !bytes.Equal(hash[:], rotation.OldBundleHash) {
 			return EscrowBundle{}, ErrSignature
 		}
 

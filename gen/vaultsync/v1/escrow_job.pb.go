@@ -224,6 +224,99 @@ func (*AppendEscrowRotationResponse) Descriptor() ([]byte, []int) {
 	return file_vaultsync_v1_escrow_job_proto_rawDescGZIP(), []int{3}
 }
 
+// ResetEscrowChainRequest names the chain head the reset point follows and
+// the bundle the chain continues from.
+type ResetEscrowChainRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// SHA-256 of the encoded head bundle the caller read (32 bytes).
+	ExpectedHeadHash []byte `protobuf:"bytes,1,opt,name=expected_head_hash,json=expectedHeadHash,proto3" json:"expected_head_hash,omitempty"`
+	// The encoded new bundle, as in docs/design/crypto.md.
+	NewBundle     []byte `protobuf:"bytes,2,opt,name=new_bundle,json=newBundle,proto3" json:"new_bundle,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ResetEscrowChainRequest) Reset() {
+	*x = ResetEscrowChainRequest{}
+	mi := &file_vaultsync_v1_escrow_job_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ResetEscrowChainRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ResetEscrowChainRequest) ProtoMessage() {}
+
+func (x *ResetEscrowChainRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_vaultsync_v1_escrow_job_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ResetEscrowChainRequest.ProtoReflect.Descriptor instead.
+func (*ResetEscrowChainRequest) Descriptor() ([]byte, []int) {
+	return file_vaultsync_v1_escrow_job_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *ResetEscrowChainRequest) GetExpectedHeadHash() []byte {
+	if x != nil {
+		return x.ExpectedHeadHash
+	}
+	return nil
+}
+
+func (x *ResetEscrowChainRequest) GetNewBundle() []byte {
+	if x != nil {
+		return x.NewBundle
+	}
+	return nil
+}
+
+// ResetEscrowChainResponse has no fields.
+type ResetEscrowChainResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ResetEscrowChainResponse) Reset() {
+	*x = ResetEscrowChainResponse{}
+	mi := &file_vaultsync_v1_escrow_job_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ResetEscrowChainResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ResetEscrowChainResponse) ProtoMessage() {}
+
+func (x *ResetEscrowChainResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_vaultsync_v1_escrow_job_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ResetEscrowChainResponse.ProtoReflect.Descriptor instead.
+func (*ResetEscrowChainResponse) Descriptor() ([]byte, []int) {
+	return file_vaultsync_v1_escrow_job_proto_rawDescGZIP(), []int{5}
+}
+
 var File_vaultsync_v1_escrow_job_proto protoreflect.FileDescriptor
 
 const file_vaultsync_v1_escrow_job_proto_rawDesc = "" +
@@ -239,10 +332,16 @@ const file_vaultsync_v1_escrow_job_proto_rawDesc = "" +
 	"\x19ReplaceEscrowSlotResponse\"b\n" +
 	"\x1bAppendEscrowRotationRequest\x12C\n" +
 	"\tstatement\x18\x01 \x01(\v2%.vaultsync.v1.EscrowRotationStatementR\tstatement\"\x1e\n" +
-	"\x1cAppendEscrowRotationResponse2\xeb\x01\n" +
+	"\x1cAppendEscrowRotationResponse\"f\n" +
+	"\x17ResetEscrowChainRequest\x12,\n" +
+	"\x12expected_head_hash\x18\x01 \x01(\fR\x10expectedHeadHash\x12\x1d\n" +
+	"\n" +
+	"new_bundle\x18\x02 \x01(\fR\tnewBundle\"\x1a\n" +
+	"\x18ResetEscrowChainResponse2\xd0\x02\n" +
 	"\x10EscrowJobService\x12f\n" +
 	"\x11ReplaceEscrowSlot\x12&.vaultsync.v1.ReplaceEscrowSlotRequest\x1a'.vaultsync.v1.ReplaceEscrowSlotResponse\"\x00\x12o\n" +
-	"\x14AppendEscrowRotation\x12).vaultsync.v1.AppendEscrowRotationRequest\x1a*.vaultsync.v1.AppendEscrowRotationResponse\"\x00B@Z>github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyncv1b\x06proto3"
+	"\x14AppendEscrowRotation\x12).vaultsync.v1.AppendEscrowRotationRequest\x1a*.vaultsync.v1.AppendEscrowRotationResponse\"\x00\x12c\n" +
+	"\x10ResetEscrowChain\x12%.vaultsync.v1.ResetEscrowChainRequest\x1a&.vaultsync.v1.ResetEscrowChainResponse\"\x00B@Z>github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyncv1b\x06proto3"
 
 var (
 	file_vaultsync_v1_escrow_job_proto_rawDescOnce sync.Once
@@ -256,22 +355,26 @@ func file_vaultsync_v1_escrow_job_proto_rawDescGZIP() []byte {
 	return file_vaultsync_v1_escrow_job_proto_rawDescData
 }
 
-var file_vaultsync_v1_escrow_job_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_vaultsync_v1_escrow_job_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_vaultsync_v1_escrow_job_proto_goTypes = []any{
 	(*ReplaceEscrowSlotRequest)(nil),     // 0: vaultsync.v1.ReplaceEscrowSlotRequest
 	(*ReplaceEscrowSlotResponse)(nil),    // 1: vaultsync.v1.ReplaceEscrowSlotResponse
 	(*AppendEscrowRotationRequest)(nil),  // 2: vaultsync.v1.AppendEscrowRotationRequest
 	(*AppendEscrowRotationResponse)(nil), // 3: vaultsync.v1.AppendEscrowRotationResponse
-	(*EscrowRotationStatement)(nil),      // 4: vaultsync.v1.EscrowRotationStatement
+	(*ResetEscrowChainRequest)(nil),      // 4: vaultsync.v1.ResetEscrowChainRequest
+	(*ResetEscrowChainResponse)(nil),     // 5: vaultsync.v1.ResetEscrowChainResponse
+	(*EscrowRotationStatement)(nil),      // 6: vaultsync.v1.EscrowRotationStatement
 }
 var file_vaultsync_v1_escrow_job_proto_depIdxs = []int32{
-	4, // 0: vaultsync.v1.AppendEscrowRotationRequest.statement:type_name -> vaultsync.v1.EscrowRotationStatement
+	6, // 0: vaultsync.v1.AppendEscrowRotationRequest.statement:type_name -> vaultsync.v1.EscrowRotationStatement
 	0, // 1: vaultsync.v1.EscrowJobService.ReplaceEscrowSlot:input_type -> vaultsync.v1.ReplaceEscrowSlotRequest
 	2, // 2: vaultsync.v1.EscrowJobService.AppendEscrowRotation:input_type -> vaultsync.v1.AppendEscrowRotationRequest
-	1, // 3: vaultsync.v1.EscrowJobService.ReplaceEscrowSlot:output_type -> vaultsync.v1.ReplaceEscrowSlotResponse
-	3, // 4: vaultsync.v1.EscrowJobService.AppendEscrowRotation:output_type -> vaultsync.v1.AppendEscrowRotationResponse
-	3, // [3:5] is the sub-list for method output_type
-	1, // [1:3] is the sub-list for method input_type
+	4, // 3: vaultsync.v1.EscrowJobService.ResetEscrowChain:input_type -> vaultsync.v1.ResetEscrowChainRequest
+	1, // 4: vaultsync.v1.EscrowJobService.ReplaceEscrowSlot:output_type -> vaultsync.v1.ReplaceEscrowSlotResponse
+	3, // 5: vaultsync.v1.EscrowJobService.AppendEscrowRotation:output_type -> vaultsync.v1.AppendEscrowRotationResponse
+	5, // 6: vaultsync.v1.EscrowJobService.ResetEscrowChain:output_type -> vaultsync.v1.ResetEscrowChainResponse
+	4, // [4:7] is the sub-list for method output_type
+	1, // [1:4] is the sub-list for method input_type
 	1, // [1:1] is the sub-list for extension type_name
 	1, // [1:1] is the sub-list for extension extendee
 	0, // [0:1] is the sub-list for field type_name
@@ -289,7 +392,7 @@ func file_vaultsync_v1_escrow_job_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_vaultsync_v1_escrow_job_proto_rawDesc), len(file_vaultsync_v1_escrow_job_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   4,
+			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

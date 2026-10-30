@@ -67,13 +67,20 @@ message GetServerInfoResponse {
   repeated EscrowRotationStatement escrow_rotations = 10;
 }
 
-// EscrowRotationStatement moves the escrow key from one bundle to the next,
-// signed by the previous bundle's escrow signing key (docs/design/crypto.md).
+// EscrowRotationStatement moves the escrow key from one bundle to the next
+// (docs/design/crypto.md). A signed rotation has reset false and the
+// previous bundle's escrow signing key's signature. A reset point has reset
+// true and an empty signature (docs/design/encryption.md, "The escrow
+// chain"). Clients refuse any other combination.
 message EscrowRotationStatement {
   // SHA-256 of the encoded previous bundle (32 bytes).
   bytes old_bundle_hash = 1;
   // The encoded new bundle.
   bytes new_bundle = 2;
-  // The previous escrow signing key's Ed25519 signature (64 bytes).
+  // The previous escrow signing key's Ed25519 signature (64 bytes), or
+  // empty for a reset point.
   bytes signature = 3;
+  // Whether this statement is a reset point: an admin started the chain
+  // again from new_bundle without the previous signing key.
+  bool reset = 4;
 }

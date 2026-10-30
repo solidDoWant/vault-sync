@@ -146,10 +146,15 @@ func chainHead(ctx context.Context, source RotationSource) (e2ee.EscrowBundle, e
 			return e2ee.EscrowBundle{}, fmt.Errorf("the escrow chain: %w", err)
 		}
 
-		rotations = append(rotations, e2ee.EscrowRotation{OldBundleHash: statement.OldBundleHash, NewBundle: bundle, Signature: statement.Signature})
+		rotations = append(rotations, e2ee.EscrowRotation{
+			OldBundleHash: statement.OldBundleHash,
+			NewBundle:     bundle,
+			Signature:     statement.Signature,
+			Reset:         statement.Reset,
+		})
 	}
 
-	head, err := e2ee.VerifyEscrowChain(root, rotations)
+	head, err := e2ee.CheckEscrowChain(root, rotations)
 	if err != nil {
 		return e2ee.EscrowBundle{}, fmt.Errorf("the escrow chain does not verify: %w", err)
 	}

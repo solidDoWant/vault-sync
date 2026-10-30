@@ -12,11 +12,13 @@ var ErrEscrowChainPosition = errors.New("escrow chain position is not the next o
 
 // EscrowRotationStatement is one stored escrow rotation statement: the hash
 // of the bundle before it, the encoded new bundle, and the signature of the
-// previous escrow signing key, as signed.
+// previous escrow signing key, as signed. A reset point has Reset set and
+// no signature.
 type EscrowRotationStatement struct {
 	OldBundleHash []byte
 	NewBundle     []byte
 	Signature     []byte
+	Reset         bool
 }
 
 // EscrowChain is the deployment's stored escrow chain: the encoded root
@@ -40,7 +42,7 @@ func (store *Store) EscrowChain(ctx context.Context, root []byte) (EscrowChain, 
 		}
 	}
 
-	rows, err := store.pool.Query(ctx, `SELECT position, bundle, old_bundle_hash, signature FROM escrow_chain ORDER BY position`)
+	rows, err := store.pool.Query(ctx, `SELECT position, bundle, old_bundle_hash, signature, reset FROM escrow_chain ORDER BY position`)
 	if err != nil {
 		return EscrowChain{}, fmt.Errorf("read escrow chain: %w", err)
 	}
@@ -56,7 +58,7 @@ func (store *Store) EscrowChain(ctx context.Context, root []byte) (EscrowChain, 
 			statement EscrowRotationStatement
 		)
 
-		if err := rows.Scan(&position, &statement.NewBundle, &statement.OldBundleHash, &statement.Signature); err != nil {
+		if err := rows.Scan(&position, &statement.NewBundle, &statement.OldBundleHash, &statement.Signature, &statement.Reset); err != nil {
 			return EscrowChain{}, fmt.Errorf("read escrow chain: %w", err)
 		}
 
@@ -85,14 +87,20 @@ func (store *Store) EscrowChain(ctx context.Context, root []byte) (EscrowChain, 
 
 // AppendEscrowRotation stores statement at position, which must be the one
 // after the chain's head; otherwise it fails with ErrEscrowChainPosition.
-// The server does not check the statement's signature here.
+// The server does not check the statement's signature here. A reset point
+// (Reset set) is stored without a signature.
 func (store *Store) AppendEscrowRotation(ctx context.Context, position int32, statement EscrowRotationStatement) error {
+	signature := statement.Signature
+	if statement.Reset {
+		signature = nil
+	}
+
 	tag, err := store.pool.Exec(ctx, `
-		INSERT INTO escrow_chain (position, bundle, old_bundle_hash, signature)
-		SELECT $1, $2, $3, $4
+		INSERT INTO escrow_chain (position, bundle, old_bundle_hash, signature, reset)
+		SELECT $1, $2, $3, $4, $5
 		WHERE $1 = (SELECT coalesce(max(position), -1) + 1 FROM escrow_chain) AND $1 >= 1
 		ON CONFLICT (position) DO NOTHING`,
-		position, statement.NewBundle, statement.OldBundleHash, statement.Signature)
+		position, statement.NewBundle, statement.OldBundleHash, signature, statement.Reset)
 	if err != nil {
 		return fmt.Errorf("append escrow rotation: %w", err)
 	}

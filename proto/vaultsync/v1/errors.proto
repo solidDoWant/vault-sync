@@ -51,6 +51,13 @@ enum ErrorReason {
   // keys, encrypts the pending change under the current epoch and retries
   // (docs/design/encryption.md, "Converting a plaintext vault in place").
   ERROR_REASON_VAULT_ENCRYPTED = 8;
+  // FAILED_PRECONDITION from EscrowJobService.ReplaceEscrowSlot: the escrow
+  // chain's head is not reachable from the escrow bundle the vault's log
+  // named last through signed rotations alone, because a reset point lies
+  // between them. The vault waits for its owner to adopt the new escrow key
+  // (docs/design/encryption.md, "Escrow reset on the server"). The export
+  // job reports the vault and does not retry.
+  ERROR_REASON_ESCROW_NOT_ADOPTED = 9;
 }
 
 // ErrorDetail is attached to an error (as a Connect error detail) to give

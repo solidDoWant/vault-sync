@@ -356,6 +356,46 @@ You put the keys in a temporary Secret and delete it after the run.
 
 If your database needs TLS client certificates, add them to the run as the `VAULT_SYNC_DATABASE_TLS_*` files ([configuration.md](configuration.md)). For the one-off pod, put them in the temporary Secret too.
 
+## Resetting the escrow chain
+
+A reset starts the escrow chain again from a new escrow bundle without the old signing key. The escrow chain is the list of escrow bundles that the server publishes, from the first one to the current one. Use a reset only when a normal rotation is not possible or not safe:
+
+- You lost the escrow signing key of the chain's current head.
+- Somebody stole that signing key, and you want to leave the chain that the thief can extend.
+
+`vault-sync-server export reset-escrow` appends a reset point to the chain. A reset point names the new bundle and has no signature. Devices do not trust it on their own. Each user must accept the new escrow fingerprint in the plugin, and the owner of each vault must adopt the new key ([encryption.md](encryption.md)).
+
+```sh
+vault-sync-server export reset-escrow -server https://sync.example.com \
+  -recipient age1pq1… -signing-public-key BASE64
+```
+
+The flags are the same as for `export rotate-escrow`. The command reads `VAULT_SYNC_DATABASE_URL` and the database TLS variables (read-only, like the export), `VAULT_SYNC_LOG_LEVEL`, and `VAULT_SYNC_ESCROW_JOB_TOKEN_FILE`. It needs no escrow identity and no signing key. It reads the chain's head from PostgreSQL and writes the reset point through the server's job-only `EscrowJobService`. It prints one JSON line, `{"status":"ok"}` or `{"status":"failed","error":"…"}`. It exits `0` when it appended the reset point, `1` when it did not, and `2` for invalid flags.
+
+The server refuses the reset in these cases:
+
+- The head changed between the read and the write. Run the command again.
+- The new bundle is malformed, or it is already in the chain. Every bundle has one position in the chain, so a reset back to an old bundle is not possible. Generate a new bundle.
+- The deployment has no escrow chain yet. Start the server with an escrow key first.
+
+### The order of steps for a reset
+
+1. On your offline machine, generate a new escrow key and a new escrow signing key, as in step 1 of [The order of steps](#the-order-of-steps).
+2. Run `export reset-escrow` with the new bundle. Use the same inputs as in [Run the rotation](#run-the-rotation), without the identity file and the signing key file.
+3. Update the server: set `VAULT_SYNC_ESCROW_RECIPIENT` and `VAULT_SYNC_ESCROW_SIGNING_KEY` to the new bundle. The server refuses to start until the configuration names the chain's head.
+4. Publish the new escrow fingerprint (`vault-sync-server escrow fingerprint`). Tell your users to compare it with the fingerprint that the plugin shows before they accept the reset.
+5. Run `export rotate-escrow` with the new bundle and the old identity in the identity file. The chain's head is already the new bundle, so the run appends nothing. It re-wraps the escrow slots of each vault whose owner adopted the new key. The server refuses to re-wrap a slot of a vault whose owner did not adopt the key yet, and the run lists that slot in `failures`. This vault waits for its owner. Run the command again later.
+
+Later rotations go from the new bundle with signed statements, as before.
+
+### Destroying the old escrow identity after a reset
+
+After a reset, keep the old escrow identity until the owner of every escrowed vault adopted the new key. Until then, only the old identity opens the escrow slots of the vaults that did not adopt it, and the export reads these vaults with it. This also applies to vaults with escrow off and to vaults deleted within the last 30 days. If you destroy the old identity before then, the vaults that did not adopt the new key lose escrow. The `failures` list of `export rotate-escrow` shows these vaults.
+
+### A reset point that you did not make
+
+Anyone with the job token can append a reset point. If somebody does, the server stops at its next start, because the chain's head is not the configured bundle. To recover, generate a fresh bundle, run `export reset-escrow` with it, and configure the server with it. You cannot reset back to the configured bundle, because that bundle is already in the chain. Then replace the job token. Devices that saw the unwanted reset point show the reset prompt to their users.
+
 ## Signals
 
 `SIGTERM` or `SIGINT` stops the export at the next document. The staging directory is removed, the summary reports `failed`, and the previous export stays in place.

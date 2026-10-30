@@ -30,10 +30,14 @@ const recordTimeout = 30 * time.Second
 // JSON Summary to stdout (logs go to stderr). It returns the process exit
 // code: 0 when every document was exported, 1 on any failure or left-out
 // document, 2 for invalid flags. `export rotate-escrow …` runs RotateMain
-// instead.
+// and `export reset-escrow …` runs ResetMain instead.
 func Main(ctx context.Context, args []string, lookup func(string) (string, bool), stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "rotate-escrow" {
 		return RotateMain(ctx, args[1:], lookup, stdout, stderr)
+	}
+
+	if len(args) > 0 && args[0] == "reset-escrow" {
+		return ResetMain(ctx, args[1:], lookup, stdout, stderr)
 	}
 
 	flags := flag.NewFlagSet("vault-sync-server export", flag.ContinueOnError)

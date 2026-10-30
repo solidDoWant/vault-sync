@@ -12,7 +12,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file vaultsync/v1/escrow_job.proto.
  */
 export const file_vaultsync_v1_escrow_job: GenFile = /*@__PURE__*/
-  fileDesc("Ch12YXVsdHN5bmMvdjEvZXNjcm93X2pvYi5wcm90bxIMdmF1bHRzeW5jLnYxIoQBChhSZXBsYWNlRXNjcm93U2xvdFJlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkSDQoFZXBvY2gYAiABKA0SGAoQb2xkX3JlY2lwaWVudF9pZBgDIAEoCRIYChBuZXdfcmVjaXBpZW50X2lkGAQgASgJEhMKC3dyYXBwZWRfa2V5GAUgASgMIhsKGVJlcGxhY2VFc2Nyb3dTbG90UmVzcG9uc2UiVwobQXBwZW5kRXNjcm93Um90YXRpb25SZXF1ZXN0EjgKCXN0YXRlbWVudBgBIAEoCzIlLnZhdWx0c3luYy52MS5Fc2Nyb3dSb3RhdGlvblN0YXRlbWVudCIeChxBcHBlbmRFc2Nyb3dSb3RhdGlvblJlc3BvbnNlMusBChBFc2Nyb3dKb2JTZXJ2aWNlEmYKEVJlcGxhY2VFc2Nyb3dTbG90EiYudmF1bHRzeW5jLnYxLlJlcGxhY2VFc2Nyb3dTbG90UmVxdWVzdBonLnZhdWx0c3luYy52MS5SZXBsYWNlRXNjcm93U2xvdFJlc3BvbnNlIgASbwoUQXBwZW5kRXNjcm93Um90YXRpb24SKS52YXVsdHN5bmMudjEuQXBwZW5kRXNjcm93Um90YXRpb25SZXF1ZXN0GioudmF1bHRzeW5jLnYxLkFwcGVuZEVzY3Jvd1JvdGF0aW9uUmVzcG9uc2UiAEJAWj5naXRodWIuY29tL3NvbGlkRG9XYW50L3ZhdWx0LXN5bmMvZ2VuL3ZhdWx0c3luYy92MTt2YXVsdHN5bmN2MWIGcHJvdG8z", [file_vaultsync_v1_server_info]);
+  fileDesc("Ch12YXVsdHN5bmMvdjEvZXNjcm93X2pvYi5wcm90bxIMdmF1bHRzeW5jLnYxIoQBChhSZXBsYWNlRXNjcm93U2xvdFJlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkSDQoFZXBvY2gYAiABKA0SGAoQb2xkX3JlY2lwaWVudF9pZBgDIAEoCRIYChBuZXdfcmVjaXBpZW50X2lkGAQgASgJEhMKC3dyYXBwZWRfa2V5GAUgASgMIhsKGVJlcGxhY2VFc2Nyb3dTbG90UmVzcG9uc2UiVwobQXBwZW5kRXNjcm93Um90YXRpb25SZXF1ZXN0EjgKCXN0YXRlbWVudBgBIAEoCzIlLnZhdWx0c3luYy52MS5Fc2Nyb3dSb3RhdGlvblN0YXRlbWVudCIeChxBcHBlbmRFc2Nyb3dSb3RhdGlvblJlc3BvbnNlIkkKF1Jlc2V0RXNjcm93Q2hhaW5SZXF1ZXN0EhoKEmV4cGVjdGVkX2hlYWRfaGFzaBgBIAEoDBISCgpuZXdfYnVuZGxlGAIgASgMIhoKGFJlc2V0RXNjcm93Q2hhaW5SZXNwb25zZTLQAgoQRXNjcm93Sm9iU2VydmljZRJmChFSZXBsYWNlRXNjcm93U2xvdBImLnZhdWx0c3luYy52MS5SZXBsYWNlRXNjcm93U2xvdFJlcXVlc3QaJy52YXVsdHN5bmMudjEuUmVwbGFjZUVzY3Jvd1Nsb3RSZXNwb25zZSIAEm8KFEFwcGVuZEVzY3Jvd1JvdGF0aW9uEikudmF1bHRzeW5jLnYxLkFwcGVuZEVzY3Jvd1JvdGF0aW9uUmVxdWVzdBoqLnZhdWx0c3luYy52MS5BcHBlbmRFc2Nyb3dSb3RhdGlvblJlc3BvbnNlIgASYwoQUmVzZXRFc2Nyb3dDaGFpbhIlLnZhdWx0c3luYy52MS5SZXNldEVzY3Jvd0NoYWluUmVxdWVzdBomLnZhdWx0c3luYy52MS5SZXNldEVzY3Jvd0NoYWluUmVzcG9uc2UiAEJAWj5naXRodWIuY29tL3NvbGlkRG9XYW50L3ZhdWx0LXN5bmMvZ2VuL3ZhdWx0c3luYy92MTt2YXVsdHN5bmN2MWIGcHJvdG8z", [file_vaultsync_v1_server_info]);
 
 /**
  * ReplaceEscrowSlotRequest names the escrow slot to replace and its
@@ -116,6 +116,50 @@ export const AppendEscrowRotationResponseSchema: GenMessage<AppendEscrowRotation
   messageDesc(file_vaultsync_v1_escrow_job, 3);
 
 /**
+ * ResetEscrowChainRequest names the chain head the reset point follows and
+ * the bundle the chain continues from.
+ *
+ * @generated from message vaultsync.v1.ResetEscrowChainRequest
+ */
+export type ResetEscrowChainRequest = Message<"vaultsync.v1.ResetEscrowChainRequest"> & {
+  /**
+   * SHA-256 of the encoded head bundle the caller read (32 bytes).
+   *
+   * @generated from field: bytes expected_head_hash = 1;
+   */
+  expectedHeadHash: Uint8Array;
+
+  /**
+   * The encoded new bundle, as in docs/design/crypto.md.
+   *
+   * @generated from field: bytes new_bundle = 2;
+   */
+  newBundle: Uint8Array;
+};
+
+/**
+ * Describes the message vaultsync.v1.ResetEscrowChainRequest.
+ * Use `create(ResetEscrowChainRequestSchema)` to create a new message.
+ */
+export const ResetEscrowChainRequestSchema: GenMessage<ResetEscrowChainRequest> = /*@__PURE__*/
+  messageDesc(file_vaultsync_v1_escrow_job, 4);
+
+/**
+ * ResetEscrowChainResponse has no fields.
+ *
+ * @generated from message vaultsync.v1.ResetEscrowChainResponse
+ */
+export type ResetEscrowChainResponse = Message<"vaultsync.v1.ResetEscrowChainResponse"> & {
+};
+
+/**
+ * Describes the message vaultsync.v1.ResetEscrowChainResponse.
+ * Use `create(ResetEscrowChainResponseSchema)` to create a new message.
+ */
+export const ResetEscrowChainResponseSchema: GenMessage<ResetEscrowChainResponse> = /*@__PURE__*/
+  messageDesc(file_vaultsync_v1_escrow_job, 5);
+
+/**
  * EscrowJobService holds the writes of an escrow key rotation, made by the
  * export job (docs/design/encryption.md, "Escrow"). It is authenticated
  * only by the static bearer token in VAULT_SYNC_ESCROW_JOB_TOKEN_FILE; user
@@ -135,10 +179,16 @@ export const EscrowJobService: GenService<{
    * within the last 30 days. new_recipient_id must be the key id of the
    * escrow chain's head.
    *
+   * The head must be reachable from the escrow bundle the vault's log named
+   * last through signed rotations alone, so a slot never crosses a reset
+   * point the vault's owner has not adopted.
+   *
    * Errors: INVALID_ARGUMENT for a malformed request or a new recipient
-   * that is not the chain head's key; NOT_FOUND when the vault's epoch has
-   * no escrow slot wrapped to old_recipient_id (already replaced, or no
-   * such vault or epoch).
+   * that is not the chain head's key; FAILED_PRECONDITION with
+   * ERROR_REASON_ESCROW_NOT_ADOPTED when a reset point lies between the
+   * vault's last escrow bundle and the head; NOT_FOUND when the vault's
+   * epoch has no escrow slot wrapped to old_recipient_id (already replaced,
+   * or no such vault or epoch).
    *
    * @generated from rpc vaultsync.v1.EscrowJobService.ReplaceEscrowSlot
    */
@@ -163,6 +213,25 @@ export const EscrowJobService: GenService<{
     methodKind: "unary";
     input: typeof AppendEscrowRotationRequestSchema;
     output: typeof AppendEscrowRotationResponseSchema;
+  },
+  /**
+   * ResetEscrowChain appends a reset point to the stored escrow chain: the
+   * chain continues from new_bundle without a signature of the head's
+   * escrow signing key (docs/design/encryption.md, "Escrow reset on the
+   * server"). It is appended only while the chain's head still hashes to
+   * expected_head_hash.
+   *
+   * Errors: INVALID_ARGUMENT for a malformed bundle or one already in the
+   * chain; FAILED_PRECONDITION when the deployment has no escrow chain;
+   * ABORTED when the head is not expected_head_hash, or another statement
+   * was appended concurrently (read the chain and try again).
+   *
+   * @generated from rpc vaultsync.v1.EscrowJobService.ResetEscrowChain
+   */
+  resetEscrowChain: {
+    methodKind: "unary";
+    input: typeof ResetEscrowChainRequestSchema;
+    output: typeof ResetEscrowChainResponseSchema;
   },
 }> = /*@__PURE__*/
   serviceDesc(file_vaultsync_v1_escrow_job, 0);

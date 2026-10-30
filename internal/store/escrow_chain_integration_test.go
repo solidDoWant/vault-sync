@@ -79,3 +79,22 @@ func TestAppendEscrowRotationExtendsTheChainInOrder(t *testing.T) {
 		Rotations: []store.EscrowRotationStatement{statement(1), statement(2)},
 	}, chain)
 }
+
+func TestAppendEscrowRotationStoresAResetPoint(t *testing.T) {
+	queries := store.New(migratedPool(t))
+
+	_, err := queries.EscrowChain(t.Context(), []byte("root"))
+	require.NoError(t, err)
+
+	signed := store.EscrowRotationStatement{OldBundleHash: bytes.Repeat([]byte{1}, 32), NewBundle: []byte{1}, Signature: bytes.Repeat([]byte{1}, 64)}
+	reset := store.EscrowRotationStatement{OldBundleHash: bytes.Repeat([]byte{2}, 32), NewBundle: []byte{2}, Reset: true}
+
+	require.NoError(t, queries.AppendEscrowRotation(t.Context(), 1, signed))
+	require.NoError(t, queries.AppendEscrowRotation(t.Context(), 2, reset))
+	require.Error(t, queries.AppendEscrowRotation(t.Context(), 3, store.EscrowRotationStatement{OldBundleHash: bytes.Repeat([]byte{3}, 32), NewBundle: []byte{3}}),
+		"an unmarked statement needs a signature")
+
+	chain, err := queries.EscrowChain(t.Context(), nil)
+	require.NoError(t, err)
+	assert.Equal(t, store.EscrowChain{Root: []byte("root"), Rotations: []store.EscrowRotationStatement{signed, reset}}, chain)
+}

@@ -2,6 +2,7 @@ package server_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -22,6 +23,7 @@ import (
 	"github.com/solidDoWant/vault-sync/internal/auth"
 	"github.com/solidDoWant/vault-sync/internal/auth/authtest"
 	"github.com/solidDoWant/vault-sync/internal/e2ee"
+	"github.com/solidDoWant/vault-sync/internal/e2ee/logtest"
 	"github.com/solidDoWant/vault-sync/internal/server"
 	"github.com/solidDoWant/vault-sync/internal/store"
 )
@@ -35,7 +37,46 @@ type memoryEscrowJobStore struct {
 	chain store.EscrowChain
 	// slots maps vault and epoch to the escrow key id of its one slot.
 	slots map[string]string
+	// logs are the vaults' membership logs.
+	logs  map[uuid.UUID][]store.LogEntry
 	calls int
+}
+
+func (memory *memoryEscrowJobStore) VaultLogEntries(_ context.Context, vaultID uuid.UUID, after int64, limit int) ([]store.LogEntry, error) {
+	memory.mutex.Lock()
+	defer memory.mutex.Unlock()
+
+	var page []store.LogEntry
+
+	for _, entry := range memory.logs[vaultID] {
+		if entry.Seq > after && len(page) < limit {
+			page = append(page, entry)
+		}
+	}
+
+	return page, nil
+}
+
+// escrowedLog stores a log for vaultID whose genesis records key as the
+// vault's escrow bundle.
+func (memory *memoryEscrowJobStore) escrowedLog(t *testing.T, vaultID uuid.UUID, key escrowKey) {
+	t.Helper()
+
+	bundle := key.bundle
+	log := logtest.New(t, vaultID, uuid.New(), &bundle)
+
+	memory.mutex.Lock()
+	defer memory.mutex.Unlock()
+
+	if memory.logs == nil {
+		memory.logs = map[uuid.UUID][]store.LogEntry{}
+	}
+
+	for _, entry := range log.Entries {
+		memory.logs[vaultID] = append(memory.logs[vaultID], store.LogEntry{
+			Seq: int64(entry.Seq), PrevHash: entry.PrevHash, Type: byte(entry.Type), Payload: entry.Payload, Signatures: entry.Signatures, //nolint:gosec // small test seqs.
+		})
+	}
 }
 
 func slotKey(vaultID uuid.UUID, epoch int32) string {
@@ -132,10 +173,12 @@ func callEveryEscrowJobRPC(t *testing.T, client vaultsyncv1connect.EscrowJobServ
 
 	_, replaceErr := client.ReplaceEscrowSlot(t.Context(), withAuthorization(&vaultsyncv1.ReplaceEscrowSlotRequest{}, authorization))
 	_, appendErr := client.AppendEscrowRotation(t.Context(), withAuthorization(&vaultsyncv1.AppendEscrowRotationRequest{}, authorization))
+	_, resetErr := client.ResetEscrowChain(t.Context(), withAuthorization(&vaultsyncv1.ResetEscrowChainRequest{}, authorization))
 
 	return map[string]error{
 		vaultsyncv1connect.EscrowJobServiceReplaceEscrowSlotProcedure:    replaceErr,
 		vaultsyncv1connect.EscrowJobServiceAppendEscrowRotationProcedure: appendErr,
+		vaultsyncv1connect.EscrowJobServiceResetEscrowChainProcedure:     resetErr,
 	}
 }
 
@@ -220,6 +263,7 @@ func TestAppendEscrowRotationVerifiesAgainstTheChainHead(t *testing.T) {
 
 	require.NoError(t, appendStatement(rotate(t, first.sign, first, second)))
 	require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(appendStatement(rotate(t, first.sign, first, third))), "the head is now the second key")
+	require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(appendStatement(rotate(t, second.sign, second, first))), "the root is already in the chain")
 	require.NoError(t, appendStatement(rotate(t, second.sign, second, third)))
 
 	head, err := e2ee.VerifyEscrowChain(first.bundle, []e2ee.EscrowRotation{
@@ -239,6 +283,7 @@ func TestReplaceEscrowSlotOnlyWrapsToTheChainHead(t *testing.T) {
 
 	vaultID := uuid.New()
 	fixture.store.slots[slotKey(vaultID, 1)] = oldID
+	fixture.store.escrowedLog(t, vaultID, old)
 
 	replace := func(request *vaultsyncv1.ReplaceEscrowSlotRequest) error {
 		_, err := fixture.client().ReplaceEscrowSlot(t.Context(), withAuthorization(request, "Bearer "+jobToken))
@@ -276,4 +321,101 @@ func TestReplaceEscrowSlotOnlyWrapsToTheChainHead(t *testing.T) {
 	assert.Equal(t, nextID, fixture.store.slots[slotKey(vaultID, 1)])
 
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(replace(valid())), "the old slot is gone")
+}
+
+func TestResetEscrowChainAppendsAResetPoint(t *testing.T) {
+	first, second, third := newEscrowKey(t), newEscrowKey(t), newEscrowKey(t)
+
+	fixture := newEscrowJobFixture(t, jobToken)
+	client := fixture.client()
+
+	reset := func(head, to []byte) error {
+		hash := sha256.Sum256(head)
+		_, err := client.ResetEscrowChain(t.Context(), withAuthorization(&vaultsyncv1.ResetEscrowChainRequest{ExpectedHeadHash: hash[:], NewBundle: to}, "Bearer "+jobToken))
+
+		return err
+	}
+
+	require.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(reset(first.encoded, second.encoded)), "no chain yet")
+
+	fixture.store.chain = store.EscrowChain{Root: first.encoded}
+
+	for name, err := range map[string]error{
+		"a malformed new bundle": reset(first.encoded, []byte("bundle")),
+		"the root again":         reset(first.encoded, first.encoded),
+		"a malformed expected head hash": func() error {
+			_, err := client.ResetEscrowChain(t.Context(), withAuthorization(&vaultsyncv1.ResetEscrowChainRequest{ExpectedHeadHash: []byte{1}, NewBundle: second.encoded}, "Bearer "+jobToken))
+
+			return err
+		}(),
+	} {
+		require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err), name)
+	}
+
+	require.Equal(t, connect.CodeAborted, connect.CodeOf(reset(second.encoded, third.encoded)), "the head is not the expected one")
+	assert.Empty(t, fixture.store.chain.Rotations, "nothing refused is stored")
+
+	require.NoError(t, reset(first.encoded, second.encoded))
+
+	require.Len(t, fixture.store.chain.Rotations, 1)
+	firstHash := sha256.Sum256(first.encoded)
+	assert.Equal(t, store.EscrowRotationStatement{OldBundleHash: firstHash[:], NewBundle: second.encoded, Reset: true}, fixture.store.chain.Rotations[0])
+
+	require.Equal(t, connect.CodeAborted, connect.CodeOf(reset(first.encoded, third.encoded)), "the head moved to the second key")
+	require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(reset(second.encoded, first.encoded)), "the root is already in the chain")
+
+	// Later rotations chain from the reset point's bundle with signed
+	// statements, as before.
+	_, err := client.AppendEscrowRotation(t.Context(), withAuthorization(&vaultsyncv1.AppendEscrowRotationRequest{
+		Statement: func() *vaultsyncv1.EscrowRotationStatement {
+			statement := rotate(t, second.sign, second, third)
+
+			return &vaultsyncv1.EscrowRotationStatement{OldBundleHash: statement.OldBundleHash, NewBundle: statement.NewBundle, Signature: statement.Signature}
+		}(),
+	}, "Bearer "+jobToken))
+	require.NoError(t, err)
+	require.Len(t, fixture.store.chain.Rotations, 2)
+}
+
+func TestReplaceEscrowSlotNeverCrossesAResetPoint(t *testing.T) {
+	first, second, third := newEscrowKey(t), newEscrowKey(t), newEscrowKey(t)
+	firstID, secondID, thirdID := keyIDOf(t, first), keyIDOf(t, second), keyIDOf(t, third)
+
+	fixture := newEscrowJobFixture(t, jobToken)
+	// first, a reset point to second, then a signed rotation to third.
+	fixture.store.chain = store.EscrowChain{Root: first.encoded, Rotations: []store.EscrowRotationStatement{
+		resetPoint(first, second), rotate(t, second.sign, second, third),
+	}}
+
+	replace := func(vaultID uuid.UUID, oldID string) error {
+		_, err := fixture.client().ReplaceEscrowSlot(t.Context(), withAuthorization(&vaultsyncv1.ReplaceEscrowSlotRequest{
+			VaultId: vaultID.String(), Epoch: 1, OldRecipientId: oldID, NewRecipientId: thirdID, WrappedKey: []byte{1},
+		}, "Bearer "+jobToken))
+
+		return err
+	}
+
+	beforeReset := uuid.New()
+	fixture.store.slots[slotKey(beforeReset, 1)] = firstID
+	fixture.store.escrowedLog(t, beforeReset, first)
+
+	err := replace(beforeReset, firstID)
+	require.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err), "a vault whose log names the bundle before the reset point")
+	assert.Equal(t, vaultsyncv1.ErrorReason_ERROR_REASON_ESCROW_NOT_ADOPTED, api.ErrorReasonOf(err))
+	assert.Equal(t, firstID, fixture.store.slots[slotKey(beforeReset, 1)], "the slot is not replaced")
+
+	afterReset := uuid.New()
+	fixture.store.slots[slotKey(afterReset, 1)] = secondID
+	fixture.store.escrowedLog(t, afterReset, second)
+
+	require.NoError(t, replace(afterReset, secondID), "signed rotations alone lead from the vault's bundle to the head")
+	assert.Equal(t, thirdID, fixture.store.slots[slotKey(afterReset, 1)])
+
+	unknown := uuid.New()
+	fixture.store.slots[slotKey(unknown, 1)] = firstID
+	fixture.store.escrowedLog(t, unknown, newEscrowKey(t))
+
+	err = replace(unknown, firstID)
+	require.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err), "a vault whose log names a bundle outside the chain")
+	assert.Equal(t, vaultsyncv1.ErrorReason_ERROR_REASON_ESCROW_NOT_ADOPTED, api.ErrorReasonOf(err))
 }

@@ -26,9 +26,10 @@ var ErrEscrowChain = errors.New("escrow chain")
 
 // LoadEscrowChain reads the deployment's escrow chain for publishing in
 // GetServerInfo (docs/design/encryption.md, "Where the escrow chain lives").
-// With no chain stored yet, the configured bundle becomes its root. Every
-// rotation statement must be signed by the escrow signing key of the bundle
-// before it, and the chain's head must equal the configured bundle;
+// With no chain stored yet, the configured bundle becomes its root. The
+// chain must be one linked sequence of signed rotations and reset points
+// with no bundle twice (e2ee.CheckEscrowChain), and its head must equal the
+// configured bundle;
 // otherwise it fails with ErrEscrowChain and the server must not start.
 // Without a configured escrow bundle the chain is neither read nor
 // published.
@@ -61,15 +62,21 @@ func LoadEscrowChain(ctx context.Context, chains EscrowChainStore, escrow api.Es
 			return api.Escrow{}, fmt.Errorf("%w: rotation statement %d has a malformed bundle: %w", ErrEscrowChain, index+1, err)
 		}
 
-		rotations = append(rotations, e2ee.EscrowRotation{OldBundleHash: statement.OldBundleHash, NewBundle: newBundle, Signature: statement.Signature})
+		rotations = append(rotations, e2ee.EscrowRotation{
+			OldBundleHash: statement.OldBundleHash,
+			NewBundle:     newBundle,
+			Signature:     statement.Signature,
+			Reset:         statement.Reset,
+		})
 		published = append(published, &vaultsyncv1.EscrowRotationStatement{
 			OldBundleHash: statement.OldBundleHash,
 			NewBundle:     statement.NewBundle,
 			Signature:     statement.Signature,
+			Reset_:        statement.Reset,
 		})
 	}
 
-	head, err := e2ee.VerifyEscrowChain(root, rotations)
+	head, err := e2ee.CheckEscrowChain(root, rotations)
 	if err != nil {
 		return api.Escrow{}, fmt.Errorf("%w: the stored chain does not link: %w", ErrEscrowChain, err)
 	}
