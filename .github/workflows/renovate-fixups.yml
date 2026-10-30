@@ -29,7 +29,7 @@ jobs:
       BRANCH: ${{ github.head_ref }}
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.head_ref }}
           fetch-depth: 0
@@ -48,7 +48,7 @@ jobs:
             echo "versitygw=${tag}" >>"$GITHUB_OUTPUT"
           fi
       - if: steps.detect.outputs.go_sum == 'true'
-        uses: cachix/install-nix-action@v31
+        uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
       - if: steps.detect.outputs.go_sum == 'true'
         run: make update-vendor-hash
       - if: steps.detect.outputs.versitygw != ''
