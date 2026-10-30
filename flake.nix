@@ -185,9 +185,11 @@
 
             # Helm chart lint, render and packaging (make chart-lint, make
             # helm), and yq for the rendered-manifest assertions in
-            # scripts/chart_test.sh.
+            # scripts/chart_test.sh, and promtool for the alerting rules'
+            # checks and unit tests there.
             pkgs.kubernetes-helm
             pkgs.yq-go
+            pkgs.prometheus.cli
           ];
 
           # The loader comes from the same nixpkgs as the libraries, so that

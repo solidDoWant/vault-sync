@@ -146,7 +146,7 @@ HELM_REGISTRY := $(CONTAINER_REGISTRY)/charts
 HELM_PUSH ?= $(PUSH_ALL)
 
 .PHONY: chart-lint
-chart-lint: ## Lint the Helm chart and check its rendered manifests (names, Service, export CronJob, ServiceMonitor, HTTPRoute, Grafana dashboards, Secret references, escrow never in the server, values schema); no cluster needed.
+chart-lint: ## Lint the Helm chart and check its rendered manifests (names, Service, export CronJob, ServiceMonitor, HTTPRoute, Grafana dashboards, PrometheusRule and its promtool tests, Secret references, escrow never in the server, values schema); no cluster needed.
 	./scripts/chart_test.sh
 
 .PHONY: helm

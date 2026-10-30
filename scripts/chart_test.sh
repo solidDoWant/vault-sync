@@ -25,10 +25,14 @@
 #     GrafanaDashboard per dashboard file with the given instanceSelector,
 #     with ConfigMaps the sidecar label, and the dashboards themselves pass
 #     scripts/dashboard_test.py (parse, unique UIDs, documented metrics only);
+#   - the PrometheusRule (config.alerts) renders only on request, with its
+#     matchers, per-alert overrides and runbook links; promtool accepts it and
+#     its unit tests (ci/alerts-test.yaml) pass; every metric it reads is in
+#     docs/configuration.md and every alert has a docs/alerts.md section;
 #   - every VAULT_SYNC_* variable in docs/configuration.md can be set through
 #     the chart, and every config value is documented in docs/deployment.md.
 #
-# Needs helm, yq and jq (all in the dev shell) and, on the first run, network
+# Needs helm, yq, jq and promtool (all in the dev shell) and, on the first run, network
 # access to fetch the pinned bjw-s common chart (Chart.lock).
 set -euo pipefail
 
@@ -100,6 +104,9 @@ export_pod='('"$cronjob"' | .spec.jobTemplate.spec.template.spec)'
 service_monitors='[$docs[] | select(.kind == "ServiceMonitor")]'
 pdbs='[$docs[] | select(.kind == "PodDisruptionBudget")]'
 routes='[$docs[] | select(.kind == "HTTPRoute")]'
+prometheus_rules='[$docs[] | select(.kind == "PrometheusRule")]'
+# Every alerting rule of the PrometheusRule.
+alert_rules='[$docs[] | select(.kind == "PrometheusRule") | .spec.groups[].rules[]]'
 
 # env_value POD NAME: the value of env var NAME in POD's first container.
 env_value() { echo "($1 | .containers[0].env[] | select(.name == \"$2\") | .value)"; }
@@ -156,6 +163,7 @@ else
 fi
 check "by default renders no export CronJob" "[$cronjob] | length == 0"
 check "by default renders no ServiceMonitor" "$service_monitors | length == 0"
+check "by default renders no PrometheusRule" "$prometheus_rules | length == 0"
 check "by default renders no PodDisruptionBudget" "$pdbs | length == 0"
 check "by default renders no HTTPRoute" "$routes | length == 0"
 check "by default sets no container resources" "($server | .containers[0] | has(\"resources\") | not) or ($server | .containers[0].resources) == {}"
@@ -167,9 +175,9 @@ check "by default sets no topology spread constraints" "($server | has(\"topolog
 # twice, and the server's resources carry no suffix.
 for release in vs vault-sync obsidian-vault-sync; do
 	render --set config.server.metrics.serviceMonitor.enabled=true --set config.route.enabled=true \
-		--set resources.controllers.main.podDisruptionBudget.maxUnavailable=1
+		--set resources.controllers.main.podDisruptionBudget.maxUnavailable=1 --set config.alerts.prometheusRule.enabled=true
 	check "release $release: names every resource after the release" \
-		"([\$docs[] | select(.kind != \"CronJob\") | .kind + \"/\" + .metadata.name] | sort) == ([\"Deployment\", \"HTTPRoute\", \"PodDisruptionBudget\", \"Service\", \"ServiceAccount\", \"ServiceMonitor\"] | map(. + \"/$release\")) and ([$cronjob | .metadata.name] == [\"$release-export\"])"
+		"([\$docs[] | select(.kind != \"CronJob\") | .kind + \"/\" + .metadata.name] | sort) == ([\"Deployment\", \"HTTPRoute\", \"PodDisruptionBudget\", \"PrometheusRule\", \"Service\", \"ServiceAccount\", \"ServiceMonitor\"] | map(. + \"/$release\")) and ([$cronjob | .metadata.name] == [\"$release-export\"])"
 	check "release $release: the Pods' ServiceAccount is the release's" "($server | .serviceAccountName) == \"$release\""
 done
 release="vault-sync"
@@ -466,6 +474,115 @@ rejects "rejects a database URL value together with a Secret" "mutually exclusiv
 	--set config.export.database.url.secretKeyRef.name=export-db --set config.export.database.url.secretKeyRef.key=dsn
 
 # --- documentation ----------------------------------------------------------
+
+# --- alerting rules (PrometheusRule) ----------------------------------------
+
+rules_file="$chart/alerts/vault-sync.rules.yaml"
+all_alerts="$(yq '.groups[].rules[].alert' "$rules_file")"
+# alert NAME: the rendered rule of alert NAME.
+alert() { echo "($alert_rules[] | select(.alert == \"$1\"))"; }
+
+render --set config.alerts.prometheusRule.enabled=true --set-string config.alerts.prometheusRule.labels.release=prometheus \
+	--set-string config.alerts.prometheusRule.annotations.team=sync --namespace sync
+check "an enabled PrometheusRule is named after the release, in its namespace, with the extra labels and annotations" \
+	"$prometheus_rules | length == 1 and .[0].apiVersion == \"monitoring.coreos.com/v1\" and .[0].metadata.name == \"$release\" and .[0].metadata.namespace == \"sync\" and .[0].metadata.labels.release == \"prometheus\" and .[0].metadata.annotations.team == \"sync\""
+check "every alert has a severity of critical or warning" "$alert_rules | length > 0 and all(.labels.severity == \"critical\" or .labels.severity == \"warning\")"
+check "every alert's runbook_url is the docs/alerts.md anchor of its name" \
+	"$alert_rules | all(.annotations.runbook_url == \"https://github.com/solidDoWant/vault-sync/blob/master/docs/alerts.md#\" + (.alert | ascii_downcase))"
+check "every vault_sync expression matches the release's namespace and job" \
+	"$alert_rules | map(select(.expr | test(\"vault_sync_\"))) | length > 0 and all(.expr | [scan(\"vault_sync_[a-z0-9_]+[{][^}]*[}]\")] | length > 0 and all(test(\"namespace=\\\"sync\\\", job=\\\"$release\\\"\")))"
+check "kube-state-metrics alerts are off by default" \
+	"[$alert_rules[] | .alert] - [\"VaultSyncNoReplicaReady\", \"VaultSyncReplicasUnavailable\"] == [$alert_rules[] | .alert]"
+check "the export alert is on while the export is enabled" "[$(alert VaultSyncExportNotSucceeding)] | length == 1"
+expected="$(echo "$all_alerts" | grep -vxE 'VaultSyncNoReplicaReady|VaultSyncReplicasUnavailable' | jq -R . | jq -sc 'sort')"
+check "renders every other packaged alert" "[$alert_rules[] | .alert] | sort == $expected"
+
+render --set config.alerts.prometheusRule.enabled=true --set config.export.enabled=false
+check "the export alert is off while the export is disabled" "[$(alert VaultSyncExportNotSucceeding)] | length == 0"
+
+render --set config.alerts.prometheusRule.enabled=true --set config.alerts.rules.VaultSyncNoReplicaReady.enabled=true \
+	--set config.alerts.rules.VaultSyncReplicasUnavailable.enabled=true --namespace sync
+check "kube-state-metrics alerts render on request, matching the namespace and Deployment" \
+	"[$(alert VaultSyncNoReplicaReady), $(alert VaultSyncReplicasUnavailable)] | length == 2 and all(.expr | [scan(\"kube_deployment_[a-z_]+[{][^}]*[}]\")] | length > 0 and all(test(\"deployment=\\\"$release\\\", namespace=\\\"sync\\\"\")))"
+
+render --set config.alerts.prometheusRule.enabled=true --set config.alerts.rules.VaultSyncRPCErrorRatioHigh.enabled=false
+check "a disabled alert is dropped from the rendered rules" "[$(alert VaultSyncRPCErrorRatioHigh)] | length == 0 and ($alert_rules | length > 0)"
+
+render --set config.alerts.prometheusRule.enabled=true --set-json config.alerts.rules.VaultSyncSyncLatencyHigh.threshold=7.5 \
+	--set config.alerts.rules.VaultSyncSyncLatencyHigh.for=45m --set config.alerts.rules.VaultSyncSyncLatencyHigh.severity=critical
+check "an alert's threshold, for and severity can be overridden" \
+	"$(alert VaultSyncSyncLatencyHigh) | (.expr | endswith(\"> 7.5\")) and .for == \"45m\" and .labels.severity == \"critical\""
+check "overriding one alert leaves the others' defaults" \
+	"$(alert VaultSyncRPCErrorRatioHigh) | (.expr | endswith(\"> 0.05\")) and .for == \"10m\" and .labels.severity == \"critical\""
+
+render --set config.alerts.prometheusRule.enabled=true --set config.alerts.prometheusRule.selector.namespace= \
+	--set config.alerts.prometheusRule.selector.job=custom --set config.alerts.runbookUrlBase=https://runbooks.example.com/vault-sync
+check "an empty namespace selector leaves the matcher out, and a job selector replaces the default" \
+	"$alert_rules | map(select(.expr | test(\"vault_sync_\"))) | all((.expr | test(\"namespace=\") | not) and (.expr | test(\"job=\\\"custom\\\"\")))"
+check "runbookUrlBase sets the runbook_url base" "$alert_rules | all(.annotations.runbook_url == \"https://runbooks.example.com/vault-sync#\" + (.alert | ascii_downcase))"
+
+rejects "an override naming an unknown alert fails" "config.alerts.rules.VaultSyncNoSuchAlert: no such alert" \
+	--set config.alerts.prometheusRule.enabled=true --set config.alerts.rules.VaultSyncNoSuchAlert.enabled=false
+rejects "values.schema.json rejects an unknown severity" "severity" \
+	--set config.alerts.prometheusRule.enabled=true --set config.alerts.rules.VaultSyncSyncLatencyHigh.severity=page
+rejects "values.schema.json rejects a bad for duration" "for" \
+	--set config.alerts.prometheusRule.enabled=true --set config.alerts.rules.VaultSyncSyncLatencyHigh.for=soon
+
+# Every metric an expression reads is in docs/configuration.md's Metrics
+# tables (histogram series by their base name), and every alert has a
+# runbook section in docs/alerts.md.
+documented_metrics="$(grep -oE '^\| `vault_sync_[a-z0-9_]+`' "$repo_root/docs/configuration.md" | tr -d '|` ' | sort -u)"
+for metric in $(grep -oE 'vault_sync_[a-z0-9_]+' "$rules_file" | sed -E 's/_(bucket|sum|count)$//' | sort -u); do
+	if grep -qxF -- "$metric" <<<"$documented_metrics"; then
+		pass "docs/configuration.md documents $metric, which the alerts read"
+	else
+		fail "docs/configuration.md documents $metric, which the alerts read"
+	fi
+done
+for name in $all_alerts; do
+	if grep -qxF -- "### $name" "$repo_root/docs/alerts.md"; then
+		pass "docs/alerts.md has a runbook section for $name"
+	else
+		fail "docs/alerts.md has a runbook section for $name"
+	fi
+done
+
+# promtool: the rendered rules are valid (with and without matchers), and
+# each alert fires on its synthetic series and stays quiet on a healthy one
+# (ci/alerts-test.yaml, against every alert with an empty selector).
+if command -v promtool >/dev/null 2>&1; then
+	mkdir -p "$work/promtool"
+	if render --set config.alerts.prometheusRule.enabled=true --namespace sync &&
+		yq 'select(.kind == "PrometheusRule") | .spec' "$work/out.yaml" >"$work/promtool/default.yaml" &&
+		promtool check rules "$work/promtool/default.yaml" >"$work/promtool/check" 2>&1; then
+		pass "promtool check rules accepts the rendered PrometheusRule"
+	else
+		fail "promtool check rules accepts the rendered PrometheusRule: $(cat "$work/err" "$work/promtool/check" 2>/dev/null)"
+	fi
+	enable_all=()
+	for name in $all_alerts; do
+		enable_all+=(--set "config.alerts.rules.$name.enabled=true")
+	done
+	if render --set config.alerts.prometheusRule.enabled=true --set config.alerts.prometheusRule.selector.namespace= \
+		--set config.alerts.prometheusRule.selector.job= "${enable_all[@]}" &&
+		yq 'select(.kind == "PrometheusRule") | .spec | del(.groups[].rules[].annotations)' "$work/out.yaml" >"$work/promtool/rules.yaml" &&
+		cp "$chart/ci/alerts-test.yaml" "$work/promtool/alerts-test.yaml" &&
+		promtool check rules "$work/promtool/rules.yaml" >"$work/promtool/check" 2>&1 &&
+		promtool test rules "$work/promtool/alerts-test.yaml" >"$work/promtool/test" 2>&1; then
+		pass "promtool test rules: every alert fires on its synthetic series and stays quiet on a healthy one"
+	else
+		fail "promtool test rules: $(cat "$work/err" "$work/promtool/check" "$work/promtool/test" 2>/dev/null)"
+	fi
+	for name in $all_alerts; do
+		if grep -qF -- "name: $name fires" "$chart/ci/alerts-test.yaml" && grep -qF -- "name: $name stays quiet" "$chart/ci/alerts-test.yaml"; then
+			pass "ci/alerts-test.yaml tests $name firing and quiet"
+		else
+			fail "ci/alerts-test.yaml tests $name firing and quiet"
+		fi
+	done
+else
+	fail "promtool is required for the alerting rule tests (run inside the dev shell)"
+fi
 
 # Every variable in the server's configuration table must be settable
 # through the chart: render with every optional value set and look for it.

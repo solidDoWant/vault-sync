@@ -171,7 +171,7 @@ config:
 helm install vault-sync oci://ghcr.io/soliddowant/charts/vault-sync --version <version> -n vault-sync -f values.yaml
 ```
 
-The chart then renders, each named after the release (here `vault-sync`): the server Deployment, one Service with ports `http` (8080), `metrics` (9090) and `service-metrics` (9091), an HTTPRoute, a ServiceAccount without an API token, and the export CronJob `vault-sync-export`. With `config.server.metrics.serviceMonitor.enabled: true` it adds a ServiceMonitor, and with `config.server.metrics.serviceWide.enabled: true` as well that ServiceMonitor also scrapes port `service-metrics`. It creates no Secrets, and sets no PodDisruptionBudget, container resources or spread constraints: see [High availability](#high-availability) for what to add.
+The chart then renders, each named after the release (here `vault-sync`): the server Deployment, one Service with ports `http` (8080), `metrics` (9090) and `service-metrics` (9091), an HTTPRoute, a ServiceAccount without an API token, and the export CronJob `vault-sync-export`. With `config.server.metrics.serviceMonitor.enabled: true` it adds a ServiceMonitor, and with `config.server.metrics.serviceWide.enabled: true` as well that ServiceMonitor also scrapes port `service-metrics`. With `config.alerts.prometheusRule.enabled: true` it adds a PrometheusRule with the alerting rules ([Alerts](#alerts)). It creates no Secrets, and sets no PodDisruptionBudget, container resources or spread constraints: see [High availability](#high-availability) for what to add.
 
 Every resource is named after the release, never with the chart name in it twice: a release `obsidian-vault-sync` renders the Deployment, Service, ServiceAccount, ServiceMonitor, HTTPRoute and PodDisruptionBudget `obsidian-vault-sync` and the CronJob `obsidian-vault-sync-export`. The chart sets the bjw-s `global.nameOverride` to the release name unless you set it.
 
@@ -352,6 +352,45 @@ The route has two rules, both to port `http`:
 | `config.grafana.dashboards.configMaps.label` | `grafana_dashboard` | Label the sidecar watches (the Grafana chart's `sidecar.dashboards.label`). |
 | `config.grafana.dashboards.configMaps.labelValue` | `"1"` | Value of that label (`sidecar.dashboards.labelValue`). |
 | `config.grafana.dashboards.configMaps.annotations` | `{}` | Annotations of each ConfigMap, for example the sidecar's `folderAnnotation` to choose a folder. |
+### Alerts
+
+`config.alerts` renders the packaged alerting rules (`deploy/charts/vault-sync/alerts/vault-sync.rules.yaml`) as a prometheus-operator `PrometheusRule` (`monitoring.coreos.com/v1`). [alerts.md](alerts.md) lists every alert with its threshold, the reasoning behind it, and a runbook section saying what to check and what to do; each alert's `runbook_url` points there. To enable the rules:
+
+```yaml
+config:
+  server:
+    metrics:
+      serviceMonitor: {enabled: true}
+      serviceWide: {enabled: true}
+  alerts:
+    prometheusRule:
+      enabled: true
+      labels:
+        release: kube-prometheus-stack   # whatever your Prometheus's ruleSelector matches
+```
+
+The service-wide alerts (retention, export, backlogs) read the service-wide metrics, so scrape port `service-metrics` too (`config.server.metrics.serviceWide.enabled`, or your own scrape config); without it they never fire. Every expression matches this release's namespace and job, so two releases in one Prometheus do not mix; with a scraper that labels series differently, set `config.alerts.prometheusRule.selector`.
+
+| Value | Default | Description |
+|---|---|---|
+| `config.alerts.prometheusRule.enabled` | `false` | Render the PrometheusRule. Needs the `monitoring.coreos.com` CRDs. |
+| `config.alerts.prometheusRule.labels` | `{}` | Extra labels of the PrometheusRule, for example the ones your Prometheus's `ruleSelector` matches. |
+| `config.alerts.prometheusRule.annotations` | `{}` | Annotations of the PrometheusRule. |
+| `config.alerts.prometheusRule.selector.namespace` | `null` | The `namespace` matcher added to every expression. `null` uses the release namespace; an empty string leaves the matcher out. |
+| `config.alerts.prometheusRule.selector.job` | `null` | The `job` matcher added to every expression that reads vault-sync's own metrics. `null` uses the Service name (the release name, the ServiceMonitor's `job` label); an empty string leaves the matcher out. The kube-state-metrics alerts match the namespace and the Deployment name instead. |
+| `config.alerts.runbookUrlBase` | `https://github.com/solidDoWant/vault-sync/blob/master/docs/alerts.md` | Each alert's `runbook_url` annotation is this followed by `#` and the alert's name in lower case. Empty leaves `runbook_url` out. |
+| `config.alerts.rules` | `{}` | Per-alert overrides keyed by alert name, each with `enabled`, `for` (a Prometheus duration), `severity` (`critical` or `warning`) and `threshold` (for alerts that have one; see [alerts.md](alerts.md)). A disabled alert is dropped from the rendered rules, and an unknown name fails the render. `VaultSyncNoReplicaReady` and `VaultSyncReplicasUnavailable` need kube-state-metrics and are off unless enabled here; `VaultSyncExportNotSucceeding` is on while `config.export.enabled`. |
+
+For example, to page on slow syncs only after 30 minutes above 5 seconds, and to turn on the kube-state-metrics alerts:
+
+```yaml
+config:
+  alerts:
+    rules:
+      VaultSyncSyncLatencyHigh: {threshold: 5, for: 30m}
+      VaultSyncNoReplicaReady: {enabled: true}
+      VaultSyncReplicasUnavailable: {enabled: true}
+```
 
 ### Overriding the computed resources
 

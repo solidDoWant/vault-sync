@@ -324,6 +324,37 @@ config:
         # annotations of each ConfigMap, for example
         # {grafana_folder: vault-sync} with the sidecar's folderAnnotation.
         annotations: {}
+  # alerts renders the packaged alerting rules (docs/alerts.md, one runbook
+  # section per alert) as a prometheus-operator PrometheusRule. Off by
+  # default; it needs the monitoring.coreos.com CRDs, and the service-wide
+  # alerts need config.server.metrics.serviceWide.enabled (or another scrape
+  # of port "service-metrics").
+  alerts:
+    prometheusRule:
+      enabled: false
+      # labels and annotations are added to the PrometheusRule, for example
+      # the labels your Prometheus's ruleSelector matches.
+      labels: {}
+      annotations: {}
+      # selector adds matchers to every expression, so the rules see only
+      # this release's metrics. null uses the release namespace and the
+      # Service name (the ServiceMonitor's job label); "" leaves the
+      # matcher out. kube-state-metrics alerts match the namespace and the
+      # Deployment name instead of the job.
+      selector:
+        namespace: null
+        job: null
+    # runbookUrlBase: each alert's runbook_url annotation is this plus
+    # "#<alert name in lower case>". Empty leaves runbook_url out.
+    runbookUrlBase: https://github.com/solidDoWant/vault-sync/blob/master/docs/alerts.md
+    # rules overrides single alerts by name, for example
+    #   VaultSyncSyncLatencyHigh: {threshold: 5, for: 30m}
+    #   VaultSyncConcurrencyRejections: {enabled: false}
+    #   VaultSyncNoReplicaReady: {enabled: true}  # needs kube-state-metrics
+    # with keys enabled, for (a Prometheus duration), severity (critical or
+    # warning) and threshold (for alerts that have one). Unknown names fail
+    # the render.
+    rules: {}
 
 # resources follows the bjw-s common library schema
 # (https://github.com/bjw-s-labs/helm-charts/tree/main/charts/library/common)
