@@ -15,7 +15,7 @@ All integers are big-endian. `||` is concatenation. Symmetric keys and sub-keys 
 
 `subkey(epoch_key, label) = HKDF-SHA256(ikm = epoch_key, salt = empty, info = "vault-sync/v1/subkey/" || label, length = 32)`
 
-for `label` one of `content`, `path`, `path_key_secret`, `blob_id_secret` (ASCII). Any other label is refused. The epoch key is uniformly random, so no salt is needed.
+for `label` one of `content`, `path`, `path_key_secret` (ASCII). Any other label is refused. The epoch key is uniformly random, so no salt is needed.
 
 ## Symmetric encryption (content, paths)
 
@@ -75,6 +75,8 @@ epoch_body         = "vault-sync/v1/epoch" || uuid(vault_id) || epoch (u64) || c
                      || log_seq (u64) || log_hash (32) || count (u16) || recipients
 recipient          = kind (u8) || lp(recipient_id) || SHA-256(recipient_public_key)   # sorted by kind, then recipient_id
 epoch_sig          = Ed25519(owner_sign_key, epoch_body)      # prev_commitment of epoch 1 is 32 zero bytes
+# A device accepts epoch E+1's record only if its log_seq >= epoch E's log_seq, and the current epoch's
+# log_seq >= the seq of the last remove-member entry in the verified log.
 
 invite_sign_seed   = HKDF-SHA256(ikm = secret, salt = uuid(vault_id), info = "vault-sync/v1/invitation-sign" || uuid(invitation_id), length = 32)
 invite_mac_key     = HKDF-SHA256(ikm = secret, salt = uuid(vault_id), info = "vault-sync/v1/invite-anchor" || uuid(invitation_id), length = 32)
@@ -100,13 +102,13 @@ Entry types and payloads:
 | 0x06 | leave | `uuid(user_id)` | that member |
 | 0x07 | set role | `uuid(user_id)` · role (u8) | an owner |
 | 0x08 | escrow | `0x00` (off) or `0x01 || escrow_bundle` (on) | an owner |
-| 0x09 | members (conversion) | `count (u16)` · (`bundle` · role (u8))* of every member except the creator | the genesis creator |
+| 0x09 | members (conversion) | `converted_at_seq (u64)` · `count (u16)` · (`bundle` · role (u8))* of every member except the creator | the genesis creator |
 
 The invitation's KEM public key is in the log so that every owner device wraps new epochs to it from the verified log, and verifiers check its recipient hash. Because the server sees that public key, the invitation anchor is authenticated with a MAC under a key derived from `<secret>`, which the server never learns, not by sealing. The redeemer checks the MAC in constant time before trusting the genesis hash.
 
 The replay refuses, as an out-of-order entry: an invite whose invitation id was already used; a redeem or revoke of an invitation that is not pending; a redeem by a user who is already a member; a remove, set-role or leave of a non-member; and any entry that leaves the vault with no owner.
 
-A *members* entry (`0x09`) is valid only at sequence number 2, directly after genesis, and only once. It is how a converted vault's log names the members it already had. Replay adds each listed member with its role and keys, and refuses a listed user who is the creator or appears twice.
+A *members* entry (`0x09`) is valid only at sequence number 2, directly after genesis, and only once. Every converted vault has one, even with zero other members, and a vault without one was created encrypted. It names the members the vault already had, and `converted_at_seq`: the vault's last change sequence number before the conversion, which the converting device synced to. The server applies the conversion only if its head change sequence number still equals `converted_at_seq`, as a compare-and-set under the vault row lock. Replay adds each listed member with its role and keys, and refuses a listed user who is the creator or appears twice.
 
 Roles are `0x01` owner, `0x02` editor and `0x03` viewer. An invitation is pending from its invite entry until its redeem or revoke entry. Expiry is enforced by the server, and an owner device appends a revoke entry for an invitation it sees has expired. Recipient kinds and ids are those of the key slots. The escrow recipient's public key is its age recipient string as bytes. Both implementations pass shared vectors for every format above, including rejected inputs: a wrong signer, a broken link, a reordered or omitted recipient, an unsigned rotation, and an unchained escrow key.
 
@@ -129,11 +131,11 @@ seed = HKDF-SHA256(ikm = secret (16), salt = vault_id (16), info = "vault-sync/v
 
 ## path_key and blob_id
 
-- `path_key_secret` is `subkey(epoch_1_key, "path_key_secret")` for the vault's whole life, whatever the current epoch. `blob_id_secret` is `subkey(epoch_key, "blob_id_secret")` of the revision's epoch.
+- `path_key_secret` is `subkey(epoch_1_key, "path_key_secret")` for the vault's whole life, whatever the current epoch.
 - `path_key = HMAC-SHA256(path_key_secret, UTF-8(normalize(path)))`, with `normalize` the plaintext `path_key` normalization of `SPEC.md` §5 (`internal/pathkey`, `plugin/src/core/pathkey`), so paths differing only in case or Unicode normalization share a `path_key`.
-- `blob_id = HMAC-SHA256(blob_id_secret, plaintext)`.
+- `blob_id = SHA-256(sealed content)`, the hash of the ciphertext the server stores, so the server verifies every encrypted blob's id at `CommitBlob` exactly as it does in plaintext vaults. A resumed upload with different bytes, or two uploads spliced together, fails that check and is refused. Each sealing uses a fresh random nonce, so the same plaintext gets a different `blob_id` every time it is sealed. There is no dedup across sealings or devices, and two devices never share a blob id.
 
-Both are the raw 32 bytes; how they travel on the wire is part of key management.
+`path_key` and `blob_id` are each the raw 32 bytes.
 
 ## Passphrase wrapping (user private key)
 
