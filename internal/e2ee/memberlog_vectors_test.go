@@ -157,6 +157,13 @@ type epochRecordJSON struct {
 	Signature      string          `json:"signature"`
 }
 
+// epochPositionsVector lists the log positions of the records of epochs 1
+// to N (log_seqs[i] is epoch i+1's), against the membership log vector.
+type epochPositionsVector struct {
+	Name    string   `json:"name"`
+	LogSeqs []uint64 `json:"log_seqs"`
+}
+
 type membershipLogVector struct {
 	VaultID         string               `json:"vault_id"`
 	EscrowRotations []escrowRotationJSON `json:"escrow_rotations"`
@@ -174,20 +181,22 @@ type rejectedLogVector struct {
 }
 
 type identityVectors struct {
-	Identity              []identityVector           `json:"identity"`
-	InviteSign            []inviteSignVector         `json:"invite_sign"`
-	InvitationKey         []invitationKeyVector      `json:"invitation_key"`
-	InviteAnchor          []inviteAnchorVector       `json:"invite_anchor"`
-	RejectedInviteAnchors []inviteAnchorVector       `json:"rejected_invite_anchors"`
-	AnchorList            []anchorListVector         `json:"anchor_list"`
-	RejectedAnchorLists   []rejectedAnchorListVector `json:"rejected_anchor_lists"`
-	EscrowBundles         []escrowBundleVector       `json:"escrow_bundles"`
-	EscrowChains          []escrowChainVector        `json:"escrow_chains"`
-	RejectedEscrowChains  []escrowChainVector        `json:"rejected_escrow_chains"`
-	MembershipLog         membershipLogVector        `json:"membership_log"`
-	ConvertedLog          membershipLogVector        `json:"converted_log"`
-	RejectedLogs          []rejectedLogVector        `json:"rejected_logs"`
-	RejectedEpochRecords  []epochRecordJSON          `json:"rejected_epoch_records"`
+	Identity               []identityVector           `json:"identity"`
+	InviteSign             []inviteSignVector         `json:"invite_sign"`
+	InvitationKey          []invitationKeyVector      `json:"invitation_key"`
+	InviteAnchor           []inviteAnchorVector       `json:"invite_anchor"`
+	RejectedInviteAnchors  []inviteAnchorVector       `json:"rejected_invite_anchors"`
+	AnchorList             []anchorListVector         `json:"anchor_list"`
+	RejectedAnchorLists    []rejectedAnchorListVector `json:"rejected_anchor_lists"`
+	EscrowBundles          []escrowBundleVector       `json:"escrow_bundles"`
+	EscrowChains           []escrowChainVector        `json:"escrow_chains"`
+	RejectedEscrowChains   []escrowChainVector        `json:"rejected_escrow_chains"`
+	MembershipLog          membershipLogVector        `json:"membership_log"`
+	ConvertedLog           membershipLogVector        `json:"converted_log"`
+	RejectedLogs           []rejectedLogVector        `json:"rejected_logs"`
+	RejectedEpochRecords   []epochRecordJSON          `json:"rejected_epoch_records"`
+	EpochPositions         []epochPositionsVector     `json:"epoch_positions"`
+	RejectedEpochPositions []epochPositionsVector     `json:"rejected_epoch_positions"`
 }
 
 const (
@@ -543,6 +552,19 @@ func generateIdentityVectors(t *testing.T) identityVectors {
 
 	for index := range vectors.RejectedEpochRecords {
 		vectors.RejectedEpochRecords[index].Body = ""
+	}
+
+	// Epoch positions against that log, whose only remove-member entry is seq 10.
+	vectors.EpochPositions = []epochPositionsVector{
+		{Name: "the log's epochs 1 to 3", LogSeqs: []uint64{1, 6, 10}},
+		{Name: "two epochs at one position", LogSeqs: []uint64{1, 6, 6, 10}},
+		{Name: "an epoch after the removal's", LogSeqs: []uint64{1, 6, 10, 13}},
+		{Name: "no epoch yet", LogSeqs: []uint64{}},
+	}
+	vectors.RejectedEpochPositions = []epochPositionsVector{
+		{Name: "epoch signed at a position before the previous epoch's", LogSeqs: []uint64{1, 6, 10, 9}},
+		{Name: "positions going backwards before the removal", LogSeqs: []uint64{1, 6, 4, 10}},
+		{Name: "current epoch before the last remove-member entry", LogSeqs: []uint64{1, 6}},
 	}
 
 	// Logs that must be refused.
@@ -917,6 +939,14 @@ func TestIdentityVectors(t *testing.T) {
 		for _, vector := range vectors.RejectedEpochRecords {
 			record := decodeEpochRecord(t, logVector.VaultID, vector)
 			require.ErrorIs(t, VerifyEpochRecord(logVector.VaultID, states, record), ErrEpochRecord, vector.Name)
+		}
+
+		for _, vector := range vectors.EpochPositions {
+			require.NoError(t, VerifyEpochPositions(states, vector.LogSeqs), vector.Name)
+		}
+
+		for _, vector := range vectors.RejectedEpochPositions {
+			require.ErrorIs(t, VerifyEpochPositions(states, vector.LogSeqs), ErrEpochRecord, vector.Name)
 		}
 	})
 

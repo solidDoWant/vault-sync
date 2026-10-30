@@ -157,6 +157,13 @@ func (fixture *keyFixture) serveLog(log *logtest.Log, count int) {
 func (fixture *keyFixture) addEpoch(t *testing.T, log *logtest.Log, signKey ed25519.PrivateKey, prevCommitment []byte) []byte {
 	t.Helper()
 
+	return fixture.addEpochAt(t, log, signKey, prevCommitment, uint64(len(log.Entries)))
+}
+
+// addEpochAt is addEpoch with the record at log position seq.
+func (fixture *keyFixture) addEpochAt(t *testing.T, log *logtest.Log, signKey ed25519.PrivateKey, prevCommitment []byte, seq uint64) []byte {
+	t.Helper()
+
 	epoch := uint64(len(fixture.server.epochs)) + 1
 	vaultID := fixture.vaultID.String()
 
@@ -182,8 +189,7 @@ func (fixture *keyFixture) addEpoch(t *testing.T, log *logtest.Log, signKey ed25
 		prevCommitment = make([]byte, e2ee.MACSize)
 	}
 
-	states := log.States(t)
-	head := states[len(states)-1]
+	head := log.States(t)[seq-1]
 
 	recipients, err := e2ee.EpochRecipients(head)
 	require.NoError(t, err)
@@ -300,6 +306,28 @@ func TestVaultKeysVerifyTheLogAndSignedEpochs(t *testing.T) {
 						fixture.server.epochs, fixture.server.slots = nil, nil
 						first := fixture.addEpoch(t, forged, forged.SignKey(fixture.ownerID), nil)
 						fixture.addEpoch(t, forged, forged.SignKey(fixture.ownerID), first)
+					},
+				},
+				{
+					name: "an injected epoch signed at a log position before the previous epoch's",
+					attack: func(t *testing.T, fixture *keyFixture) {
+						fixture.addEpochAt(t, fixture.log, fixture.log.SignKey(fixture.ownerID), fixture.server.epochs[1].GetCommitment(), 1)
+					},
+				},
+				{
+					name: "a current epoch signed before the log's last member removal",
+					attack: func(t *testing.T, fixture *keyFixture) {
+						for userID := range fixture.log.Secrets {
+							if userID != fixture.ownerID.String() {
+								payload, err := e2ee.IDPayload(userID)
+								require.NoError(t, err)
+
+								removal := fixture.log.Entry(t, e2ee.EntryRemoveMember, payload, fixture.log.SignKey(fixture.ownerID))
+								fixture.log.Entries = append(fixture.log.Entries, removal)
+							}
+						}
+
+						fixture.serveLog(fixture.log, len(fixture.log.Entries))
 					},
 				},
 				{

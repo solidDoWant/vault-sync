@@ -193,3 +193,31 @@ func VerifyEpochRecord(vaultID string, states []LogState, record EpochRecord) er
 
 	return nil
 }
+
+// VerifyEpochPositions checks the log positions the verified records of
+// epochs 1 to N name (logSeqs[i] is epoch i+1's) against the replayed log
+// states: positions never go backwards, so a removed or demoted owner cannot
+// sign a new epoch at a position from before the change, and the current
+// epoch's position is at or after the log's last remove-member entry. A
+// vault without an epoch yet passes. It fails with ErrEpochRecord.
+func VerifyEpochPositions(states []LogState, logSeqs []uint64) error {
+	if len(logSeqs) == 0 {
+		return nil
+	}
+
+	if len(states) == 0 {
+		return ErrEpochRecord
+	}
+
+	for index := 1; index < len(logSeqs); index++ {
+		if logSeqs[index] < logSeqs[index-1] {
+			return ErrEpochRecord
+		}
+	}
+
+	if logSeqs[len(logSeqs)-1] < states[len(states)-1].lastRemoval {
+		return ErrEpochRecord
+	}
+
+	return nil
+}
