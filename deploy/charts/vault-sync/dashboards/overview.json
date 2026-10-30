@@ -430,7 +430,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(vault_sync_s3_requests_total{namespace=\"$namespace\", job=\"$job\", outcome=\"error\"}[5m]))",
+          "expr": "sum(rate(vault_sync_s3_requests_total{namespace=\"$namespace\", job=\"$job\", outcome=\"error\"}[5m])) or vector(0)",
           "legendFormat": "",
           "refId": "A"
         }
@@ -1895,7 +1895,8 @@
               }
             ]
           },
-          "mappings": []
+          "mappings": [],
+          "noValue": "never"
         },
         "overrides": []
       },
@@ -1960,7 +1961,8 @@
               }
             ]
           },
-          "mappings": []
+          "mappings": [],
+          "noValue": "never"
         },
         "overrides": []
       },
