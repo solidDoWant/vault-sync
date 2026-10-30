@@ -1,7 +1,9 @@
 import { Code, ConnectError } from "@connectrpc/connect";
+import { v7 as uuidv7 } from "uuid";
 import { describe, expect, it } from "vitest";
 
 import { DocumentKind } from "../../gen/vaultsync/v1/types_pb";
+import { createProtocolClient } from "../protocol/client";
 import { InMemoryServer } from "./memory-server";
 import { Device } from "./testing";
 
@@ -12,7 +14,11 @@ import { Device } from "./testing";
  * vaults, so a folder rename is a live event.
  */
 
-async function setup(): Promise<{ server: InMemoryServer; a: Device; b: Device }> {
+async function setup(): Promise<{
+  server: InMemoryServer;
+  a: Device;
+  b: Device;
+}> {
   const server = new InMemoryServer();
   const a = new Device(server, "device-a");
   const b = new Device(server, "device-b");
@@ -27,18 +33,30 @@ async function folders(device: Device): Promise<string[]> {
 
 /** The live folder documents on the server: path → document id. */
 function serverFolders(server: InMemoryServer): Map<string, string> {
-  const heads = new Map<string, { path: string; deleted: boolean; folder: boolean }>();
+  const heads = new Map<
+    string,
+    { path: string; deleted: boolean; folder: boolean }
+  >();
   for (let seq = 1n; seq <= server.currentHeadSeq; seq++) {
     const revision = server.revisionAt(seq);
-    heads.set(revision.documentId, { path: new TextDecoder().decode(revision.path), deleted: revision.deleted, folder: revision.kind === DocumentKind.FOLDER });
+    heads.set(revision.documentId, {
+      path: new TextDecoder().decode(revision.path),
+      deleted: revision.deleted,
+      folder: revision.kind === DocumentKind.FOLDER,
+    });
   }
   const live = new Map<string, string>();
-  for (const [id, head] of heads) if (head.folder && !head.deleted) live.set(head.path, id);
+  for (const [id, head] of heads)
+    if (head.folder && !head.deleted) live.set(head.path, id);
   return live;
 }
 
 /** Syncs both devices until they are idle, then checks they converged on the server's heads. */
-async function converge(server: InMemoryServer, a: Device, b: Device): Promise<void> {
+async function converge(
+  server: InMemoryServer,
+  a: Device,
+  b: Device,
+): Promise<void> {
   for (let round = 0; round < 3; round++) {
     await a.sync();
     await b.sync();
@@ -77,19 +95,35 @@ describe("folder documents", () => {
     const server = new InMemoryServer();
     const b = new Device(server, "device-b");
     // A note in a folder that has no folder document yet, as a vault synced before folders were documents.
-    server.commit({ documentId: "note", path: "Projects/Plan.md", content: "the plan\n" });
+    server.commit({
+      documentId: "note",
+      path: "Projects/Plan.md",
+      content: "the plan\n",
+    });
     let raced = false;
     server.interceptor = (method, request) => {
-      if (method !== "CommitRevision" || raced || (request as { kind: DocumentKind }).kind !== DocumentKind.FOLDER) return;
+      if (
+        method !== "CommitRevision" ||
+        raced ||
+        (request as { kind: DocumentKind }).kind !== DocumentKind.FOLDER
+      )
+        return;
       raced = true;
       // Another device's folder document for the same folder lands first.
-      server.commit({ documentId: "other-folder", path: "Projects", kind: DocumentKind.FOLDER, content: "" });
+      server.commit({
+        documentId: "other-folder",
+        path: "Projects",
+        kind: DocumentKind.FOLDER,
+        content: "",
+      });
     };
     // One sync: the refused commit is resolved by a pull at once (P2), with no refused name left waiting.
     await b.sync();
     expect(raced).toBe(true);
     expect((await b.journal.load()).pending).toEqual([]);
-    expect(serverFolders(server)).toEqual(new Map([["Projects", "other-folder"]]));
+    expect(serverFolders(server)).toEqual(
+      new Map([["Projects", "other-folder"]]),
+    );
     expect(await folders(b)).toEqual(["Projects"]);
   });
 
@@ -103,7 +137,9 @@ describe("folder documents", () => {
     expect(await folders(b)).toEqual(["Name"]);
     const files = await b.files();
     expect(Object.values(files)).toEqual(["a file\n"]);
-    expect(Object.keys(files)[0]).toMatch(/^Name \(Conflicted copy user device-b \d{12}\)$/u);
+    expect(Object.keys(files)[0]).toMatch(
+      /^Name \(Conflicted copy user device-b \d{12}\)$/u,
+    );
   });
 
   it("A4: a folder renamed on A, with and without files, is renamed on B, and the old folder goes", async () => {
@@ -121,6 +157,59 @@ describe("folder documents", () => {
     // A rename keeps the folder's document.
     expect(serverFolders(server).get("Archive")).toBe(ids.get("Projects"));
     expect(serverFolders(server).get("Still empty")).toBe(ids.get("Empty"));
+  });
+
+  it.each([1, 2])(
+    "A4: a folder renamed on A with its files is renamed on B, and the old folder goes, when B syncs after A's commit %i",
+    async (cut) => {
+      const { server, a, b } = await setup();
+      await a.vault.createFolder("Empty");
+      await a.write("Projects/Plan.md", "the plan\n");
+      await converge(server, a, b);
+
+      await a.vault.handle("user").renameFolder("Projects", "Archive");
+      await a.vault.handle("user").renameFolder("Empty", "Still empty");
+      // A's connection drops after commit `cut`; B syncs before A pushes the rest.
+      let commits = 0;
+      server.interceptor = (method) => {
+        if (method === "CommitRevision" && ++commits === cut + 1)
+          throw new ConnectError("unavailable", Code.Unavailable);
+      };
+      await expect(a.sync()).rejects.toThrow();
+      server.interceptor = undefined;
+      await b.sync();
+      await b.sync();
+      await converge(server, a, b);
+      expect(await folders(a)).toEqual(["Archive", "Still empty"]);
+      expect(await folders(b)).toEqual(["Archive", "Still empty"]);
+      expect(await b.files()).toEqual({ "Archive/Plan.md": "the plan\n" });
+    },
+  );
+
+  it("A4: a folder renamed on A is renamed on B, and the old folder goes, when B pulls the folder's rename before the moves of the files in it", async () => {
+    const { server, a, b } = await setup();
+    await a.write("Projects/Plan.md", "the plan\n");
+    await converge(server, a, b);
+    const folder = serverFolders(server).get("Projects") as string;
+
+    // A's rename of the folder reaches the server before the move of the file in it.
+    const api = createProtocolClient({ transport: server.transport });
+    await api.sync.commitRevision({
+      vaultId: server.vaultId,
+      deviceId: "device-a",
+      documentId: folder,
+      revisionId: uuidv7(),
+      baseRevId: server.history(folder).at(-1)?.id ?? "",
+      kind: DocumentKind.FOLDER,
+      path: new TextEncoder().encode("Archive"),
+    });
+    await b.sync();
+    await a.vault.handle("user").renameFolder("Projects", "Archive");
+    await converge(server, a, b);
+    expect(await folders(a)).toEqual(["Archive"]);
+    expect(await folders(b)).toEqual(["Archive"]);
+    expect(await b.files()).toEqual({ "Archive/Plan.md": "the plan\n" });
+    expect(serverFolders(server)).toEqual(new Map([["Archive", folder]]));
   });
 
   it("A5: an empty folder deleted on A is deleted on B and stays deleted", async () => {
@@ -165,7 +254,8 @@ describe("folder documents", () => {
     // A's connection drops after its first commit; B syncs before A pushes the rest.
     let commits = 0;
     server.interceptor = (method) => {
-      if (method === "CommitRevision" && ++commits === 2) throw new ConnectError("unavailable", Code.Unavailable);
+      if (method === "CommitRevision" && ++commits === 2)
+        throw new ConnectError("unavailable", Code.Unavailable);
     };
     await expect(a.sync()).rejects.toThrow();
     server.interceptor = undefined;
@@ -186,7 +276,9 @@ describe("folder documents", () => {
     await a.sync();
     await b.write("Projects/Plan.md", "the plan, edited\n");
     await converge(server, a, b);
-    expect(await a.files()).toEqual({ "Projects/Plan.md": "the plan, edited\n" });
+    expect(await a.files()).toEqual({
+      "Projects/Plan.md": "the plan, edited\n",
+    });
     expect(await folders(a)).toEqual(["Projects"]);
     expect(serverFolders(server).get("Projects")).toBe(folderId);
   });
