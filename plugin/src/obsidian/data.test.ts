@@ -34,6 +34,19 @@ describe("parsePluginData", () => {
   });
 });
 
+describe("remembered passphrase parameters and pinned escrow bundles", () => {
+  it("keeps well-formed entries and drops malformed ones", () => {
+    const params = { serverUrl: "https://sync.example", issuer: "https://auth.example/", subject: "user-1", memory: 65536, iterations: 3, parallelism: 1 };
+    const pin = { serverUrl: "https://sync.example", bundle: "0a1b" };
+    const stored = {
+      ...complete,
+      passphraseParams: [params, { ...params, memory: "65536" }, { ...params, iterations: 0 }, { ...params, subject: "" }],
+      escrowPins: [pin, { serverUrl: "https://other.example", bundle: "XYZ" }, { serverUrl: "https://other.example", bundle: "abc" }],
+    };
+    expect(parsePluginData(JSON.parse(JSON.stringify(stored)))).toEqual({ ...complete, passphraseParams: [params], escrowPins: [pin] });
+  });
+});
+
 describe("config sync settings", () => {
   it("are off when nothing is stored", () => {
     expect(configSyncSettings(parsePluginData(null)).enabled).toBe(false);

@@ -14,7 +14,7 @@ import { oidcConfig, parsePluginData, persistRefreshToken, serialized, serverBas
 import { currentDeviceId, deviceRows, listDevices, removeOtherDevice, type DeviceRow } from "./obsidian/devices";
 import { discoverIdentityProvider } from "./obsidian/discovery";
 import { createEncryptedVault, escrowOffer, type EscrowOffer } from "./core/keys/encrypted-vault";
-import { changePassphraseOnDevice, enableOnDevice, encryptionState, forgetEncryptionKeys, pluginDataEpochKeyStore, unlockedUserKey, unlockOnDevice, type EncryptionOptions, type EncryptionState } from "./obsidian/encryption";
+import { changePassphraseOnDevice, enableOnDevice, encryptionState, forgetEncryptionKeys, pluginDataEpochKeyStore, pluginDataEscrowPin, unlockedUserKey, unlockOnDevice, type EncryptionOptions, type EncryptionState } from "./obsidian/encryption";
 import { HistoryModal } from "./obsidian/history-modal";
 import { requestUrlFetch, requestUrlHttpClient } from "./obsidian/http";
 import { openVaultJournal } from "./obsidian/journal";
@@ -374,7 +374,8 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
 
   /** The server's escrow key and default, for the escrow choice of a new encrypted vault. */
   async escrowOffer(): Promise<EscrowOffer> {
-    return escrowOffer(await this.protocolClient().serverInfo.getServerInfo({}));
+    const info = await this.protocolClient().serverInfo.getServerInfo({});
+    return escrowOffer(info, pluginDataEscrowPin(this.data, () => this.saveSettings(), serverBaseUrl(this.data)));
   }
 
   /**
