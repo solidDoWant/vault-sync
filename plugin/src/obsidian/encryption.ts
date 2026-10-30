@@ -1,7 +1,16 @@
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 
 import type { Argon2Params } from "../core/e2ee/e2ee";
-import { changePassphrase, enableEncryption, PassphraseAttemptsExhaustedError, storedPublicKey, unlockUserKey, WrongPassphraseError, type UserKeyClient, type UserKeyPair } from "../core/keys/user-key";
+import {
+  changePassphrase,
+  enableEncryption,
+  PassphraseAttemptsExhaustedError,
+  storedPublicKey,
+  unlockUserKey,
+  WrongPassphraseError,
+  type UserKeyClient,
+  type UserKeyPair,
+} from "../core/keys/user-key";
 import type { EpochKeyStore } from "../core/keys/vault-keys";
 import { currentAccount, sameAccount, type Account } from "./controller";
 import type { PluginData } from "./data";
@@ -12,7 +21,8 @@ import type { PluginData } from "./data";
  * for the account, but the account's key on the server is now another one,
  * so the cached key is not used and the server's key must be unlocked.
  */
-export type EncryptionState = "not-enabled" | "locked" | "key-changed" | "unlocked";
+export type EncryptionState =
+  "not-enabled" | "locked" | "key-changed" | "unlocked";
 
 export interface EncryptionOptions {
   data: PluginData;
@@ -31,7 +41,9 @@ export interface EncryptionOptions {
  * holds none, not enabled when the account has no key on the server. A
  * cached key is never deleted here: unlocking the server's key replaces it.
  */
-export async function encryptionState(options: EncryptionOptions): Promise<EncryptionState> {
+export async function encryptionState(
+  options: EncryptionOptions,
+): Promise<EncryptionState> {
   const account = await currentAccount(options.data, options.accessToken);
   const stored = await storedPublicKey(options.client);
   if (stored === undefined) return "not-enabled";
@@ -46,9 +58,16 @@ export async function encryptionState(options: EncryptionOptions): Promise<Encry
  * caches the key pair on this device. Resolves whether this device created
  * the key.
  */
-export async function enableOnDevice(options: EncryptionOptions, passphrase: string): Promise<boolean> {
+export async function enableOnDevice(
+  options: EncryptionOptions,
+  passphrase: string,
+): Promise<boolean> {
   const account = await currentAccount(options.data, options.accessToken);
-  const { key, created } = await enableEncryption(options.client, passphrase, options.params);
+  const { key, created } = await enableEncryption(
+    options.client,
+    passphrase,
+    options.params,
+  );
   await cache(options, account, key);
   return created;
 }
@@ -58,18 +77,34 @@ export async function enableOnDevice(options: EncryptionOptions, passphrase: str
  * is the account's key on the server); an error telling the user what to do
  * otherwise.
  */
-export async function unlockedUserKey(options: EncryptionOptions): Promise<UserKeyPair> {
+export async function unlockedUserKey(
+  options: EncryptionOptions,
+): Promise<UserKeyPair> {
   const state = await encryptionState(options);
   const cached = options.data.userKey;
-  if (state === "not-enabled") throw new Error("Enable end-to-end encryption for your account first.");
-  if (state !== "unlocked" || cached === undefined) throw new Error("Unlock end-to-end encryption on this device first.");
-  return { publicKey: hexToBytes(cached.publicKey), privateKey: hexToBytes(cached.privateKey) };
+  if (state === "not-enabled")
+    throw new Error("Enable end-to-end encryption for your account first.");
+  if (state !== "unlocked" || cached === undefined)
+    throw new Error("Unlock end-to-end encryption on this device first.");
+  return {
+    userId: cached.userId,
+    publicKey: hexToBytes(cached.publicKey),
+    privateKey: hexToBytes(cached.privateKey),
+    signSeed: hexToBytes(cached.signSeed),
+  };
 }
 
 /** Unlocks the signed-in account's key pair with `passphrase` and caches it on this device. */
-export async function unlockOnDevice(options: EncryptionOptions, passphrase: string): Promise<void> {
+export async function unlockOnDevice(
+  options: EncryptionOptions,
+  passphrase: string,
+): Promise<void> {
   const account = await currentAccount(options.data, options.accessToken);
-  await cache(options, account, await unlockUserKey(options.client, passphrase));
+  await cache(
+    options,
+    account,
+    await unlockUserKey(options.client, passphrase),
+  );
 }
 
 /**
@@ -77,15 +112,29 @@ export async function unlockOnDevice(options: EncryptionOptions, passphrase: str
  * `next` and caches the (unchanged) key pair on this device. Devices that
  * already unlocked the key keep using it; a new device needs `next`.
  */
-export async function changePassphraseOnDevice(options: EncryptionOptions, current: string, next: string): Promise<void> {
+export async function changePassphraseOnDevice(
+  options: EncryptionOptions,
+  current: string,
+  next: string,
+): Promise<void> {
   const account = await currentAccount(options.data, options.accessToken);
-  await cache(options, account, await changePassphrase(options.client, current, next, options.params));
+  await cache(
+    options,
+    account,
+    await changePassphrase(options.client, current, next, options.params),
+  );
 }
 
-async function cache(options: EncryptionOptions, account: Awaited<ReturnType<typeof currentAccount>>, key: UserKeyPair): Promise<void> {
+async function cache(
+  options: EncryptionOptions,
+  account: Awaited<ReturnType<typeof currentAccount>>,
+  key: UserKeyPair,
+): Promise<void> {
   options.data.userKey = {
+    userId: key.userId,
     publicKey: bytesToHex(key.publicKey),
     privateKey: bytesToHex(key.privateKey),
+    signSeed: bytesToHex(key.signSeed),
     ...account,
   };
   await options.save();
@@ -108,20 +157,36 @@ export function forgetEncryptionKeys(data: PluginData): boolean {
  * data (saved to device-local storage, never to data.json). Keys cached for
  * another account or vault are not read, and are replaced by the first save.
  */
-export function pluginDataEpochKeyStore(data: PluginData, save: () => Promise<void>, account: Account, vaultId: string): EpochKeyStore {
+export function pluginDataEpochKeyStore(
+  data: PluginData,
+  save: () => Promise<void>,
+  account: Account,
+  vaultId: string,
+): EpochKeyStore {
   return {
     load: () => {
       const cached = data.vaultKeys;
       const keys = new Map<number, Uint8Array>();
-      if (cached !== undefined && sameAccount(cached, account) && cached.vaultId === vaultId) {
-        for (const [epoch, key] of Object.entries(cached.epochs)) keys.set(Number(epoch), hexToBytes(key));
+      if (
+        cached !== undefined &&
+        sameAccount(cached, account) &&
+        cached.vaultId === vaultId
+      ) {
+        for (const [epoch, key] of Object.entries(cached.epochs))
+          keys.set(Number(epoch), hexToBytes(key));
       }
       return Promise.resolve(keys);
     },
     save: async (keys) => {
       const epochs: Record<string, string> = {};
       for (const [epoch, key] of keys) epochs[String(epoch)] = bytesToHex(key);
-      data.vaultKeys = { serverUrl: account.serverUrl, issuer: account.issuer, subject: account.subject, vaultId, epochs };
+      data.vaultKeys = {
+        serverUrl: account.serverUrl,
+        issuer: account.issuer,
+        subject: account.subject,
+        vaultId,
+        epochs,
+      };
       await save();
     },
   };
@@ -131,10 +196,15 @@ export function pluginDataEpochKeyStore(data: PluginData, save: () => Promise<vo
  * What to tell the user when enabling or unlocking failed. The time the
  * server allows the next attempt is shown in `formatTime`'s format.
  */
-export function passphraseErrorMessage(error: unknown, formatTime: (time: Date) => string): string {
+export function passphraseErrorMessage(
+  error: unknown,
+  formatTime: (time: Date) => string,
+): string {
   if (error instanceof WrongPassphraseError) return "The passphrase is wrong.";
   if (error instanceof PassphraseAttemptsExhaustedError) {
-    return error.retryTime === undefined ? "Too many wrong passphrases. Try again later." : `Too many wrong passphrases. Try again after ${formatTime(error.retryTime)}.`;
+    return error.retryTime === undefined
+      ? "Too many wrong passphrases. Try again later."
+      : `Too many wrong passphrases. Try again after ${formatTime(error.retryTime)}.`;
   }
   return error instanceof Error ? error.message : String(error);
 }

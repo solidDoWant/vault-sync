@@ -4,6 +4,8 @@ import { timestampDate } from "@bufbuild/protobuf/wkt";
 import type { Invitation, Member } from "../gen/vaultsync/v1/membership_pb";
 import { VaultRole, type Vault } from "../gen/vaultsync/v1/types_pb";
 import type { ProtocolClient } from "../core/protocol/client";
+import { createEncryptedInvitation, leaveEncryptedVault, parseInviteLink, redeemEncryptedInvitation, revokeEncryptedInvitation, setEncryptedMemberRole, type EncryptedMembershipContext, type RedeemContext } from "../core/keys/encrypted-membership";
+import type { VaultKeyManager } from "../core/keys/vault-keys";
 import { listRemoteVaults } from "./controller";
 import { isolated, shownName } from "./display-text";
 import { errorMessage } from "./status";
@@ -132,32 +134,66 @@ export function parseInvitationDays(text: string): number | undefined {
   return Number(trimmed);
 }
 
+/**
+ * What a membership change of an end-to-end encrypted vault needs: the
+ * signed-in user's key, which signs its log entry, and the vault's key
+ * manager, which wraps epoch keys to an invitation and builds the epoch a
+ * removal needs. Undefined for a plaintext vault.
+ */
+export interface EncryptedSharing {
+  context: EncryptedMembershipContext;
+  manager: VaultKeyManager;
+}
+
 /** A new invitation: its code, shown once, and its row. */
 export interface CreatedInvitation {
   code: string;
   invitation: InvitationRow;
 }
 
-/** Creates an invitation to `vaultId` with `role`, redeemable for `days` days (the server's default when undefined). */
-export async function createInvitation(client: ProtocolClient, vaultId: string, role: VaultRole, days: number | undefined, formatDate: FormatDate): Promise<CreatedInvitation> {
-  const response = await client.membership.createInvitation({ vaultId, role, ttlSeconds: days === undefined ? 0 : days * 24 * 60 * 60 });
+/**
+ * Creates an invitation to `vaultId` with `role`, redeemable for `days` days
+ * (the server's default when undefined). In an encrypted vault the code is
+ * the link this device generated, which carries the invitation's secret.
+ */
+export async function createInvitation(
+  client: ProtocolClient,
+  vaultId: string,
+  role: VaultRole,
+  days: number | undefined,
+  formatDate: FormatDate,
+  encrypted?: EncryptedSharing,
+): Promise<CreatedInvitation> {
+  const ttlSeconds = days === undefined ? 0 : days * 24 * 60 * 60;
+  if (encrypted !== undefined) {
+    const { manager } = encrypted;
+    const state = await manager.sync();
+    const created = await createEncryptedInvitation({ ...encrypted.context, currentEpoch: state.currentEpoch, epochKey: (epoch) => manager.epochKey(epoch) }, role, ttlSeconds);
+    return { code: created.link, invitation: invitationRow(created.invitation, formatDate) };
+  }
+  const response = await client.membership.createInvitation({ vaultId, role, ttlSeconds });
   if (response.invitation === undefined || response.code === "") throw new Error("the server created the invitation but returned no code");
   return { code: response.code, invitation: invitationRow(response.invitation, formatDate) };
 }
 
-export async function revokeInvitation(client: ProtocolClient, vaultId: string, invitationId: string): Promise<void> {
+export async function revokeInvitation(client: ProtocolClient, vaultId: string, invitationId: string, encrypted?: EncryptedSharing): Promise<void> {
+  if (encrypted !== undefined) return revokeEncryptedInvitation(encrypted.context, invitationId);
   await client.membership.revokeInvitation({ vaultId, invitationId });
 }
 
-export async function setMemberRole(client: ProtocolClient, vaultId: string, userId: string, role: VaultRole): Promise<void> {
+export async function setMemberRole(client: ProtocolClient, vaultId: string, userId: string, role: VaultRole, encrypted?: EncryptedSharing): Promise<void> {
+  if (encrypted !== undefined) return setEncryptedMemberRole(encrypted.context, userId, role);
   await client.membership.updateMemberRole({ vaultId, userId, role });
 }
 
-export async function removeMember(client: ProtocolClient, vaultId: string, userId: string): Promise<void> {
+/** Removes a member; in an encrypted vault together with the next epoch, which the removed member gets no key of. */
+export async function removeMember(client: ProtocolClient, vaultId: string, userId: string, encrypted?: EncryptedSharing): Promise<void> {
+  if (encrypted !== undefined) return encrypted.manager.removeMember(userId);
   await client.membership.removeMember({ vaultId, userId });
 }
 
-export async function leaveVault(client: ProtocolClient, vaultId: string): Promise<void> {
+export async function leaveVault(client: ProtocolClient, vaultId: string, encrypted?: EncryptedSharing): Promise<void> {
+  if (encrypted !== undefined) return leaveEncryptedVault(encrypted.context);
   await client.membership.leaveVault({ vaultId });
 }
 
@@ -201,14 +237,20 @@ export class AlreadyMemberError extends Error {
  * user joined. An empty code is refused without a request. The server
  * answers every unusable code with one NOT_FOUND, and so does this
  * (InviteCodeError); an existing membership is AlreadyMemberError. The code
- * is never part of an error.
+ * is never part of an error. An encrypted vault's link `<id>.<secret>.<anchor>`
+ * is redeemed with the user's key from `redeemer`, which wraps the vault's
+ * keys to it and signs the redeem entry.
  */
-export async function joinVault(client: ProtocolClient, code: string): Promise<Vault> {
+export async function joinVault(client: ProtocolClient, code: string, redeemer?: () => Promise<RedeemContext>): Promise<Vault> {
   const trimmed = code.trim();
   if (trimmed === "") throw new InviteCodeError();
+  const link = parseInviteLink(trimmed);
   let vault: Vault | undefined;
   try {
-    vault = (await client.membership.redeemInvitation({ code: trimmed })).vault;
+    if (link !== undefined) {
+      if (redeemer === undefined) throw new Error("this device cannot join an end-to-end encrypted vault");
+      vault = await redeemEncryptedInvitation(await redeemer(), link);
+    } else vault = (await client.membership.redeemInvitation({ code: trimmed })).vault;
   } catch (error) {
     if (error instanceof ConnectError && error.code === Code.NotFound) throw new InviteCodeError();
     if (error instanceof ConnectError && error.code === Code.AlreadyExists) throw new AlreadyMemberError();

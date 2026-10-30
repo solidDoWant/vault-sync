@@ -7,6 +7,12 @@ import { InvitationSchema, MemberSchema, MembershipService, type Invitation, typ
 import { VaultEncryption, VaultRole, VaultSchema, type Vault } from "../gen/vaultsync/v1/types_pb";
 import { VaultService } from "../gen/vaultsync/v1/vault_pb";
 import { createProtocolClient, type ProtocolClient } from "../core/protocol/client";
+import { generateKeyPair } from "../core/e2ee/hybrid";
+import { createEncryptedInvitation } from "../core/keys/encrypted-membership";
+import { createEncryptedVault } from "../core/keys/encrypted-vault";
+import { MemoryVaultKeyServer } from "../core/keys/memory-vault-keys";
+import type { UserKeyPair } from "../core/keys/user-key";
+import { MemoryEpochKeyStore } from "../core/keys/vault-keys";
 import {
   AlreadyMemberError,
   createInvitation,
@@ -351,6 +357,25 @@ describe("joining with an invite code (#34)", () => {
     expect(server.members.get(editorId)?.role).toBe(VaultRole.EDITOR);
     server.actAs(newcomer);
     await expect(joinVault(server.client, code)).resolves.toMatchObject({ id: vaultId });
+  });
+
+  it("redeems an encrypted vault's link with the user's key, and refuses it once used like any unusable code", async () => {
+    const owner: UserKeyPair = { ...generateKeyPair(), signSeed: new Uint8Array(32).fill(1), userId: ownerId };
+    const joiner: UserKeyPair = { ...generateKeyPair(), signSeed: new Uint8Array(32).fill(2), userId: newcomer };
+    const server = new MemoryVaultKeyServer(vaultId);
+    server.userKeys.set(owner.userId, owner.publicKey);
+    server.userKeys.set(joiner.userId, joiner.publicKey);
+    const ownerClient = createProtocolClient({ transport: server.transport(owner.userId) });
+    const store = new MemoryEpochKeyStore();
+    const vault = await createEncryptedVault({ name: "Secret", escrow: undefined, userKey: owner, vaults: ownerClient.vaults, anchors: ownerClient.userKeys, keys: ownerClient.vaultKeys, membership: ownerClient.membership, store: () => store });
+    const created = await createEncryptedInvitation({ vaultId: vault.id, userKey: owner, membership: ownerClient.membership, log: ownerClient.vaultKeys, currentEpoch: 1, epochKey: (epoch) => store.keys.get(epoch) }, VaultRole.EDITOR, 0);
+    const client = createProtocolClient({ transport: server.transport(joiner.userId) });
+    const redeemer = () => Promise.resolve({ userKey: joiner, membership: client.membership, log: client.vaultKeys, anchors: client.userKeys });
+
+    await expect(joinVault(client, ` ${created.link}\n`, redeemer)).resolves.toMatchObject({ id: vault.id, role: VaultRole.EDITOR });
+    expect(server.members.get(joiner.userId)?.role).toBe(VaultRole.EDITOR);
+    server.members.delete(joiner.userId);
+    await expect(joinVault(client, created.link, redeemer)).rejects.toBeInstanceOf(InviteCodeError);
   });
 
   it("passes on other errors, such as the member limit", async () => {

@@ -10,8 +10,14 @@
 import { timestampDate } from "@bufbuild/protobuf/wkt";
 import { Code, ConnectError, type Client } from "@connectrpc/connect";
 
-import { ErrorDetailSchema, ErrorReason } from "../../gen/vaultsync/v1/errors_pb";
-import type { PassphraseParams, UserKeyService } from "../../gen/vaultsync/v1/user_key_pb";
+import {
+  ErrorDetailSchema,
+  ErrorReason,
+} from "../../gen/vaultsync/v1/errors_pb";
+import type {
+  PassphraseParams,
+  UserKeyService,
+} from "../../gen/vaultsync/v1/user_key_pb";
 import { graphemes } from "../graphemes";
 import {
   DEFAULT_ARGON2_PARAMS,
@@ -23,15 +29,31 @@ import {
   wrapWithPassphrase,
   type Argon2Params,
 } from "../e2ee/e2ee";
-import { generateKeyPair, publicKey as publicKeyOf } from "../e2ee/hybrid";
+import { publicKey as publicKeyOf } from "../e2ee/hybrid";
+import {
+  generateUserSecret,
+  parseUserSecret,
+  USER_SECRET_SIZE,
+  userSecretBytes,
+} from "../e2ee/identity";
 
 /** The calls the key manager makes: UserKeyService (ProtocolClient.userKeys). */
-export type UserKeyClient = Pick<Client<typeof UserKeyService>, "getUserKeyParams" | "createUserKey" | "unlockUserKey" | "changePassphrase">;
+export type UserKeyClient = Pick<
+  Client<typeof UserKeyService>,
+  "getUserKeyParams" | "createUserKey" | "unlockUserKey" | "changePassphrase"
+>;
 
-/** An unlocked user key pair. `privateKey` must stay on the device. */
+/**
+ * An unlocked user key: the hybrid key pair and the Ed25519 signing seed
+ * (docs/design/crypto.md, user_secret). `privateKey` and `signSeed` must stay
+ * on the device.
+ */
 export interface UserKeyPair {
+  /** The server's user id of the key's owner (Member.user_id), which their bundle names. */
+  userId: string;
   publicKey: Uint8Array;
   privateKey: Uint8Array;
+  signSeed: Uint8Array;
 }
 
 /** The fewest characters (grapheme clusters) a new recovery passphrase may have. */
@@ -62,7 +84,11 @@ export class WrongPassphraseError extends Error {
 /** Too many wrong passphrases: the server refuses every attempt until `retryTime`. */
 export class PassphraseAttemptsExhaustedError extends Error {
   constructor(readonly retryTime: Date | undefined) {
-    super(retryTime === undefined ? "Too many wrong passphrases. Try again later." : `Too many wrong passphrases. Try again after ${retryTime.toISOString()}.`);
+    super(
+      retryTime === undefined
+        ? "Too many wrong passphrases. Try again later."
+        : `Too many wrong passphrases. Try again after ${retryTime.toISOString()}.`,
+    );
     this.name = "PassphraseAttemptsExhaustedError";
   }
 }
@@ -77,16 +103,20 @@ export class NoUserKeyError extends Error {
 
 /** Why `passphrase` cannot be a new recovery passphrase, or undefined if it can. */
 export function passphraseProblem(passphrase: string): string | undefined {
-  if (graphemes(passphrase).length < MIN_PASSPHRASE_LENGTH) return `The passphrase must have at least ${String(MIN_PASSPHRASE_LENGTH)} characters.`;
+  if (graphemes(passphrase).length < MIN_PASSPHRASE_LENGTH)
+    return `The passphrase must have at least ${String(MIN_PASSPHRASE_LENGTH)} characters.`;
   return undefined;
 }
 
 /** The public key of the user's key pair on the server, or undefined when the user has none yet. */
-export async function storedPublicKey(client: UserKeyClient): Promise<Uint8Array | undefined> {
+export async function storedPublicKey(
+  client: UserKeyClient,
+): Promise<Uint8Array | undefined> {
   try {
     return (await client.getUserKeyParams({})).publicKey;
   } catch (error) {
-    if (error instanceof ConnectError && error.code === Code.NotFound) return undefined;
+    if (error instanceof ConnectError && error.code === Code.NotFound)
+      return undefined;
     throw error;
   }
 }
@@ -100,14 +130,29 @@ export async function storedPublicKey(client: UserKeyClient): Promise<Uint8Array
  * this device unlocks that key with `passphrase` instead, and `created` is
  * false. Rejects as {@link unlockUserKey} does then.
  */
-export async function enableEncryption(client: UserKeyClient, passphrase: string, params: Argon2Params = DEFAULT_ARGON2_PARAMS): Promise<{ key: UserKeyPair; created: boolean }> {
+export async function enableEncryption(
+  client: UserKeyClient,
+  passphrase: string,
+  params: Argon2Params = DEFAULT_ARGON2_PARAMS,
+): Promise<{ key: UserKeyPair; created: boolean }> {
   const problem = passphraseProblem(passphrase);
   if (problem !== undefined) throw new Error(problem);
-  const key = generateKeyPair();
-  const { wrapped, authKey } = await wrapWithPassphrase(passphrase, key.privateKey, userKeyAad(key.publicKey), params);
+  const secret = generateUserSecret();
+  const key: UserKeyPair = {
+    userId: "",
+    publicKey: publicKeyOf(secret.kemSeed),
+    privateKey: secret.kemSeed,
+    signSeed: secret.signSeed,
+  };
+  const { wrapped, authKey } = await wrapWithPassphrase(
+    passphrase,
+    userSecretBytes(secret),
+    userKeyAad(key.publicKey),
+    params,
+  );
   const header = parsePassphraseHeader(wrapped);
   try {
-    await client.createUserKey({
+    const response = await client.createUserKey({
       publicKey: key.publicKey,
       wrappedPrivateKey: wrapped,
       params: {
@@ -119,6 +164,7 @@ export async function enableEncryption(client: UserKeyClient, passphrase: string
       },
       authKey,
     });
+    key.userId = serverUserId(response.userId);
   } catch (error) {
     if (error instanceof ConnectError && error.code === Code.AlreadyExists) {
       return { key: await unlockUserKey(client, passphrase), created: false };
@@ -126,6 +172,14 @@ export async function enableEncryption(client: UserKeyClient, passphrase: string
     throw error;
   }
   return { key, created: true };
+}
+
+const canonicalUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+
+/** The caller's user id as the server returned it with their key; anything but a canonical lowercase UUID is refused. */
+function serverUserId(userId: string): string {
+  if (!canonicalUuid.test(userId)) throw new Error("the server returned no valid user id with the user key");
+  return userId;
 }
 
 /**
@@ -137,24 +191,54 @@ export async function enableEncryption(client: UserKeyClient, passphrase: string
  * {@link NoUserKeyError}; and with an Error when what the server released
  * does not open or does not match the stored public key.
  */
-export async function unlockUserKey(client: UserKeyClient, passphrase: string): Promise<UserKeyPair> {
+export async function unlockUserKey(
+  client: UserKeyClient,
+  passphrase: string,
+): Promise<UserKeyPair> {
   const stored = await call(() => client.getUserKeyParams({}));
   const params = argon2Params(stored.params);
-  return release(client, await derivePassphraseKeys(passphrase, params.argon2, params.salt));
+  return release(
+    client,
+    await derivePassphraseKeys(passphrase, params.argon2, params.salt),
+  );
 }
 
 /** Has the server release the wrapped private key for `keys.authKey`, and unwraps it with `keys.wrapKey`. */
-async function release(client: UserKeyClient, keys: { wrapKey: Uint8Array; authKey: Uint8Array }): Promise<UserKeyPair> {
-  const released = await call(() => client.unlockUserKey({ authKey: keys.authKey }));
-  let privateKey: Uint8Array;
+async function release(
+  client: UserKeyClient,
+  keys: { wrapKey: Uint8Array; authKey: Uint8Array },
+): Promise<UserKeyPair> {
+  const released = await call(() =>
+    client.unlockUserKey({ authKey: keys.authKey }),
+  );
+  let raw: Uint8Array;
   try {
-    privateKey = unwrapWithKey(keys.wrapKey, released.wrappedPrivateKey, userKeyAad(released.publicKey));
+    raw = unwrapWithKey(
+      keys.wrapKey,
+      released.wrappedPrivateKey,
+      userKeyAad(released.publicKey),
+    );
   } catch (error) {
-    if (error instanceof DecryptError) throw new Error("the key the server released does not open with this passphrase", { cause: error });
+    if (error instanceof DecryptError)
+      throw new Error(
+        "the key the server released does not open with this passphrase",
+        { cause: error },
+      );
     throw error;
   }
-  if (!equalBytes(publicKeyOf(privateKey), released.publicKey)) throw new Error("the key the server released does not match its public key");
-  return { publicKey: released.publicKey, privateKey };
+  if (raw.length !== USER_SECRET_SIZE)
+    throw new Error("the key the server released is malformed");
+  const secret = parseUserSecret(raw);
+  if (!equalBytes(publicKeyOf(secret.kemSeed), released.publicKey))
+    throw new Error(
+      "the key the server released does not match its public key",
+    );
+  return {
+    userId: serverUserId(released.userId),
+    publicKey: released.publicKey,
+    privateKey: secret.kemSeed,
+    signSeed: secret.signSeed,
+  };
 }
 
 /**
@@ -165,13 +249,29 @@ async function release(client: UserKeyClient, keys: { wrapKey: Uint8Array; authK
  * (ChangePassphrase). The key pair never changes, so devices that hold it
  * keep working; a new device needs `next`. Resolves the key pair.
  */
-export async function changePassphrase(client: UserKeyClient, current: string, next: string, params: Argon2Params = DEFAULT_ARGON2_PARAMS): Promise<UserKeyPair> {
+export async function changePassphrase(
+  client: UserKeyClient,
+  current: string,
+  next: string,
+  params: Argon2Params = DEFAULT_ARGON2_PARAMS,
+): Promise<UserKeyPair> {
   const problem = passphraseProblem(next);
   if (problem !== undefined) throw new Error(problem);
-  const stored = argon2Params((await call(() => client.getUserKeyParams({}))).params);
-  const currentKeys = await derivePassphraseKeys(current, stored.argon2, stored.salt);
+  const stored = argon2Params(
+    (await call(() => client.getUserKeyParams({}))).params,
+  );
+  const currentKeys = await derivePassphraseKeys(
+    current,
+    stored.argon2,
+    stored.salt,
+  );
   const key = await release(client, currentKeys);
-  const { wrapped, authKey } = await wrapWithPassphrase(next, key.privateKey, userKeyAad(key.publicKey), params);
+  const { wrapped, authKey } = await wrapWithPassphrase(
+    next,
+    userSecretBytes({ kemSeed: key.privateKey, signSeed: key.signSeed }),
+    userKeyAad(key.publicKey),
+    params,
+  );
   const header = parsePassphraseHeader(wrapped);
   await call(() =>
     client.changePassphrase({
@@ -196,7 +296,10 @@ function argon2Params(params: PassphraseParams | undefined): {
   argon2: Argon2Params;
   salt: Uint8Array;
 } {
-  if (params?.suite !== SUITE_V2) throw new Error("the server's key uses an unknown crypto suite; update Vault Sync");
+  if (params?.suite !== SUITE_V2)
+    throw new Error(
+      "the server's key uses an unknown crypto suite; update Vault Sync",
+    );
   return {
     argon2: {
       memory: params.memoryKib,
@@ -215,12 +318,21 @@ async function call<Response>(run: () => Promise<Response>): Promise<Response> {
     if (!(error instanceof ConnectError)) throw error;
     const reasons = error.findDetails(ErrorDetailSchema);
     if (error.code === Code.NotFound) throw new NoUserKeyError();
-    if (error.code === Code.PermissionDenied && reasons.some((detail) => detail.reason === ErrorReason.WRONG_PASSPHRASE)) {
+    if (
+      error.code === Code.PermissionDenied &&
+      reasons.some((detail) => detail.reason === ErrorReason.WRONG_PASSPHRASE)
+    ) {
       throw new WrongPassphraseError();
     }
-    const exhausted = reasons.find((detail) => detail.reason === ErrorReason.PASSPHRASE_ATTEMPTS_EXHAUSTED);
+    const exhausted = reasons.find(
+      (detail) => detail.reason === ErrorReason.PASSPHRASE_ATTEMPTS_EXHAUSTED,
+    );
     if (error.code === Code.ResourceExhausted && exhausted !== undefined) {
-      throw new PassphraseAttemptsExhaustedError(exhausted.retryTime === undefined ? undefined : timestampDate(exhausted.retryTime));
+      throw new PassphraseAttemptsExhaustedError(
+        exhausted.retryTime === undefined
+          ? undefined
+          : timestampDate(exhausted.retryTime),
+      );
     }
     throw error;
   }

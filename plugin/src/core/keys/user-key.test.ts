@@ -2,10 +2,30 @@ import { Code, ConnectError } from "@connectrpc/connect";
 import { describe, expect, it } from "vitest";
 
 import { createProtocolClient } from "../protocol/client";
-import { parsePassphraseHeader, SUITE_V2, unwrapWithPassphrase, wrapWithPassphrase, type Argon2Params } from "../e2ee/e2ee";
+import {
+  parsePassphraseHeader,
+  SUITE_V2,
+  unwrapWithPassphrase,
+  wrapWithPassphrase,
+  type Argon2Params,
+} from "../e2ee/e2ee";
 import { generateKeyPair } from "../e2ee/hybrid";
-import { ATTEMPT_WINDOW_MS, MAX_FAILED_ATTEMPTS, MemoryUserKeyServer } from "./memory-user-keys";
-import { enableEncryption, NoUserKeyError, PassphraseAttemptsExhaustedError, passphraseProblem, storedPublicKey, unlockUserKey, userKeyAad, WrongPassphraseError } from "./user-key";
+import { userSecretBytes } from "../e2ee/identity";
+import {
+  ATTEMPT_WINDOW_MS,
+  MAX_FAILED_ATTEMPTS,
+  MemoryUserKeyServer,
+} from "./memory-user-keys";
+import {
+  enableEncryption,
+  NoUserKeyError,
+  PassphraseAttemptsExhaustedError,
+  passphraseProblem,
+  storedPublicKey,
+  unlockUserKey,
+  userKeyAad,
+  WrongPassphraseError,
+} from "./user-key";
 
 /** The cheapest parameters the bounds allow, so the tests stay fast. */
 const cheap: Argon2Params = {
@@ -26,8 +46,13 @@ function device(server: MemoryUserKeyServer) {
 
 /** Whether `needle` occurs anywhere in `haystack`. */
 function contains(haystack: Uint8Array, needle: Uint8Array): boolean {
-  outer: for (let start = 0; start + needle.length <= haystack.length; start++) {
-    for (let index = 0; index < needle.length; index++) if (haystack[start + index] !== needle[index]) continue outer;
+  outer: for (
+    let start = 0;
+    start + needle.length <= haystack.length;
+    start++
+  ) {
+    for (let index = 0; index < needle.length; index++)
+      if (haystack[start + index] !== needle[index]) continue outer;
     return true;
   }
   return false;
@@ -37,21 +62,39 @@ describe("enabling end-to-end encryption", ARGON2_TIMEOUT, () => {
   it("creates the key pair on the device and sends only the public key, the wrapped private key and the verifier", async () => {
     const server = new MemoryUserKeyServer();
 
-    const { key, created } = await enableEncryption(device(server), passphrase, cheap);
+    const { key, created } = await enableEncryption(
+      device(server),
+      passphrase,
+      cheap,
+    );
 
     expect(created).toBe(true);
     expect(server.stored?.publicKey).toEqual(key.publicKey);
-    expect(server.requests.map((request) => request.procedure)).toEqual(["CreateUserKey"]);
-    for (const request of server.requests) expect(contains(request.bytes, key.privateKey)).toBe(false);
+    expect(server.requests.map((request) => request.procedure)).toEqual([
+      "CreateUserKey",
+    ]);
+    for (const request of server.requests)
+      expect(contains(request.bytes, key.privateKey)).toBe(false);
     // What was sent is the private key wrapped under the passphrase, bound to its public key.
     const wrapped = server.stored?.wrappedPrivateKey ?? new Uint8Array();
-    expect(await unwrapWithPassphrase(passphrase, wrapped, userKeyAad(key.publicKey))).toEqual(key.privateKey);
+    expect(
+      await unwrapWithPassphrase(
+        passphrase,
+        wrapped,
+        userKeyAad(key.publicKey),
+      ),
+    ).toEqual(
+      userSecretBytes({ kemSeed: key.privateKey, signSeed: key.signSeed }),
+    );
+    expect(key.signSeed).toHaveLength(32);
   });
 
   it("refuses a passphrase shorter than the minimum before anything is sent", async () => {
     const server = new MemoryUserKeyServer();
 
-    await expect(enableEncryption(device(server), "123456789", cheap)).rejects.toThrow(/at least 10 characters/);
+    await expect(
+      enableEncryption(device(server), "123456789", cheap),
+    ).rejects.toThrow(/at least 10 characters/);
 
     expect(server.requests).toEqual([]);
     expect(passphraseProblem("123456789")).toBeDefined();
@@ -61,7 +104,10 @@ describe("enabling end-to-end encryption", ARGON2_TIMEOUT, () => {
   it("given two devices enabling at once, keeps one key, and the other device unlocks it instead of replacing it", async () => {
     const server = new MemoryUserKeyServer();
 
-    const [first, second] = await Promise.all([enableEncryption(device(server), passphrase, cheap), enableEncryption(device(server), passphrase, cheap)]);
+    const [first, second] = await Promise.all([
+      enableEncryption(device(server), passphrase, cheap),
+      enableEncryption(device(server), passphrase, cheap),
+    ]);
 
     expect(server.created).toBe(1);
     expect([first.created, second.created].sort()).toEqual([false, true]);
@@ -73,7 +119,9 @@ describe("enabling end-to-end encryption", ARGON2_TIMEOUT, () => {
     const server = new MemoryUserKeyServer();
     const winner = await enableEncryption(device(server), passphrase, cheap);
 
-    await expect(enableEncryption(device(server), "another long passphrase", cheap)).rejects.toBeInstanceOf(WrongPassphraseError);
+    await expect(
+      enableEncryption(device(server), "another long passphrase", cheap),
+    ).rejects.toBeInstanceOf(WrongPassphraseError);
 
     expect(server.created).toBe(1);
     expect(server.stored?.publicKey).toEqual(winner.key.publicKey);
@@ -89,14 +137,25 @@ describe("unlocking on another device", ARGON2_TIMEOUT, () => {
 
     expect(unlocked.publicKey).toEqual(key.publicKey);
     expect(unlocked.privateKey).toEqual(key.privateKey);
-    for (const request of server.requests) expect(contains(request.bytes, key.privateKey)).toBe(false);
+    expect(unlocked.signSeed).toEqual(key.signSeed);
+    expect(key.userId).toBe(server.userId);
+    expect(unlocked.userId).toBe(server.userId);
+    for (const request of server.requests)
+      expect(contains(request.bytes, key.privateKey)).toBe(false);
+  });
+
+  it("refuses a key the server returns without a valid user id", async () => {
+    const server = new MemoryUserKeyServer(undefined, "not-a-uuid");
+    await expect(enableEncryption(device(server), passphrase, cheap)).rejects.toThrow(/no valid user id/);
   });
 
   it("fails with a wrong passphrase", async () => {
     const server = new MemoryUserKeyServer();
     await enableEncryption(device(server), passphrase, cheap);
 
-    await expect(unlockUserKey(device(server), "not the passphrase")).rejects.toBeInstanceOf(WrongPassphraseError);
+    await expect(
+      unlockUserKey(device(server), "not the passphrase"),
+    ).rejects.toBeInstanceOf(WrongPassphraseError);
   });
 
   it(`after ${String(MAX_FAILED_ATTEMPTS)} wrong passphrases, refuses even the right one and reports the server's retry time`, async () => {
@@ -116,22 +175,32 @@ describe("unlocking on another device", ARGON2_TIMEOUT, () => {
       expect((failed as ConnectError).code).toBe(Code.PermissionDenied);
       now += 1000;
     }
-    await expect(unlockUserKey(device(server), "not the passphrase")).rejects.toBeInstanceOf(WrongPassphraseError);
+    await expect(
+      unlockUserKey(device(server), "not the passphrase"),
+    ).rejects.toBeInstanceOf(WrongPassphraseError);
     now += 1000;
-    const refused = await unlockUserKey(device(server), passphrase).catch((error: unknown) => error);
+    const refused = await unlockUserKey(device(server), passphrase).catch(
+      (error: unknown) => error,
+    );
 
     expect(refused).toBeInstanceOf(PassphraseAttemptsExhaustedError);
-    expect((refused as PassphraseAttemptsExhaustedError).retryTime).toEqual(new Date("2026-10-21T13:00:00Z"));
+    expect((refused as PassphraseAttemptsExhaustedError).retryTime).toEqual(
+      new Date("2026-10-21T13:00:00Z"),
+    );
     expect((refused as Error).message).toContain("2026-10-21T13:00:00.000Z");
 
     now = Date.parse("2026-10-21T12:00:00Z") + ATTEMPT_WINDOW_MS;
-    await expect(unlockUserKey(device(server), passphrase)).resolves.toMatchObject({ publicKey: server.stored?.publicKey });
+    await expect(
+      unlockUserKey(device(server), passphrase),
+    ).resolves.toMatchObject({ publicKey: server.stored?.publicKey });
   }, 30_000);
 
   it("reports that encryption is not enabled when the user has no key", async () => {
     const server = new MemoryUserKeyServer();
 
-    await expect(unlockUserKey(device(server), passphrase)).rejects.toBeInstanceOf(NoUserKeyError);
+    await expect(
+      unlockUserKey(device(server), passphrase),
+    ).rejects.toBeInstanceOf(NoUserKeyError);
     expect(await storedPublicKey(device(server))).toBeUndefined();
   });
 
@@ -142,16 +211,27 @@ describe("unlocking on another device", ARGON2_TIMEOUT, () => {
     if (stored === undefined) throw new Error("no key stored");
     stored.publicKey = new Uint8Array(32).fill(9);
 
-    await expect(unlockUserKey(device(server), passphrase)).rejects.toThrow(/does not open/);
+    await expect(unlockUserKey(device(server), passphrase)).rejects.toThrow(
+      /does not open/,
+    );
   });
 
   it("refuses a released key whose private key opens under the stored public key but does not belong to it", async () => {
     const server = new MemoryUserKeyServer();
     // A device that knows the passphrase stores a mismatched pair: the
-    // private key of one pair, wrapped and bound to another pair's public key.
+    // secret of one pair, wrapped and bound to another pair's public key.
     const claimed = generateKeyPair();
     const actual = generateKeyPair();
-    const { wrapped, authKey } = await wrapWithPassphrase(passphrase, actual.privateKey, userKeyAad(claimed.publicKey), cheap);
+    const secret = userSecretBytes({
+      kemSeed: actual.privateKey,
+      signSeed: new Uint8Array(32).fill(7),
+    });
+    const { wrapped, authKey } = await wrapWithPassphrase(
+      passphrase,
+      secret,
+      userKeyAad(claimed.publicKey),
+      cheap,
+    );
     const header = parsePassphraseHeader(wrapped);
     await device(server).createUserKey({
       publicKey: claimed.publicKey,
@@ -166,6 +246,8 @@ describe("unlocking on another device", ARGON2_TIMEOUT, () => {
       authKey,
     });
 
-    await expect(unlockUserKey(device(server), passphrase)).rejects.toThrow("the key the server released does not match its public key");
+    await expect(unlockUserKey(device(server), passphrase)).rejects.toThrow(
+      "the key the server released does not match its public key",
+    );
   });
 });
