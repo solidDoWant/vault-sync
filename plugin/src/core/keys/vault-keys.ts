@@ -175,12 +175,19 @@ export class VaultKeyManager {
   private keys: Map<number, Uint8Array> | undefined;
   /** Epochs whose held key the last read refused: never used or shared. */
   private refusedEpochs = new Set<number>();
+  /** The vault's head seq at its conversion to encryption, as of the last read (ListEpochs); 0 for a vault never converted. */
+  private converted = 0n;
 
   constructor(private readonly options: VaultKeyManagerOptions) {}
 
   /** The key of `epoch`, if this device holds it (and it matched the epoch's commitment). */
   epochKey(epoch: number): Uint8Array | undefined {
     return this.refusedEpochs.has(epoch) ? undefined : this.keys?.get(epoch);
+  }
+
+  /** For a vault converted in place, its head seq at the conversion, as of the last sync: epoch-0 revisions up to it are plaintext history. */
+  conversionSeq(): bigint {
+    return this.converted;
   }
 
   /**
@@ -358,6 +365,7 @@ export class VaultKeyManager {
       const response = await this.options.keys.listEpochs({ vaultId, pageToken });
       currentEpoch = response.currentEpoch;
       rotationPending = response.rotationPending;
+      this.converted = response.conversionSeq;
       return { items: response.epochs, next: response.nextPageToken };
     });
     await verifyEpochs(this.options.trust.verifiedLogs, vaultId, states, epochs, currentEpoch);

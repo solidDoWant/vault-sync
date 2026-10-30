@@ -5,7 +5,7 @@ import type { Revision } from "../../gen/vaultsync/v1/types_pb";
 import { deriveSubkey, generateKey, open } from "../e2ee/e2ee";
 import { contentAad, pathAad } from "../e2ee/revision";
 import type { VaultKeyring } from "./codec";
-import { InMemoryServer, type InMemoryServerOptions } from "./memory-server";
+import { InMemoryServer, plaintextReader, type InMemoryServerOptions } from "./memory-server";
 import { createProtocolClient } from "../protocol/client";
 import { InMemoryVault, type InMemoryVaultOptions } from "../vault/memory";
 import { SyncEngine, type SyncEngineOptions } from "./engine";
@@ -128,8 +128,14 @@ export class TestKeyring implements VaultKeyring {
     return this.keys.get(epoch);
   }
 
+  conversionSeq(): bigint {
+    return this.server.conversionSeq;
+  }
+
   /** A stored revision's path and content, decrypted with the key of its epoch. */
   reveal(revision: Revision, blob: Uint8Array | undefined): { path: string; content: Uint8Array | undefined } {
+    // A converted vault's history is plaintext until the re-key job encrypts it.
+    if (revision.epoch === 0) return plaintextReader(revision, blob);
     const key = this.keys.get(revision.epoch);
     if (key === undefined) throw new Error(`no key for epoch ${String(revision.epoch)}`);
     const path = decoder.decode(open(deriveSubkey(key, "path"), revision.path, pathAad(this.server.vaultId, revision.documentId, revision.epoch)));
