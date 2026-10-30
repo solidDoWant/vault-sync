@@ -559,6 +559,7 @@ export class SyncEngine {
           // Rule M against the head, with no base.
           const outcome = await mergeContent({
             kind: entry.kind,
+            path: localPath,
             local: localContent,
             localHash: local.hash,
             localTime: local.mtime,
@@ -770,6 +771,7 @@ export class SyncEngine {
     // Rule M.
     const merged = await mergeContent({
       kind: entry.kind,
+      path: finalPath,
       local,
       localHash: file.hash,
       localTime: file.mtime,

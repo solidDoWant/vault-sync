@@ -133,7 +133,7 @@ Client-side details (decision, #193):
 
 ## 7. Merge rules (client side)
 
-Defined by `docs/design/engine.md` §5 (rule M, rule W, rule C). Summary: Markdown (`TEXT`) is merged three-way. Other files (`BLOB`): the newest wins and the other is kept as a conflict copy. Overlapping Markdown edits: the server's version stays at the path, and the local version is saved as a conflict copy, named `<name> (Conflicted copy <user> <device> <YYYYMMDDHHMM>).<ext>` after the local user and device.
+Defined by `docs/design/engine.md` §5 (rule M, rule W, rule C). Summary: Markdown (`TEXT`) is merged three-way. Other files (`BLOB`): the newest wins and the other is kept as a conflict copy. Obsidian Bases files (`.base`, still `BLOB`) are first merged three-way as schema-validated YAML (views matched by name, filter `and`/`or` lists as sets); any conflict, a side that does not parse or validate, or an invalid merged result falls back to the `BLOB` rule. A merged `.base` is written by js-yaml (key order kept, comments dropped); when the merge equals one side, that side's bytes are kept as they are. Overlapping Markdown edits: the server's version stays at the path, and the local version is saved as a conflict copy, named `<name> (Conflicted copy <user> <device> <YYYYMMDDHHMM>).<ext>` after the local user and device.
 
 ## 8. Client durability
 

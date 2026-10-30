@@ -16,6 +16,7 @@
     "@bufbuild/protoc-gen-es": "^2.16.0",
     "@eslint/js": "^10.0.1",
     "@types/diff-match-patch": "^1.0.36",
+    "@types/js-yaml": "^4.0.9",
     "@types/mocha": "^10.0.10",
     "@types/node": "^26.6.5",
     "@wdio/cli": "^9.32.0",
@@ -47,6 +48,7 @@
     "age-encryption": "^0.3.1",
     "diff-match-patch": "^1.0.5",
     "hash-wasm": "^4.12.0",
+    "js-yaml": "^4.3.2",
     "oauth4webapi": "^3.8.8",
     "unicode-case-folding": "1.1.2",
     "uuid": "^14.0.3"

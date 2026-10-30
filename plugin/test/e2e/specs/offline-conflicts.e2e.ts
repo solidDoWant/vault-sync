@@ -83,6 +83,25 @@ describe("offline edits and conflicts between two devices", function () {
     expect(conflictCopies(files)).toEqual([]);
   });
 
+  it("edits to different views of one Bases file are merged on both devices, with no conflict copy", async function () {
+    const base = "views:\n  - type: table\n    name: Books\n    limit: 10\n  - type: cards\n    name: Gallery\n";
+    await shared("Library.base", base);
+    await goOffline(b);
+    await use(a);
+    const fromA = base.replace("limit: 10", "limit: 200");
+    await writeNote("Library.base", fromA);
+    await waitForServer(a, (heads) => heads["Library.base"] === contentOf(fromA), "A's edit");
+    await use(b);
+    await writeNote("Library.base", `${base}    order:\n      - file.name\n`);
+    await goOnline(b, remoteVaultName);
+
+    const merged = "views:\n  - type: table\n    name: Books\n    limit: 200\n  - type: cards\n    name: Gallery\n    order:\n      - file.name\n";
+    await waitForText(a, "Library.base", merged);
+    const files = await converged(a, b);
+    expect(files["Library.base"]).toBe(contentOf(merged));
+    expect(conflictCopies(files)).toEqual([]);
+  });
+
   it("[AC-12] edits to the same lines keep the server's version at the path and exactly one conflict copy of the other", async function () {
     await shared("Clash.md", "intro\nthe same line\noutro\n");
     await goOffline(b);

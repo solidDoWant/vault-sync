@@ -96,6 +96,34 @@ describe("rule M: content merge", () => {
   });
 });
 
+const basesBase = "views:\n  - type: table\n    name: Books\n    limit: 10\n  - type: cards\n    name: Gallery\n";
+
+describe("rule M: Bases (.base) files", () => {
+  it("edits to different views on two devices merge into one file with no conflict copy", async () => {
+    const { a, b } = setup();
+    await shared(a, b, "Library.base", basesBase);
+    await a.write("Library.base", "views:\n  - type: table\n    name: Books\n    limit: 200\n  - type: cards\n    name: Gallery\n");
+    await a.sync();
+    await b.write("Library.base", "views:\n  - type: table\n    name: Books\n    limit: 10\n  - type: cards\n    name: Gallery\n    order:\n      - file.name\n");
+    await converge(a, b);
+    const merged = "views:\n  - type: table\n    name: Books\n    limit: 200\n  - type: cards\n    name: Gallery\n    order:\n      - file.name\n";
+    expect(await b.files()).toEqual({ "Library.base": merged });
+    expect(await a.files()).toEqual(await b.files());
+  });
+
+  it("both devices changing one view's limit differently fall back to the blob rule's conflict copy", async () => {
+    const { a, b } = setup();
+    await shared(a, b, "Library.base", basesBase);
+    const remote = basesBase.replace("limit: 10", "limit: 200");
+    const local = basesBase.replace("limit: 10", "limit: 3000");
+    await a.write("Library.base", remote);
+    await a.sync();
+    await b.write("Library.base", local);
+    await b.sync();
+    expect(await b.files()).toEqual({ "Library.base": remote, "Library (Conflicted copy Bob device-b 202610291200).base": local });
+  });
+});
+
 describe("rule C: conflict copy names", () => {
   const date = new Date(Date.UTC(2026, 9, 29, 7, 5));
   const free = () => false;
