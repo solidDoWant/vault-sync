@@ -86,6 +86,20 @@ func TestExportSubcommand(t *testing.T) {
 	assert.Equal(t, vault.ID, summary.VaultDetails[0].ID)
 	assert.DirExists(t, filepath.Join(output, vault.ID.String()))
 
+	exportStatus := func() (string, store.LastRuns) {
+		var status string
+		require.NoError(t, pool.QueryRow(t.Context(), `SELECT status FROM export_status`).Scan(&status))
+
+		runs, err := queries.LastRuns(t.Context())
+		require.NoError(t, err)
+
+		return status, runs
+	}
+
+	status, succeeded := exportStatus()
+	assert.Equal(t, export.StatusOK, status)
+	assert.False(t, succeeded.Export.IsZero(), "the export recorded its success")
+
 	// An unrelated, non-empty directory is refused.
 	unrelated := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(unrelated, "keep.txt"), []byte("keep"), 0o600))
@@ -94,6 +108,10 @@ func TestExportSubcommand(t *testing.T) {
 	assert.Equal(t, 1, code)
 	assert.Equal(t, export.StatusFailed, summary.Status)
 	assert.FileExists(t, filepath.Join(unrelated, "keep.txt"))
+
+	status, runs := exportStatus()
+	assert.Equal(t, export.StatusFailed, status, "the failure is recorded")
+	assert.Equal(t, succeeded.Export, runs.Export, "a failed export keeps the last success")
 
 	code, _ = run("export")
 	assert.Equal(t, 2, code, "usage error")

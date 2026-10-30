@@ -28,6 +28,7 @@ type fakeStore struct {
 	invitations int64
 	estimates   store.RowEstimates
 	version     int64
+	lastRuns    store.LastRuns
 	err         error
 	block       string
 }
@@ -78,6 +79,14 @@ func (fake *fakeStore) SchemaVersion(ctx context.Context) (int64, error) {
 	return fake.version, fake.fail(ctx, "version")
 }
 
+func (fake *fakeStore) LastRuns(ctx context.Context) (store.LastRuns, error) {
+	if err := fake.fail(ctx, "last_runs"); err != nil {
+		return store.LastRuns{}, err
+	}
+
+	return fake.lastRuns, nil
+}
+
 // scrape returns every sample served at /metrics, keyed by its series
 // (the metric name and its labels, as exposed).
 func scrape(t *testing.T, handler http.Handler) map[string]float64 {
@@ -119,6 +128,10 @@ func populatedStore() *fakeStore {
 		invitations: 6,
 		estimates:   store.RowEstimates{LiveDocuments: 1000, Revisions: 5000},
 		version:     27,
+		lastRuns: store.LastRuns{
+			Retention: time.Unix(1_799_990_000, 0),
+			Export:    time.Unix(1_799_900_000, 0),
+		},
 	}
 }
 
@@ -137,6 +150,8 @@ func populatedSamples(refreshed time.Time) map[string]float64 {
 		"vault_sync_service_live_documents_approximate":                     1000,
 		"vault_sync_service_revisions_approximate":                          5000,
 		"vault_sync_service_schema_version":                                 27,
+		"vault_sync_service_retention_last_success_timestamp_seconds":       1_799_990_000,
+		"vault_sync_service_export_last_success_timestamp_seconds":          1_799_900_000,
 		"vault_sync_service_metrics_last_refresh_success_timestamp_seconds": float64(refreshed.Unix()),
 	}
 }
@@ -164,6 +179,7 @@ func TestFailedRefreshKeepsTheLastValues(t *testing.T) {
 	fake.vaults = nil
 	fake.memberships, fake.invitations, fake.version = 0, 0, 0
 	fake.estimates = store.RowEstimates{}
+	fake.lastRuns = store.LastRuns{}
 	fake.err = errDatabase
 	now = refreshed.Add(time.Minute)
 
@@ -210,4 +226,26 @@ func TestHandlerServesOnlyServiceMetrics(t *testing.T) {
 		handler.ServeHTTP(recorder, httptest.NewRequestWithContext(t.Context(), http.MethodGet, path, nil))
 		assert.Equal(t, http.StatusNotFound, recorder.Code, path)
 	}
+}
+
+func TestLastRunGaugesFollowTheDatabase(t *testing.T) {
+	metrics := servicemetrics.NewMetrics()
+	fake := populatedStore()
+	fake.lastRuns = store.LastRuns{}
+	refresher := &servicemetrics.Refresher{Store: fake, Metrics: metrics}
+
+	require.True(t, refresher.Refresh(t.Context()))
+
+	samples := scrape(t, metrics.Handler())
+	assert.Zero(t, samples["vault_sync_service_retention_last_success_timestamp_seconds"], "no run yet")
+	assert.Zero(t, samples["vault_sync_service_export_last_success_timestamp_seconds"], "no export yet")
+
+	// A retention run and an export recorded by any replica.
+	fake.lastRuns = store.LastRuns{Retention: time.Unix(1_800_000_100, 0), Export: time.Unix(1_800_000_200, 0)}
+
+	require.True(t, refresher.Refresh(t.Context()))
+
+	samples = scrape(t, metrics.Handler())
+	assert.InDelta(t, 1_800_000_100, samples["vault_sync_service_retention_last_success_timestamp_seconds"], 0)
+	assert.InDelta(t, 1_800_000_200, samples["vault_sync_service_export_last_success_timestamp_seconds"], 0)
 }

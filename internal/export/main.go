@@ -22,6 +22,9 @@ import (
 // s3CheckTimeout bounds the startup check that the bucket is reachable.
 const s3CheckTimeout = 30 * time.Second
 
+// recordTimeout bounds recording the run's outcome in the database.
+const recordTimeout = 30 * time.Second
+
 // Main runs the export subcommand: it loads the configuration through
 // lookup, exports every vault to the -out directory, and writes a one-line
 // JSON Summary to stdout (logs go to stderr). It returns the process exit
@@ -125,9 +128,11 @@ func runExport(ctx context.Context, output string, lookup func(string) (string, 
 		identities = append(identities, identity)
 	}
 
+	queries := store.New(pool)
+
 	summary, err := Run(ctx, Options{
 		Output:           output,
-		Source:           &StoreSource{Store: store.New(pool), Objects: objects},
+		Source:           &StoreSource{Store: queries, Objects: objects},
 		Logger:           logger,
 		EscrowIdentities: identities,
 	})
@@ -137,6 +142,15 @@ func runExport(ctx context.Context, output string, lookup func(string) (string, 
 		logger.InfoContext(ctx, "export finished", "status", summary.Status, "vaults", summary.Vaults,
 			"skipped_vaults", summary.SkippedVaults, "failed_vaults", summary.FailedVaults,
 			"files", summary.Files, "bytes", summary.Bytes, "unplaced", summary.Unplaced, "document_errors", summary.DocumentErrors)
+	}
+
+	// Recorded even when the run was interrupted, so the status shows it;
+	// failing to record it does not change the export's outcome.
+	recordCtx, cancelRecord := context.WithTimeout(context.WithoutCancel(ctx), recordTimeout)
+	defer cancelRecord()
+
+	if recordErr := queries.RecordExportRun(recordCtx, summary.Status); recordErr != nil {
+		logger.WarnContext(ctx, "cannot record the export's outcome in export_status; see docs/export.md for the grant it needs", "error", recordErr)
 	}
 
 	return summary, err

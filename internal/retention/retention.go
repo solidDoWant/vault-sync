@@ -115,11 +115,17 @@ type Result struct {
 // RunOnce performs one bounded pass: purge deleted vaults, then purge
 // revisions, then prune purge markers past the horizon, then collect, then
 // delete collected objects, and records it in Metrics. A run that fails in part
-// counts as a failure unless ctx was canceled (the server is stopping).
+// counts as a failure unless ctx was canceled (the server is stopping). A
+// run without errors is recorded in the database as the last successful
+// retention run, which every replica reports (Store.LastRuns).
 // Not safe for concurrent use with itself; separate server processes may
 // run it concurrently.
 func (job *Job) RunOnce(ctx context.Context) (Result, error) {
 	result, err := job.runOnce(ctx)
+	if err == nil {
+		err = job.Store.RecordMaintenanceRun(ctx, store.MaintenanceJobRetention)
+	}
+
 	job.Metrics.observe(result, err != nil && !errors.Is(ctx.Err(), context.Canceled))
 
 	return result, err
