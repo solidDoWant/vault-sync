@@ -8,18 +8,11 @@ How the server reads its configuration, how it checks it, and which variables ea
 
 ### Authentication
 
-Every RPC except `vaultsync.v1.ServerInfoService/GetServerInfo` requires an `Authorization: Bearer` header carrying a JWT access token from the issuer. `GetServerInfo` returns only public data: the build and protocol versions, the realtime subscription limit, the issuer URL and the plugin's client ID. A token is accepted only if:
-
-- it is at most 16 KiB;
-- its signature and claims meet the checks in [What the provider must offer](admin/identity-provider.md#what-the-provider-must-offer).
-
-Anything else gets the Connect code `unauthenticated` (HTTP 401) with no detail about the reason; the reason is logged at `debug` level. Tokens and claims are never logged.
-
-The issuer's key set is fetched on the first authenticated request ([Where the server gets the signing keys](admin/identity-provider.md#where-the-server-gets-the-signing-keys)). It is refetched when a token names an unknown key id (key rotation) and when the cached keys are older than one hour (so withdrawn keys stop being trusted), but at most once every 30 seconds, so a flood of tokens with made-up key ids cannot amplify into requests to the issuer. Only one fetch runs at a time, bounded at 10 seconds. While a refetch of hour-old keys is in progress, other requests are verified against the cached keys instead of waiting, so a slow or hanging issuer delays only the request that started the refetch and requests naming an unknown key id.
-
-The rules for `https` and redirects when the server fetches the discovery document and the keys moved to [Where the server gets the signing keys](admin/identity-provider.md#where-the-server-gets-the-signing-keys). A refused URL or redirect fails the fetch: before the first successful fetch every token is rejected, and afterwards the cached keys stay in use.
+The token checks and how the server fetches the signing keys moved to [Sign-in tokens](admin/security.md#sign-in-tokens).
 
 ### Authorization
+
+The operator's view (no administrator bypass, the errors for non-members and viewers, and the fixed limits) moved to [Security model](admin/security.md#authorization).
 
 Every RPC whose request names a `vault_id` is authorized against the caller's membership in that vault before it runs. There is no administrator bypass. A caller who is not a member gets `not_found` (HTTP 404), the same response as for a vault that does not exist. A `viewer` calling a write RPC (committing revisions, uploading blobs) gets `permission_denied` (HTTP 403). A malformed `vault_id` (not a lowercase hyphenated UUID) gets `invalid_argument`.
 
@@ -37,9 +30,7 @@ End-to-end encrypted vaults keep one key per epoch, which the server never sees.
 
 Where blobs and staged chunks live in the bucket, the S3 permissions and the upload cleanup moved to [PostgreSQL and S3](admin/postgresql-and-s3.md#what-lives-where).
 
-Uploads arrive in chunks of at most `VAULT_SYNC_BLOB_MAX_CHUNK_BYTES`, so no request exceeds the WAF's body limit. Each replica composes at most 4 blobs at once, at most 2 of them for one user, so one user's large commits cannot keep other users' commits waiting; a user's further commits wait their turn. A `CommitBlob` of a blob that the same replica is already committing waits for that commit and returns its result instead of composing the blob again. These limits are fixed and cannot be configured. Every chunk but the last must be at least 64 KiB (or the advertised `max_chunk_size`, if smaller). At startup the server checks that the bucket is reachable (`HeadBucket`, 30 seconds) and exits with status 1 if not.
-
-Requests and responses are bounded by `VAULT_SYNC_MAX_REQUEST_BYTES` in both directions. A response is measured by the bytes sent, after compression when the client accepts it, and one over the limit fails with `RESOURCE_EXHAUSTED`. A maximum-size chunk fits only in the binary protobuf encoding, which the plugin uses; a client using the Connect JSON encoding (base64 bytes, a third larger) must send smaller chunks and request smaller download ranges.
+The chunk and request limits moved to [Request size and the WAF](admin/security.md#request-size-and-the-waf) and [Fixed limits](admin/security.md#fixed-limits). A `CommitBlob` of a blob that the same replica is already committing waits for that commit and returns its result instead of composing the blob again. At startup the server checks that the bucket is reachable (`HeadBucket`, 30 seconds) and exits with status 1 if not.
 
 ### Revisions and the change feed
 
@@ -62,12 +53,7 @@ This section moved to [History and retention](admin/history-and-retention.md#per
 
 ### Realtime channel
 
-Clients learn about new revisions through one WebSocket per device (SPEC.md §6.4). What your ingress needs for it moved to [Install](admin/install.md#the-ingress).
-
-- **Authentication.** Browser clients (the Obsidian plugin) send the access token as the WebSocket subprotocol `vaultsync.bearer.<token>`, next to `vaultsync.v1`; other clients may send `Authorization: Bearer <token>` instead. The token is never put in the URL, and the server never logs the `Sec-WebSocket-Protocol` header; if your proxy logs request headers, exclude that one. Upgrades are refused with HTTP 401 without a valid token and HTTP 403 from a browser origin other than the Obsidian app origins. When the token expires the server sends an `UNAUTHENTICATED` error frame and closes the connection, and the client reconnects with a fresh token.
-- **Authorization.** Each subscription is checked against the caller's vault membership, and so is every notification before it is sent: a non-member gets `NOT_FOUND`, exactly as for a vault that does not exist, and a member removed from a vault stops receiving its notifications. Before each delivery one membership query per vault covers up to 1,000 subscribed users. If that query fails, the notification is not sent (clients catch up on their next pull).
-- **Multiple replicas.** Commits are announced through PostgreSQL `LISTEN/NOTIFY` (channel `vault_changed`), so a client connected to any replica is notified of commits made on every replica. Each replica holds one extra database connection for this, outside the connection pool. `LISTEN` needs a long-lived session, so `VAULT_SYNC_DATABASE_URL` must point at PostgreSQL directly or at a pooler in session mode; a pooler in transaction or statement mode (such as PgBouncer with `pool_mode = transaction`) silently breaks notifications. Every commit sends a `NOTIFY`, and PostgreSQL serializes the commits of transactions that notify on one database-wide lock; this is negligible at the scale of a sync server but worth knowing if the database is shared with write-heavy workloads. If it is lost (a database restart), the replica reconnects with backoff and then re-announces the current state of every subscribed vault, so no notification is lost for long. Clients also pull periodically, so notifications only ever reduce latency.
-- **Limits.** Besides the variables in [configuration-reference.md](admin/configuration-reference.md#realtime-channel), a client frame may be at most 4 KiB and clients may send 20 frames per second on average. Notifications for a slow client are queued only up to a fixed bound; a client that falls further behind is disconnected and reconnects.
+This section moved to [The realtime channel](admin/security.md#the-realtime-channel) and, for the database connection, [PostgreSQL and S3](admin/postgresql-and-s3.md#poolers-and-realtime).
 
 ### PostgreSQL TLS
 
@@ -75,16 +61,9 @@ This section moved to [PostgreSQL and S3](admin/postgresql-and-s3.md#postgresql-
 
 ## Endpoints
 
-The listeners and their paths moved to [Endpoints](admin/configuration.md#endpoints). On the API listener, cross-origin requests are allowed only from the Obsidian app origins `app://obsidian.md`, `capacitor://localhost` and `http://localhost`.
+The listeners and their paths moved to [Endpoints](admin/configuration.md#endpoints). Cross-origin requests moved to [Security model](admin/security.md#cross-origin-requests).
 
-The metrics listener serves:
-
-| Path | Meaning |
-|---|---|
-| `/healthz` | Liveness. Returns 200 while the process is serving. |
-| `/readyz` | Readiness. Returns 200 when PostgreSQL answers a ping within 2 seconds, and 503 when it does not or while the server is shutting down. Concurrent checks share one ping, so a burst of probes against a slow database holds at most one pool connection. No result is reused after its ping ends, and each replica checks only its own connection pool. |
-| `/metrics` | Prometheus metrics of this replica (see [Metrics](#metrics)). |
-
+The metrics listener's paths (`/healthz`, `/readyz`, `/metrics`) moved to [Monitoring](admin/monitoring.md#health-checks-and-metrics-endpoints).
 
 ## Metrics
 
@@ -92,9 +71,7 @@ The metrics listener serves:
 
 ## Service-wide metrics
 
-These describe the whole deployment rather than one replica, and are served only on `VAULT_SYNC_SERVICE_METRICS_LISTEN_ADDRESS` (`/metrics`), never on the per-instance metrics port. Every replica serves the same values, so a scrape config may scrape them from a single replica. A scrape never queries the database: each replica reads the values from PostgreSQL in the background every `VAULT_SYNC_SERVICE_METRICS_INTERVAL`, each query bounded by a 10-second timeout, and serves the last values read. A query that fails is logged (`service metrics query failed`) and keeps its metrics' previous values; alert when `vault_sync_service_metrics_last_refresh_success_timestamp_seconds` falls behind. No metric has a per-user, per-vault or per-device label.
-
-[metrics-reference.md](admin/metrics-reference.md#service-wide-metrics) lists every service-wide metric, with its type, labels and meaning.
+This section moved to [Monitoring](admin/monitoring.md#service-wide-metrics).
 
 ## Startup and shutdown
 

@@ -52,7 +52,7 @@ Each encrypted vault has its own random vault key. The devices encrypt contents 
 
 The devices do all of the wrapping, also of the escrow slot. So the server never holds a vault key that it can open.
 
-The server stores a key commitment with every vault key. A device compares each key that it unwraps with the commitment, and refuses a key slot that holds any other key. The commitment alone does not stop a server that replaces both the commitment and the key slots. The signature of an owner on every epoch stops that (see [An actively malicious server](../encryption.md#an-actively-malicious-server)).
+The server stores a key commitment with every vault key. A device compares each key that it unwraps with the commitment, and refuses a key slot that holds any other key. The commitment alone does not stop a server that replaces both the commitment and the key slots. The signature of an owner on every epoch stops that (see [An actively malicious server](security.md#an-actively-malicious-server)).
 
 Every key wrapping is hybrid post-quantum, in the standard age format. It stays secret as long as one of its two parts holds. This protects recorded ciphertext against a future quantum computer. A key slot is an ordinary age file, so you can open an escrow slot with the `age` tool (see [Recovery with age](#recovery-with-age)). [`docs/design/crypto.md`](../design/crypto.md) names the ciphers.
 

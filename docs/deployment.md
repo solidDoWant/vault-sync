@@ -20,11 +20,7 @@ This section moved to [Identity provider](admin/identity-provider.md#example-aut
 
 ## The WAF body limit (Istio and Coraza)
 
-The Coraza WAF in front of the server rejects inspected request bodies above 1 MiB. vault-sync never sends a larger request: files are uploaded in chunks of at most `VAULT_SYNC_BLOB_MAX_CHUNK_BYTES` (768 KiB by default) and every request is at most `VAULT_SYNC_MAX_REQUEST_BYTES` (1 MiB by default). Keep it that way:
-
-- Leave `config.server.maxRequestBytes` at or below the WAF's limit. The server refuses to start if a chunk (`config.server.blob.maxChunkBytes`) plus 1024 bytes does not fit in it.
-- Responses are bounded by the same `VAULT_SYNC_MAX_REQUEST_BYTES`. If the WAF also inspects response bodies, its response limit must be at least as large.
-- Request bodies are read before the bearer token is checked, so keep the limit low: it is also what an unauthenticated caller can make the server read per request.
+How the request limits of the server relate to the limits of the WAF moved to [Request size and the WAF](admin/security.md#request-size-and-the-waf).
 
 The rest of the ingress moved to [Install](admin/install.md#the-ingress).
 
@@ -253,45 +249,7 @@ This section moved to [Upgrades and high availability](admin/upgrades.md#high-av
 
 ## Monitoring
 
-The server exposes per-instance metrics on port `metrics` (9090) and service-wide metrics on port `service-metrics` (9091), listed in [metrics-reference.md](admin/metrics-reference.md). `config.server.metrics.serviceMonitor.enabled` scrapes the first with a prometheus-operator ServiceMonitor, and `config.server.metrics.serviceWide.enabled` adds the second (see [Server](#server)).
-
-The chart ships three Grafana dashboards (JSON in `deploy/charts/vault-sync/dashboards/`, packaged with the chart). Links in each lead to the others; their UIDs are stable, so links and bookmarks survive upgrades:
-
-| Dashboard | UID | What it is for |
-|---|---|---|
-| vault-sync / Overview | `vault-sync-overview` | The service-wide view: a row of alert states (stale service-wide metrics, commit listeners down, retention and OIDC key failures, RPC error ratio, S3 errors), users, devices and vaults (by encryption and sharing), stored blobs and bytes and their daily growth, documents and revisions, the upload, garbage collection, E2EE re-key and escrow re-wrap backlogs, the schema version, and when retention, the export and the service-wide metrics last succeeded. Needs the service-wide metrics. |
-| vault-sync / Server | `vault-sync-server` | Per instance (`pod` variable): RPC rate, errors by code and p50, p95 and p99 latency by procedure, RPCs and users in flight and per-user concurrency rejections, realtime connections, refused upgrades, disconnects, notifications and the commit listener's status and reconnects, blob transfer, retention work, and Go runtime and process memory, CPU, goroutines and file descriptors. |
-| vault-sync / Dependencies | `vault-sync-dependencies` | Per instance: PostgreSQL pool usage, acquire latency and query errors, the commit listener, S3 operation rates, outcomes and latency, and OIDC key set refresh failures and age. |
-
-Every dashboard has a `datasource` variable (any Prometheus data source) and `namespace` and `job` variables (the job is the Service name, which is the release name, for both endpoints of the ServiceMonitor), so one copy serves any release name and several deployments. Service-wide panels take the `max` over replicas, so they are right whether one replica or all of them are scraped.
-
-**With grafana-operator**, set `config.grafana.dashboards.enabled` and an `instanceSelector` matching your `Grafana` resource's labels; the operator imports one `GrafanaDashboard` per dashboard:
-
-```yaml
-config:
-  grafana:
-    dashboards:
-      enabled: true
-      instanceSelector:
-        matchLabels:
-          dashboards: grafana
-      folder: vault-sync
-      # allowCrossNamespaceImport: true   # when Grafana runs in another namespace
-```
-
-**With the Grafana chart's sidecar** (no operator), set `config.grafana.dashboards.configMaps.enabled`; the chart renders one ConfigMap per dashboard with the label the sidecar watches (`grafana_dashboard: "1"`, its default). If your sidecar searches only its own namespace, set its `sidecar.dashboards.searchNamespace` to `ALL` or to the release namespace:
-
-```yaml
-config:
-  grafana:
-    dashboards:
-      configMaps:
-        enabled: true
-        # label: grafana_dashboard
-        # labelValue: "1"
-```
-
-The dashboards come from the chart's own files. To import them by hand, upload the JSON files and pick the Prometheus data source in the `datasource` variable.
+This section moved to [Monitoring](admin/monitoring.md).
 
 ## Releasing
 

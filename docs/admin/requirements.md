@@ -21,7 +21,7 @@ vault-sync is built for one setup. It is a Kubernetes cluster on Talos with thes
 - **PostgreSQL** run by CloudNativePG. The server signs in to PostgreSQL with a client certificate. CloudNativePG rotates the certificates, so the server reads them again and never keeps one for the life of the process.
 - **Object storage** from Ceph RGW, through its S3 API.
 - **Sign-in** through Authentik, an OIDC provider.
-- **An Istio gateway** with a Coraza WAF (web application firewall) in front of the server. The WAF rejects inspected request bodies above 1 MiB. So the plugin uploads every file in chunks of a size that you can change, 768 KiB by default. [The WAF body limit](../deployment.md#the-waf-body-limit-istio-and-coraza) explains how the server limits fit under the WAF limit.
+- **An Istio gateway** with a Coraza WAF (web application firewall) in front of the server. The WAF rejects inspected request bodies above 1 MiB. So the plugin uploads every file in chunks of a size that you can change, 768 KiB by default. [Request size and the WAF](security.md#request-size-and-the-waf) explains how the server limits fit under the WAF limit.
 
 The examples in these pages use this setup.
 

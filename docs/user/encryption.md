@@ -137,4 +137,4 @@ Plaintext backups made before the conversion stay plaintext.
 - **File names after a removal.** A removed member who later gets a copy of the server's data can test whether a file with a name that they guess exists. They cannot read the names that exist.
 - **Old backups.** Backups of the server keep old keys and your key locked with any old passphrase.
 
-For the full threat model, see [How encryption works](../encryption.md#threat-model).
+Admins find the full threat model in [Security model](../admin/security.md#threat-model-for-encrypted-vaults).
