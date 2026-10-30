@@ -241,6 +241,7 @@ var VaultProcedures = map[string]authz.Access{
 	vaultsyncv1connect.VaultKeyServiceAddKeySlotsProcedure:      authz.Manage,
 	// Only owners run the re-key job and retire epochs
 	// (docs/design/encryption.md, "Re-encrypting history").
+	vaultsyncv1connect.VaultKeyServiceListStaleRevisionsProcedure:        authz.Manage,
 	vaultsyncv1connect.VaultKeyServiceReplaceRevisionCiphertextProcedure: authz.Manage,
 	vaultsyncv1connect.VaultKeyServiceRetireEpochProcedure:               authz.Manage,
 	// Only owners delete a vault (docs/design/sharing.md).

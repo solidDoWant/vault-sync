@@ -51,6 +51,9 @@ const (
 	// VaultKeyServiceListLogEntriesProcedure is the fully-qualified name of the VaultKeyService's
 	// ListLogEntries RPC.
 	VaultKeyServiceListLogEntriesProcedure = "/vaultsync.v1.VaultKeyService/ListLogEntries"
+	// VaultKeyServiceListStaleRevisionsProcedure is the fully-qualified name of the VaultKeyService's
+	// ListStaleRevisions RPC.
+	VaultKeyServiceListStaleRevisionsProcedure = "/vaultsync.v1.VaultKeyService/ListStaleRevisions"
 	// VaultKeyServiceReplaceRevisionCiphertextProcedure is the fully-qualified name of the
 	// VaultKeyService's ReplaceRevisionCiphertext RPC.
 	VaultKeyServiceReplaceRevisionCiphertextProcedure = "/vaultsync.v1.VaultKeyService/ReplaceRevisionCiphertext"
@@ -119,6 +122,18 @@ type VaultKeyServiceClient interface {
 	// that is malformed, unknown, expired, revoked, redeemed or for another
 	// vault.
 	ListLogEntries(context.Context, *connect.Request[v1.ListLogEntriesRequest]) (*connect.Response[v1.ListLogEntriesResponse], error)
+	// ListStaleRevisions lists every retained revision of the vault that is
+	// not on the current epoch, in ascending seq order: tombstones, folders
+	// and conflict copies included. An owner's re-key job pages through it,
+	// re-seals each revision under the current epoch and moves it with
+	// ReplaceRevisionCiphertext (docs/design/encryption.md, "Re-encrypting
+	// history"). Pages follow seq, which a rewrite does not change, so a
+	// pass lists each stale revision once. A rotation during a pass makes
+	// revisions already moved stale again: when current_epoch changes, the
+	// job restarts from the first page. Empty on a plaintext vault.
+	//
+	// Errors: INVALID_ARGUMENT for a malformed page_token.
+	ListStaleRevisions(context.Context, *connect.Request[v1.ListStaleRevisionsRequest]) (*connect.Response[v1.ListStaleRevisionsResponse], error)
 	// ReplaceRevisionCiphertext moves one stored revision from from_epoch to
 	// to_epoch: it replaces the revision's sealed path and its content
 	// reference with ones the owner's re-key job sealed under to_epoch
@@ -203,6 +218,12 @@ func NewVaultKeyServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(vaultKeyServiceMethods.ByName("ListLogEntries")),
 			connect.WithClientOptions(opts...),
 		),
+		listStaleRevisions: connect.NewClient[v1.ListStaleRevisionsRequest, v1.ListStaleRevisionsResponse](
+			httpClient,
+			baseURL+VaultKeyServiceListStaleRevisionsProcedure,
+			connect.WithSchema(vaultKeyServiceMethods.ByName("ListStaleRevisions")),
+			connect.WithClientOptions(opts...),
+		),
 		replaceRevisionCiphertext: connect.NewClient[v1.ReplaceRevisionCiphertextRequest, v1.ReplaceRevisionCiphertextResponse](
 			httpClient,
 			baseURL+VaultKeyServiceReplaceRevisionCiphertextProcedure,
@@ -226,6 +247,7 @@ type vaultKeyServiceClient struct {
 	rotateEpoch               *connect.Client[v1.RotateEpochRequest, v1.RotateEpochResponse]
 	addKeySlots               *connect.Client[v1.AddKeySlotsRequest, v1.AddKeySlotsResponse]
 	listLogEntries            *connect.Client[v1.ListLogEntriesRequest, v1.ListLogEntriesResponse]
+	listStaleRevisions        *connect.Client[v1.ListStaleRevisionsRequest, v1.ListStaleRevisionsResponse]
 	replaceRevisionCiphertext *connect.Client[v1.ReplaceRevisionCiphertextRequest, v1.ReplaceRevisionCiphertextResponse]
 	retireEpoch               *connect.Client[v1.RetireEpochRequest, v1.RetireEpochResponse]
 }
@@ -258,6 +280,11 @@ func (c *vaultKeyServiceClient) AddKeySlots(ctx context.Context, req *connect.Re
 // ListLogEntries calls vaultsync.v1.VaultKeyService.ListLogEntries.
 func (c *vaultKeyServiceClient) ListLogEntries(ctx context.Context, req *connect.Request[v1.ListLogEntriesRequest]) (*connect.Response[v1.ListLogEntriesResponse], error) {
 	return c.listLogEntries.CallUnary(ctx, req)
+}
+
+// ListStaleRevisions calls vaultsync.v1.VaultKeyService.ListStaleRevisions.
+func (c *vaultKeyServiceClient) ListStaleRevisions(ctx context.Context, req *connect.Request[v1.ListStaleRevisionsRequest]) (*connect.Response[v1.ListStaleRevisionsResponse], error) {
+	return c.listStaleRevisions.CallUnary(ctx, req)
 }
 
 // ReplaceRevisionCiphertext calls vaultsync.v1.VaultKeyService.ReplaceRevisionCiphertext.
@@ -330,6 +357,18 @@ type VaultKeyServiceHandler interface {
 	// that is malformed, unknown, expired, revoked, redeemed or for another
 	// vault.
 	ListLogEntries(context.Context, *connect.Request[v1.ListLogEntriesRequest]) (*connect.Response[v1.ListLogEntriesResponse], error)
+	// ListStaleRevisions lists every retained revision of the vault that is
+	// not on the current epoch, in ascending seq order: tombstones, folders
+	// and conflict copies included. An owner's re-key job pages through it,
+	// re-seals each revision under the current epoch and moves it with
+	// ReplaceRevisionCiphertext (docs/design/encryption.md, "Re-encrypting
+	// history"). Pages follow seq, which a rewrite does not change, so a
+	// pass lists each stale revision once. A rotation during a pass makes
+	// revisions already moved stale again: when current_epoch changes, the
+	// job restarts from the first page. Empty on a plaintext vault.
+	//
+	// Errors: INVALID_ARGUMENT for a malformed page_token.
+	ListStaleRevisions(context.Context, *connect.Request[v1.ListStaleRevisionsRequest]) (*connect.Response[v1.ListStaleRevisionsResponse], error)
 	// ReplaceRevisionCiphertext moves one stored revision from from_epoch to
 	// to_epoch: it replaces the revision's sealed path and its content
 	// reference with ones the owner's re-key job sealed under to_epoch
@@ -410,6 +449,12 @@ func NewVaultKeyServiceHandler(svc VaultKeyServiceHandler, opts ...connect.Handl
 		connect.WithSchema(vaultKeyServiceMethods.ByName("ListLogEntries")),
 		connect.WithHandlerOptions(opts...),
 	)
+	vaultKeyServiceListStaleRevisionsHandler := connect.NewUnaryHandler(
+		VaultKeyServiceListStaleRevisionsProcedure,
+		svc.ListStaleRevisions,
+		connect.WithSchema(vaultKeyServiceMethods.ByName("ListStaleRevisions")),
+		connect.WithHandlerOptions(opts...),
+	)
 	vaultKeyServiceReplaceRevisionCiphertextHandler := connect.NewUnaryHandler(
 		VaultKeyServiceReplaceRevisionCiphertextProcedure,
 		svc.ReplaceRevisionCiphertext,
@@ -436,6 +481,8 @@ func NewVaultKeyServiceHandler(svc VaultKeyServiceHandler, opts ...connect.Handl
 			vaultKeyServiceAddKeySlotsHandler.ServeHTTP(w, r)
 		case VaultKeyServiceListLogEntriesProcedure:
 			vaultKeyServiceListLogEntriesHandler.ServeHTTP(w, r)
+		case VaultKeyServiceListStaleRevisionsProcedure:
+			vaultKeyServiceListStaleRevisionsHandler.ServeHTTP(w, r)
 		case VaultKeyServiceReplaceRevisionCiphertextProcedure:
 			vaultKeyServiceReplaceRevisionCiphertextHandler.ServeHTTP(w, r)
 		case VaultKeyServiceRetireEpochProcedure:
@@ -471,6 +518,10 @@ func (UnimplementedVaultKeyServiceHandler) AddKeySlots(context.Context, *connect
 
 func (UnimplementedVaultKeyServiceHandler) ListLogEntries(context.Context, *connect.Request[v1.ListLogEntriesRequest]) (*connect.Response[v1.ListLogEntriesResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("vaultsync.v1.VaultKeyService.ListLogEntries is not implemented"))
+}
+
+func (UnimplementedVaultKeyServiceHandler) ListStaleRevisions(context.Context, *connect.Request[v1.ListStaleRevisionsRequest]) (*connect.Response[v1.ListStaleRevisionsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("vaultsync.v1.VaultKeyService.ListStaleRevisions is not implemented"))
 }
 
 func (UnimplementedVaultKeyServiceHandler) ReplaceRevisionCiphertext(context.Context, *connect.Request[v1.ReplaceRevisionCiphertextRequest]) (*connect.Response[v1.ReplaceRevisionCiphertextResponse], error) {

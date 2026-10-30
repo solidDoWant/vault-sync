@@ -28,6 +28,7 @@ type keyRecorder struct {
 	limit       int
 	after       int32
 	afterUser   uuid.UUID
+	afterSeq    int64
 	kind        store.RecipientKind
 	recipientID string
 	next        store.NextEpoch
@@ -115,6 +116,18 @@ func (recorder *keyRecorder) ListLogEntries(_ context.Context, after int64, limi
 	}
 
 	return entries, recorder.err
+}
+
+func (recorder *keyRecorder) ListStaleRevisions(_ context.Context, after int64, limit int) (store.StaleRevisions, error) {
+	recorder.calls++
+	recorder.afterSeq, recorder.limit = after, limit
+
+	page := store.StaleRevisions{CurrentEpoch: 3, Revisions: make([]store.Revision, recorder.listed)}
+	for index := range page.Revisions {
+		page.Revisions[index] = store.Revision{ID: uuid.New(), Seq: after + int64(index) + 1, Epoch: 1, Path: "sealed"}
+	}
+
+	return page, recorder.err
 }
 
 func (recorder *keyRecorder) ReplaceRevisionCiphertext(context.Context, store.RevisionCiphertext) (bool, error) {
@@ -612,4 +625,29 @@ func TestEscrowSlotsMustNameTheCurrentOrARetiringEscrowKey(t *testing.T) {
 			assert.Equal(t, test.accepted, recorder.calls == 1, "the store is reached only for an accepted escrow slot")
 		})
 	}
+}
+
+func TestListStaleRevisionsPagesBySeq(t *testing.T) {
+	recorder := &keyRecorder{listed: 2}
+	service, ctx := keyService(recorder)
+
+	first, err := service.ListStaleRevisions(ctx, connect.NewRequest(&vaultsyncv1.ListStaleRevisionsRequest{PageSize: 2}))
+	require.NoError(t, err)
+	assert.Equal(t, uint32(3), first.Msg.GetCurrentEpoch())
+	require.Len(t, first.Msg.GetRevisions(), 2)
+	assert.Equal(t, uint32(1), first.Msg.GetRevisions()[0].GetEpoch())
+	require.NotEmpty(t, first.Msg.GetNextPageToken(), "a full page has a next page")
+
+	recorder.listed = 1
+
+	second, err := service.ListStaleRevisions(ctx, connect.NewRequest(&vaultsyncv1.ListStaleRevisionsRequest{PageSize: 2, PageToken: first.Msg.GetNextPageToken()}))
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), recorder.afterSeq, "the next page starts after the last revision returned")
+	assert.Equal(t, uint64(3), second.Msg.GetRevisions()[0].GetSeq())
+	assert.Empty(t, second.Msg.GetNextPageToken(), "a short page is the last")
+
+	calls := recorder.calls
+	_, err = service.ListStaleRevisions(ctx, connect.NewRequest(&vaultsyncv1.ListStaleRevisionsRequest{PageToken: "not-a-token"}))
+	requireCode(t, connect.CodeInvalidArgument, err)
+	assert.Equal(t, calls, recorder.calls, "a malformed token reaches no store")
 }

@@ -6,7 +6,7 @@ import type { GenEnum, GenFile, GenMessage, GenService } from "@bufbuild/protobu
 import { enumDesc, fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2";
 import type { Timestamp } from "@bufbuild/protobuf/wkt";
 import { file_google_protobuf_timestamp } from "@bufbuild/protobuf/wkt";
-import type { ContentRef, LogEntry } from "./types_pb";
+import type { ContentRef, LogEntry, Revision } from "./types_pb";
 import { file_vaultsync_v1_types } from "./types_pb";
 import type { Message } from "@bufbuild/protobuf";
 
@@ -14,7 +14,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file vaultsync/v1/vault_key.proto.
  */
 export const file_vaultsync_v1_vault_key: GenFile = /*@__PURE__*/
-  fileDesc("Chx2YXVsdHN5bmMvdjEvdmF1bHRfa2V5LnByb3RvEgx2YXVsdHN5bmMudjEixQEKB0tleVNsb3QSDQoFZXBvY2gYASABKA0SNgoOcmVjaXBpZW50X2tpbmQYAiABKA4yHi52YXVsdHN5bmMudjEuS2V5UmVjaXBpZW50S2luZBIUCgxyZWNpcGllbnRfaWQYAyABKAkSEwoLd3JhcHBlZF9rZXkYBCABKAwSFwoPY3JlYXRvcl91c2VyX2lkGAUgASgJEi8KC2NyZWF0ZV90aW1lGAYgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCKzAQoIS2V5RXBvY2gSDQoFZXBvY2gYASABKA0SEgoKY29tbWl0bWVudBgCIAEoDBIXCg9jcmVhdG9yX3VzZXJfaWQYAyABKAkSLwoLY3JlYXRlX3RpbWUYBCABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEikKBnJlY29yZBgFIAEoCzIZLnZhdWx0c3luYy52MS5FcG9jaFJlY29yZBIPCgdyZXRpcmVkGAYgASgIIkYKDkVwb2NoUmVjaXBpZW50EgwKBGtpbmQYASABKA0SFAoMcmVjaXBpZW50X2lkGAIgASgMEhAKCGtleV9oYXNoGAMgASgMInUKC0Vwb2NoUmVjb3JkEg8KB2xvZ19zZXEYASABKAQSEAoIbG9nX2hhc2gYAiABKAwSMAoKcmVjaXBpZW50cxgDIAMoCzIcLnZhdWx0c3luYy52MS5FcG9jaFJlY2lwaWVudBIRCglzaWduYXR1cmUYBCABKAwiXQoJTmV4dEVwb2NoEhYKDmV4cGVjdGVkX2Vwb2NoGAEgASgNEhIKCmNvbW1pdG1lbnQYAiABKAwSJAoFc2xvdHMYAyADKAsyFS52YXVsdHN5bmMudjEuS2V5U2xvdCJBCgtNaXNzaW5nU2xvdBINCgVlcG9jaBgBIAEoDRIPCgd1c2VyX2lkGAIgASgJEhIKCnB1YmxpY19rZXkYAyABKAwihgEKE0xpc3RLZXlTbG90c1JlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkSEQoJcGFnZV9zaXplGAIgASgNEhIKCnBhZ2VfdG9rZW4YAyABKAkSNgoOcmVjaXBpZW50X2tpbmQYBCABKA4yHi52YXVsdHN5bmMudjEuS2V5UmVjaXBpZW50S2luZCJVChRMaXN0S2V5U2xvdHNSZXNwb25zZRIkCgVzbG90cxgBIAMoCzIVLnZhdWx0c3luYy52MS5LZXlTbG90EhcKD25leHRfcGFnZV90b2tlbhgCIAEoCSJMChFMaXN0RXBvY2hzUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRIRCglwYWdlX3NpemUYAiABKA0SEgoKcGFnZV90b2tlbhgDIAEoCSKGAQoSTGlzdEVwb2Noc1Jlc3BvbnNlEiYKBmVwb2NocxgBIAMoCzIWLnZhdWx0c3luYy52MS5LZXlFcG9jaBIXCg9uZXh0X3BhZ2VfdG9rZW4YAiABKAkSFQoNY3VycmVudF9lcG9jaBgDIAEoDRIYChByb3RhdGlvbl9wZW5kaW5nGAQgASgIIlIKF0xpc3RNaXNzaW5nU2xvdHNSZXF1ZXN0EhAKCHZhdWx0X2lkGAEgASgJEhEKCXBhZ2Vfc2l6ZRgCIAEoDRISCgpwYWdlX3Rva2VuGAMgASgJImUKGExpc3RNaXNzaW5nU2xvdHNSZXNwb25zZRIwCg1taXNzaW5nX3Nsb3RzGAEgAygLMhkudmF1bHRzeW5jLnYxLk1pc3NpbmdTbG90EhcKD25leHRfcGFnZV90b2tlbhgCIAEoCSKsAQoSUm90YXRlRXBvY2hSZXF1ZXN0EhAKCHZhdWx0X2lkGAEgASgJEisKCm5leHRfZXBvY2gYAiABKAsyFy52YXVsdHN5bmMudjEuTmV4dEVwb2NoEikKBnJlY29yZBgDIAEoCzIZLnZhdWx0c3luYy52MS5FcG9jaFJlY29yZBIsCgxlc2Nyb3dfZW50cnkYBCABKAsyFi52YXVsdHN5bmMudjEuTG9nRW50cnkiPAoTUm90YXRlRXBvY2hSZXNwb25zZRIlCgVlcG9jaBgBIAEoCzIWLnZhdWx0c3luYy52MS5LZXlFcG9jaCJMChJBZGRLZXlTbG90c1JlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkSJAoFc2xvdHMYAiADKAsyFS52YXVsdHN5bmMudjEuS2V5U2xvdCIkChNBZGRLZXlTbG90c1Jlc3BvbnNlEg0KBWFkZGVkGAEgASgNImcKFUxpc3RMb2dFbnRyaWVzUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRIRCglwYWdlX3NpemUYAiABKA0SEgoKcGFnZV90b2tlbhgDIAEoCRIVCg1pbnZpdGF0aW9uX2lkGAQgASgJIloKFkxpc3RMb2dFbnRyaWVzUmVzcG9uc2USJwoHZW50cmllcxgBIAMoCzIWLnZhdWx0c3luYy52MS5Mb2dFbnRyeRIXCg9uZXh0X3BhZ2VfdG9rZW4YAiABKAkirAEKIFJlcGxhY2VSZXZpc2lvbkNpcGhlcnRleHRSZXF1ZXN0EhAKCHZhdWx0X2lkGAEgASgJEhMKC3JldmlzaW9uX2lkGAIgASgJEhIKCmZyb21fZXBvY2gYAyABKA0SEAoIdG9fZXBvY2gYBCABKA0SDAoEcGF0aBgFIAEoDBItCgtjb250ZW50X3JlZhgGIAEoCzIYLnZhdWx0c3luYy52MS5Db250ZW50UmVmIjUKIVJlcGxhY2VSZXZpc2lvbkNpcGhlcnRleHRSZXNwb25zZRIQCghyZXBsYWNlZBgBIAEoCCI1ChJSZXRpcmVFcG9jaFJlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkSDQoFZXBvY2gYAiABKA0iFQoTUmV0aXJlRXBvY2hSZXNwb25zZSqVAQoQS2V5UmVjaXBpZW50S2luZBIiCh5LRVlfUkVDSVBJRU5UX0tJTkRfVU5TUEVDSUZJRUQQABIbChdLRVlfUkVDSVBJRU5UX0tJTkRfVVNFUhABEh0KGUtFWV9SRUNJUElFTlRfS0lORF9FU0NST1cQAhIhCh1LRVlfUkVDSVBJRU5UX0tJTkRfSU5WSVRBVElPThADMoMGCg9WYXVsdEtleVNlcnZpY2USVwoMTGlzdEtleVNsb3RzEiEudmF1bHRzeW5jLnYxLkxpc3RLZXlTbG90c1JlcXVlc3QaIi52YXVsdHN5bmMudjEuTGlzdEtleVNsb3RzUmVzcG9uc2UiABJRCgpMaXN0RXBvY2hzEh8udmF1bHRzeW5jLnYxLkxpc3RFcG9jaHNSZXF1ZXN0GiAudmF1bHRzeW5jLnYxLkxpc3RFcG9jaHNSZXNwb25zZSIAEmMKEExpc3RNaXNzaW5nU2xvdHMSJS52YXVsdHN5bmMudjEuTGlzdE1pc3NpbmdTbG90c1JlcXVlc3QaJi52YXVsdHN5bmMudjEuTGlzdE1pc3NpbmdTbG90c1Jlc3BvbnNlIgASVAoLUm90YXRlRXBvY2gSIC52YXVsdHN5bmMudjEuUm90YXRlRXBvY2hSZXF1ZXN0GiEudmF1bHRzeW5jLnYxLlJvdGF0ZUVwb2NoUmVzcG9uc2UiABJUCgtBZGRLZXlTbG90cxIgLnZhdWx0c3luYy52MS5BZGRLZXlTbG90c1JlcXVlc3QaIS52YXVsdHN5bmMudjEuQWRkS2V5U2xvdHNSZXNwb25zZSIAEl0KDkxpc3RMb2dFbnRyaWVzEiMudmF1bHRzeW5jLnYxLkxpc3RMb2dFbnRyaWVzUmVxdWVzdBokLnZhdWx0c3luYy52MS5MaXN0TG9nRW50cmllc1Jlc3BvbnNlIgASfgoZUmVwbGFjZVJldmlzaW9uQ2lwaGVydGV4dBIuLnZhdWx0c3luYy52MS5SZXBsYWNlUmV2aXNpb25DaXBoZXJ0ZXh0UmVxdWVzdBovLnZhdWx0c3luYy52MS5SZXBsYWNlUmV2aXNpb25DaXBoZXJ0ZXh0UmVzcG9uc2UiABJUCgtSZXRpcmVFcG9jaBIgLnZhdWx0c3luYy52MS5SZXRpcmVFcG9jaFJlcXVlc3QaIS52YXVsdHN5bmMudjEuUmV0aXJlRXBvY2hSZXNwb25zZSIAQkBaPmdpdGh1Yi5jb20vc29saWREb1dhbnQvdmF1bHQtc3luYy9nZW4vdmF1bHRzeW5jL3YxO3ZhdWx0c3luY3YxYgZwcm90bzM", [file_google_protobuf_timestamp, file_vaultsync_v1_types]);
+  fileDesc("Chx2YXVsdHN5bmMvdjEvdmF1bHRfa2V5LnByb3RvEgx2YXVsdHN5bmMudjEixQEKB0tleVNsb3QSDQoFZXBvY2gYASABKA0SNgoOcmVjaXBpZW50X2tpbmQYAiABKA4yHi52YXVsdHN5bmMudjEuS2V5UmVjaXBpZW50S2luZBIUCgxyZWNpcGllbnRfaWQYAyABKAkSEwoLd3JhcHBlZF9rZXkYBCABKAwSFwoPY3JlYXRvcl91c2VyX2lkGAUgASgJEi8KC2NyZWF0ZV90aW1lGAYgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCKzAQoIS2V5RXBvY2gSDQoFZXBvY2gYASABKA0SEgoKY29tbWl0bWVudBgCIAEoDBIXCg9jcmVhdG9yX3VzZXJfaWQYAyABKAkSLwoLY3JlYXRlX3RpbWUYBCABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wEikKBnJlY29yZBgFIAEoCzIZLnZhdWx0c3luYy52MS5FcG9jaFJlY29yZBIPCgdyZXRpcmVkGAYgASgIIkYKDkVwb2NoUmVjaXBpZW50EgwKBGtpbmQYASABKA0SFAoMcmVjaXBpZW50X2lkGAIgASgMEhAKCGtleV9oYXNoGAMgASgMInUKC0Vwb2NoUmVjb3JkEg8KB2xvZ19zZXEYASABKAQSEAoIbG9nX2hhc2gYAiABKAwSMAoKcmVjaXBpZW50cxgDIAMoCzIcLnZhdWx0c3luYy52MS5FcG9jaFJlY2lwaWVudBIRCglzaWduYXR1cmUYBCABKAwiXQoJTmV4dEVwb2NoEhYKDmV4cGVjdGVkX2Vwb2NoGAEgASgNEhIKCmNvbW1pdG1lbnQYAiABKAwSJAoFc2xvdHMYAyADKAsyFS52YXVsdHN5bmMudjEuS2V5U2xvdCJBCgtNaXNzaW5nU2xvdBINCgVlcG9jaBgBIAEoDRIPCgd1c2VyX2lkGAIgASgJEhIKCnB1YmxpY19rZXkYAyABKAwihgEKE0xpc3RLZXlTbG90c1JlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkSEQoJcGFnZV9zaXplGAIgASgNEhIKCnBhZ2VfdG9rZW4YAyABKAkSNgoOcmVjaXBpZW50X2tpbmQYBCABKA4yHi52YXVsdHN5bmMudjEuS2V5UmVjaXBpZW50S2luZCJVChRMaXN0S2V5U2xvdHNSZXNwb25zZRIkCgVzbG90cxgBIAMoCzIVLnZhdWx0c3luYy52MS5LZXlTbG90EhcKD25leHRfcGFnZV90b2tlbhgCIAEoCSJMChFMaXN0RXBvY2hzUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRIRCglwYWdlX3NpemUYAiABKA0SEgoKcGFnZV90b2tlbhgDIAEoCSKGAQoSTGlzdEVwb2Noc1Jlc3BvbnNlEiYKBmVwb2NocxgBIAMoCzIWLnZhdWx0c3luYy52MS5LZXlFcG9jaBIXCg9uZXh0X3BhZ2VfdG9rZW4YAiABKAkSFQoNY3VycmVudF9lcG9jaBgDIAEoDRIYChByb3RhdGlvbl9wZW5kaW5nGAQgASgIIlIKF0xpc3RNaXNzaW5nU2xvdHNSZXF1ZXN0EhAKCHZhdWx0X2lkGAEgASgJEhEKCXBhZ2Vfc2l6ZRgCIAEoDRISCgpwYWdlX3Rva2VuGAMgASgJImUKGExpc3RNaXNzaW5nU2xvdHNSZXNwb25zZRIwCg1taXNzaW5nX3Nsb3RzGAEgAygLMhkudmF1bHRzeW5jLnYxLk1pc3NpbmdTbG90EhcKD25leHRfcGFnZV90b2tlbhgCIAEoCSKsAQoSUm90YXRlRXBvY2hSZXF1ZXN0EhAKCHZhdWx0X2lkGAEgASgJEisKCm5leHRfZXBvY2gYAiABKAsyFy52YXVsdHN5bmMudjEuTmV4dEVwb2NoEikKBnJlY29yZBgDIAEoCzIZLnZhdWx0c3luYy52MS5FcG9jaFJlY29yZBIsCgxlc2Nyb3dfZW50cnkYBCABKAsyFi52YXVsdHN5bmMudjEuTG9nRW50cnkiPAoTUm90YXRlRXBvY2hSZXNwb25zZRIlCgVlcG9jaBgBIAEoCzIWLnZhdWx0c3luYy52MS5LZXlFcG9jaCJMChJBZGRLZXlTbG90c1JlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkSJAoFc2xvdHMYAiADKAsyFS52YXVsdHN5bmMudjEuS2V5U2xvdCIkChNBZGRLZXlTbG90c1Jlc3BvbnNlEg0KBWFkZGVkGAEgASgNImcKFUxpc3RMb2dFbnRyaWVzUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRIRCglwYWdlX3NpemUYAiABKA0SEgoKcGFnZV90b2tlbhgDIAEoCRIVCg1pbnZpdGF0aW9uX2lkGAQgASgJIloKFkxpc3RMb2dFbnRyaWVzUmVzcG9uc2USJwoHZW50cmllcxgBIAMoCzIWLnZhdWx0c3luYy52MS5Mb2dFbnRyeRIXCg9uZXh0X3BhZ2VfdG9rZW4YAiABKAkiVAoZTGlzdFN0YWxlUmV2aXNpb25zUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRIRCglwYWdlX3NpemUYAiABKA0SEgoKcGFnZV90b2tlbhgDIAEoCSJ3ChpMaXN0U3RhbGVSZXZpc2lvbnNSZXNwb25zZRIpCglyZXZpc2lvbnMYASADKAsyFi52YXVsdHN5bmMudjEuUmV2aXNpb24SFwoPbmV4dF9wYWdlX3Rva2VuGAIgASgJEhUKDWN1cnJlbnRfZXBvY2gYAyABKA0irAEKIFJlcGxhY2VSZXZpc2lvbkNpcGhlcnRleHRSZXF1ZXN0EhAKCHZhdWx0X2lkGAEgASgJEhMKC3JldmlzaW9uX2lkGAIgASgJEhIKCmZyb21fZXBvY2gYAyABKA0SEAoIdG9fZXBvY2gYBCABKA0SDAoEcGF0aBgFIAEoDBItCgtjb250ZW50X3JlZhgGIAEoCzIYLnZhdWx0c3luYy52MS5Db250ZW50UmVmIjUKIVJlcGxhY2VSZXZpc2lvbkNpcGhlcnRleHRSZXNwb25zZRIQCghyZXBsYWNlZBgBIAEoCCI1ChJSZXRpcmVFcG9jaFJlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkSDQoFZXBvY2gYAiABKA0iFQoTUmV0aXJlRXBvY2hSZXNwb25zZSqVAQoQS2V5UmVjaXBpZW50S2luZBIiCh5LRVlfUkVDSVBJRU5UX0tJTkRfVU5TUEVDSUZJRUQQABIbChdLRVlfUkVDSVBJRU5UX0tJTkRfVVNFUhABEh0KGUtFWV9SRUNJUElFTlRfS0lORF9FU0NST1cQAhIhCh1LRVlfUkVDSVBJRU5UX0tJTkRfSU5WSVRBVElPThADMu4GCg9WYXVsdEtleVNlcnZpY2USVwoMTGlzdEtleVNsb3RzEiEudmF1bHRzeW5jLnYxLkxpc3RLZXlTbG90c1JlcXVlc3QaIi52YXVsdHN5bmMudjEuTGlzdEtleVNsb3RzUmVzcG9uc2UiABJRCgpMaXN0RXBvY2hzEh8udmF1bHRzeW5jLnYxLkxpc3RFcG9jaHNSZXF1ZXN0GiAudmF1bHRzeW5jLnYxLkxpc3RFcG9jaHNSZXNwb25zZSIAEmMKEExpc3RNaXNzaW5nU2xvdHMSJS52YXVsdHN5bmMudjEuTGlzdE1pc3NpbmdTbG90c1JlcXVlc3QaJi52YXVsdHN5bmMudjEuTGlzdE1pc3NpbmdTbG90c1Jlc3BvbnNlIgASVAoLUm90YXRlRXBvY2gSIC52YXVsdHN5bmMudjEuUm90YXRlRXBvY2hSZXF1ZXN0GiEudmF1bHRzeW5jLnYxLlJvdGF0ZUVwb2NoUmVzcG9uc2UiABJUCgtBZGRLZXlTbG90cxIgLnZhdWx0c3luYy52MS5BZGRLZXlTbG90c1JlcXVlc3QaIS52YXVsdHN5bmMudjEuQWRkS2V5U2xvdHNSZXNwb25zZSIAEl0KDkxpc3RMb2dFbnRyaWVzEiMudmF1bHRzeW5jLnYxLkxpc3RMb2dFbnRyaWVzUmVxdWVzdBokLnZhdWx0c3luYy52MS5MaXN0TG9nRW50cmllc1Jlc3BvbnNlIgASaQoSTGlzdFN0YWxlUmV2aXNpb25zEicudmF1bHRzeW5jLnYxLkxpc3RTdGFsZVJldmlzaW9uc1JlcXVlc3QaKC52YXVsdHN5bmMudjEuTGlzdFN0YWxlUmV2aXNpb25zUmVzcG9uc2UiABJ+ChlSZXBsYWNlUmV2aXNpb25DaXBoZXJ0ZXh0Ei4udmF1bHRzeW5jLnYxLlJlcGxhY2VSZXZpc2lvbkNpcGhlcnRleHRSZXF1ZXN0Gi8udmF1bHRzeW5jLnYxLlJlcGxhY2VSZXZpc2lvbkNpcGhlcnRleHRSZXNwb25zZSIAElQKC1JldGlyZUVwb2NoEiAudmF1bHRzeW5jLnYxLlJldGlyZUVwb2NoUmVxdWVzdBohLnZhdWx0c3luYy52MS5SZXRpcmVFcG9jaFJlc3BvbnNlIgBCQFo+Z2l0aHViLmNvbS9zb2xpZERvV2FudC92YXVsdC1zeW5jL2dlbi92YXVsdHN5bmMvdjE7dmF1bHRzeW5jdjFiBnByb3RvMw", [file_google_protobuf_timestamp, file_vaultsync_v1_types]);
 
 /**
  * KeySlot is an epoch key wrapped to one recipient.
@@ -703,6 +703,81 @@ export const ListLogEntriesResponseSchema: GenMessage<ListLogEntriesResponse> = 
   messageDesc(file_vaultsync_v1_vault_key, 17);
 
 /**
+ * ListStaleRevisionsRequest pages through the vault's revisions not on the
+ * current epoch.
+ *
+ * @generated from message vaultsync.v1.ListStaleRevisionsRequest
+ */
+export type ListStaleRevisionsRequest = Message<"vaultsync.v1.ListStaleRevisionsRequest"> & {
+  /**
+   * The vault. The caller must be an owner.
+   *
+   * @generated from field: string vault_id = 1;
+   */
+  vaultId: string;
+
+  /**
+   * Maximum number of revisions to return. Zero selects the server default
+   * (100); larger values are capped at 1000.
+   *
+   * @generated from field: uint32 page_size = 2;
+   */
+  pageSize: number;
+
+  /**
+   * Opaque token from a previous response. Empty for the first page.
+   *
+   * @generated from field: string page_token = 3;
+   */
+  pageToken: string;
+};
+
+/**
+ * Describes the message vaultsync.v1.ListStaleRevisionsRequest.
+ * Use `create(ListStaleRevisionsRequestSchema)` to create a new message.
+ */
+export const ListStaleRevisionsRequestSchema: GenMessage<ListStaleRevisionsRequest> = /*@__PURE__*/
+  messageDesc(file_vaultsync_v1_vault_key, 18);
+
+/**
+ * ListStaleRevisionsResponse is one page of revisions not on the current
+ * epoch.
+ *
+ * @generated from message vaultsync.v1.ListStaleRevisionsResponse
+ */
+export type ListStaleRevisionsResponse = Message<"vaultsync.v1.ListStaleRevisionsResponse"> & {
+  /**
+   * Revisions in ascending seq order, each with its epoch, sealed path and
+   * content reference as stored.
+   *
+   * @generated from field: repeated vaultsync.v1.Revision revisions = 1;
+   */
+  revisions: Revision[];
+
+  /**
+   * Token for the next page; empty when there are no more.
+   *
+   * @generated from field: string next_page_token = 2;
+   */
+  nextPageToken: string;
+
+  /**
+   * The vault's current epoch when the page was read: the to_epoch for
+   * ReplaceRevisionCiphertext. 0 for a plaintext vault.
+   *
+   * @generated from field: uint32 current_epoch = 3;
+   */
+  currentEpoch: number;
+};
+
+/**
+ * Describes the message vaultsync.v1.ListStaleRevisionsResponse.
+ * Use `create(ListStaleRevisionsResponseSchema)` to create a new message.
+ */
+export const ListStaleRevisionsResponseSchema: GenMessage<ListStaleRevisionsResponse> = /*@__PURE__*/
+  messageDesc(file_vaultsync_v1_vault_key, 19);
+
+/**
  * ReplaceRevisionCiphertextRequest re-encrypts one stored revision.
  *
  * @generated from message vaultsync.v1.ReplaceRevisionCiphertextRequest
@@ -760,7 +835,7 @@ export type ReplaceRevisionCiphertextRequest = Message<"vaultsync.v1.ReplaceRevi
  * Use `create(ReplaceRevisionCiphertextRequestSchema)` to create a new message.
  */
 export const ReplaceRevisionCiphertextRequestSchema: GenMessage<ReplaceRevisionCiphertextRequest> = /*@__PURE__*/
-  messageDesc(file_vaultsync_v1_vault_key, 18);
+  messageDesc(file_vaultsync_v1_vault_key, 20);
 
 /**
  * ReplaceRevisionCiphertextResponse says whether the rewrite was applied.
@@ -783,7 +858,7 @@ export type ReplaceRevisionCiphertextResponse = Message<"vaultsync.v1.ReplaceRev
  * Use `create(ReplaceRevisionCiphertextResponseSchema)` to create a new message.
  */
 export const ReplaceRevisionCiphertextResponseSchema: GenMessage<ReplaceRevisionCiphertextResponse> = /*@__PURE__*/
-  messageDesc(file_vaultsync_v1_vault_key, 19);
+  messageDesc(file_vaultsync_v1_vault_key, 21);
 
 /**
  * RetireEpochRequest retires one epoch of the vault.
@@ -811,7 +886,7 @@ export type RetireEpochRequest = Message<"vaultsync.v1.RetireEpochRequest"> & {
  * Use `create(RetireEpochRequestSchema)` to create a new message.
  */
 export const RetireEpochRequestSchema: GenMessage<RetireEpochRequest> = /*@__PURE__*/
-  messageDesc(file_vaultsync_v1_vault_key, 20);
+  messageDesc(file_vaultsync_v1_vault_key, 22);
 
 /**
  * RetireEpochResponse is empty.
@@ -826,7 +901,7 @@ export type RetireEpochResponse = Message<"vaultsync.v1.RetireEpochResponse"> & 
  * Use `create(RetireEpochResponseSchema)` to create a new message.
  */
 export const RetireEpochResponseSchema: GenMessage<RetireEpochResponse> = /*@__PURE__*/
-  messageDesc(file_vaultsync_v1_vault_key, 21);
+  messageDesc(file_vaultsync_v1_vault_key, 23);
 
 /**
  * KeyRecipientKind is whom a key slot wraps an epoch key to.
@@ -891,7 +966,7 @@ export const KeyRecipientKindSchema: GenEnum<KeyRecipientKind> = /*@__PURE__*/
  *
  * ListKeySlots, ListEpochs and ListLogEntries are open to every member, and
  * ListLogEntries also to the holder of a pending invitation's id; ListMissingSlots,
- * RotateEpoch, AddKeySlots, ReplaceRevisionCiphertext and RetireEpoch are owner-only (PERMISSION_DENIED for editors
+ * RotateEpoch, AddKeySlots, ListStaleRevisions, ReplaceRevisionCiphertext and RetireEpoch are owner-only (PERMISSION_DENIED for editors
  * and viewers). A caller who is not a member gets NOT_FOUND, as for a vault
  * that does not exist. On a plaintext vault the lists are empty, and
  * RotateEpoch, AddKeySlots, ReplaceRevisionCiphertext and RetireEpoch are
@@ -1005,6 +1080,26 @@ export const VaultKeyService: GenService<{
     methodKind: "unary";
     input: typeof ListLogEntriesRequestSchema;
     output: typeof ListLogEntriesResponseSchema;
+  },
+  /**
+   * ListStaleRevisions lists every retained revision of the vault that is
+   * not on the current epoch, in ascending seq order: tombstones, folders
+   * and conflict copies included. An owner's re-key job pages through it,
+   * re-seals each revision under the current epoch and moves it with
+   * ReplaceRevisionCiphertext (docs/design/encryption.md, "Re-encrypting
+   * history"). Pages follow seq, which a rewrite does not change, so a
+   * pass lists each stale revision once. A rotation during a pass makes
+   * revisions already moved stale again: when current_epoch changes, the
+   * job restarts from the first page. Empty on a plaintext vault.
+   *
+   * Errors: INVALID_ARGUMENT for a malformed page_token.
+   *
+   * @generated from rpc vaultsync.v1.VaultKeyService.ListStaleRevisions
+   */
+  listStaleRevisions: {
+    methodKind: "unary";
+    input: typeof ListStaleRevisionsRequestSchema;
+    output: typeof ListStaleRevisionsResponseSchema;
   },
   /**
    * ReplaceRevisionCiphertext moves one stored revision from from_epoch to

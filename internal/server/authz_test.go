@@ -360,7 +360,9 @@ var expectedAccess = map[string]authz.Access{
 	"/vaultsync.v1.VaultKeyService/ListMissingSlots": authz.Manage,
 	"/vaultsync.v1.VaultKeyService/RotateEpoch":      authz.Manage,
 	"/vaultsync.v1.VaultKeyService/AddKeySlots":      authz.Manage,
-	// Only owners re-encrypt history and retire epochs.
+	// Only owners list stale revisions, re-encrypt history and retire
+	// epochs.
+	"/vaultsync.v1.VaultKeyService/ListStaleRevisions":        authz.Manage,
 	"/vaultsync.v1.VaultKeyService/ReplaceRevisionCiphertext": authz.Manage,
 	"/vaultsync.v1.VaultKeyService/RetireEpoch":               authz.Manage,
 	// Only owners delete a vault.

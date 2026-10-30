@@ -26,7 +26,7 @@ option go_package = "github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyn
 //
 // ListKeySlots, ListEpochs and ListLogEntries are open to every member, and
 // ListLogEntries also to the holder of a pending invitation's id; ListMissingSlots,
-// RotateEpoch, AddKeySlots, ReplaceRevisionCiphertext and RetireEpoch are owner-only (PERMISSION_DENIED for editors
+// RotateEpoch, AddKeySlots, ListStaleRevisions, ReplaceRevisionCiphertext and RetireEpoch are owner-only (PERMISSION_DENIED for editors
 // and viewers). A caller who is not a member gets NOT_FOUND, as for a vault
 // that does not exist. On a plaintext vault the lists are empty, and
 // RotateEpoch, AddKeySlots, ReplaceRevisionCiphertext and RetireEpoch are
@@ -95,6 +95,19 @@ service VaultKeyService {
   // that is malformed, unknown, expired, revoked, redeemed or for another
   // vault.
   rpc ListLogEntries(ListLogEntriesRequest) returns (ListLogEntriesResponse) {}
+
+  // ListStaleRevisions lists every retained revision of the vault that is
+  // not on the current epoch, in ascending seq order: tombstones, folders
+  // and conflict copies included. An owner's re-key job pages through it,
+  // re-seals each revision under the current epoch and moves it with
+  // ReplaceRevisionCiphertext (docs/design/encryption.md, "Re-encrypting
+  // history"). Pages follow seq, which a rewrite does not change, so a
+  // pass lists each stale revision once. A rotation during a pass makes
+  // revisions already moved stale again: when current_epoch changes, the
+  // job restarts from the first page. Empty on a plaintext vault.
+  //
+  // Errors: INVALID_ARGUMENT for a malformed page_token.
+  rpc ListStaleRevisions(ListStaleRevisionsRequest) returns (ListStaleRevisionsResponse) {}
 
   // ReplaceRevisionCiphertext moves one stored revision from from_epoch to
   // to_epoch: it replaces the revision's sealed path and its content
@@ -367,6 +380,31 @@ message ListLogEntriesResponse {
   repeated LogEntry entries = 1;
   // Token for the next page; empty when there are no more.
   string next_page_token = 2;
+}
+
+// ListStaleRevisionsRequest pages through the vault's revisions not on the
+// current epoch.
+message ListStaleRevisionsRequest {
+  // The vault. The caller must be an owner.
+  string vault_id = 1;
+  // Maximum number of revisions to return. Zero selects the server default
+  // (100); larger values are capped at 1000.
+  uint32 page_size = 2;
+  // Opaque token from a previous response. Empty for the first page.
+  string page_token = 3;
+}
+
+// ListStaleRevisionsResponse is one page of revisions not on the current
+// epoch.
+message ListStaleRevisionsResponse {
+  // Revisions in ascending seq order, each with its epoch, sealed path and
+  // content reference as stored.
+  repeated Revision revisions = 1;
+  // Token for the next page; empty when there are no more.
+  string next_page_token = 2;
+  // The vault's current epoch when the page was read: the to_epoch for
+  // ReplaceRevisionCiphertext. 0 for a plaintext vault.
+  uint32 current_epoch = 3;
 }
 
 // ReplaceRevisionCiphertextRequest re-encrypts one stored revision.

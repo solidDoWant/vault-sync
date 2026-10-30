@@ -1295,6 +1295,139 @@ func (x *ListLogEntriesResponse) GetNextPageToken() string {
 	return ""
 }
 
+// ListStaleRevisionsRequest pages through the vault's revisions not on the
+// current epoch.
+type ListStaleRevisionsRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The vault. The caller must be an owner.
+	VaultId string `protobuf:"bytes,1,opt,name=vault_id,json=vaultId,proto3" json:"vault_id,omitempty"`
+	// Maximum number of revisions to return. Zero selects the server default
+	// (100); larger values are capped at 1000.
+	PageSize uint32 `protobuf:"varint,2,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`
+	// Opaque token from a previous response. Empty for the first page.
+	PageToken     string `protobuf:"bytes,3,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListStaleRevisionsRequest) Reset() {
+	*x = ListStaleRevisionsRequest{}
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListStaleRevisionsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListStaleRevisionsRequest) ProtoMessage() {}
+
+func (x *ListStaleRevisionsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListStaleRevisionsRequest.ProtoReflect.Descriptor instead.
+func (*ListStaleRevisionsRequest) Descriptor() ([]byte, []int) {
+	return file_vaultsync_v1_vault_key_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *ListStaleRevisionsRequest) GetVaultId() string {
+	if x != nil {
+		return x.VaultId
+	}
+	return ""
+}
+
+func (x *ListStaleRevisionsRequest) GetPageSize() uint32 {
+	if x != nil {
+		return x.PageSize
+	}
+	return 0
+}
+
+func (x *ListStaleRevisionsRequest) GetPageToken() string {
+	if x != nil {
+		return x.PageToken
+	}
+	return ""
+}
+
+// ListStaleRevisionsResponse is one page of revisions not on the current
+// epoch.
+type ListStaleRevisionsResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Revisions in ascending seq order, each with its epoch, sealed path and
+	// content reference as stored.
+	Revisions []*Revision `protobuf:"bytes,1,rep,name=revisions,proto3" json:"revisions,omitempty"`
+	// Token for the next page; empty when there are no more.
+	NextPageToken string `protobuf:"bytes,2,opt,name=next_page_token,json=nextPageToken,proto3" json:"next_page_token,omitempty"`
+	// The vault's current epoch when the page was read: the to_epoch for
+	// ReplaceRevisionCiphertext. 0 for a plaintext vault.
+	CurrentEpoch  uint32 `protobuf:"varint,3,opt,name=current_epoch,json=currentEpoch,proto3" json:"current_epoch,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListStaleRevisionsResponse) Reset() {
+	*x = ListStaleRevisionsResponse{}
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListStaleRevisionsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListStaleRevisionsResponse) ProtoMessage() {}
+
+func (x *ListStaleRevisionsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListStaleRevisionsResponse.ProtoReflect.Descriptor instead.
+func (*ListStaleRevisionsResponse) Descriptor() ([]byte, []int) {
+	return file_vaultsync_v1_vault_key_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *ListStaleRevisionsResponse) GetRevisions() []*Revision {
+	if x != nil {
+		return x.Revisions
+	}
+	return nil
+}
+
+func (x *ListStaleRevisionsResponse) GetNextPageToken() string {
+	if x != nil {
+		return x.NextPageToken
+	}
+	return ""
+}
+
+func (x *ListStaleRevisionsResponse) GetCurrentEpoch() uint32 {
+	if x != nil {
+		return x.CurrentEpoch
+	}
+	return 0
+}
+
 // ReplaceRevisionCiphertextRequest re-encrypts one stored revision.
 type ReplaceRevisionCiphertextRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -1320,7 +1453,7 @@ type ReplaceRevisionCiphertextRequest struct {
 
 func (x *ReplaceRevisionCiphertextRequest) Reset() {
 	*x = ReplaceRevisionCiphertextRequest{}
-	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[18]
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1332,7 +1465,7 @@ func (x *ReplaceRevisionCiphertextRequest) String() string {
 func (*ReplaceRevisionCiphertextRequest) ProtoMessage() {}
 
 func (x *ReplaceRevisionCiphertextRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[18]
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1345,7 +1478,7 @@ func (x *ReplaceRevisionCiphertextRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReplaceRevisionCiphertextRequest.ProtoReflect.Descriptor instead.
 func (*ReplaceRevisionCiphertextRequest) Descriptor() ([]byte, []int) {
-	return file_vaultsync_v1_vault_key_proto_rawDescGZIP(), []int{18}
+	return file_vaultsync_v1_vault_key_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *ReplaceRevisionCiphertextRequest) GetVaultId() string {
@@ -1403,7 +1536,7 @@ type ReplaceRevisionCiphertextResponse struct {
 
 func (x *ReplaceRevisionCiphertextResponse) Reset() {
 	*x = ReplaceRevisionCiphertextResponse{}
-	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[19]
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1415,7 +1548,7 @@ func (x *ReplaceRevisionCiphertextResponse) String() string {
 func (*ReplaceRevisionCiphertextResponse) ProtoMessage() {}
 
 func (x *ReplaceRevisionCiphertextResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[19]
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1428,7 +1561,7 @@ func (x *ReplaceRevisionCiphertextResponse) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use ReplaceRevisionCiphertextResponse.ProtoReflect.Descriptor instead.
 func (*ReplaceRevisionCiphertextResponse) Descriptor() ([]byte, []int) {
-	return file_vaultsync_v1_vault_key_proto_rawDescGZIP(), []int{19}
+	return file_vaultsync_v1_vault_key_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *ReplaceRevisionCiphertextResponse) GetReplaced() bool {
@@ -1451,7 +1584,7 @@ type RetireEpochRequest struct {
 
 func (x *RetireEpochRequest) Reset() {
 	*x = RetireEpochRequest{}
-	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[20]
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1463,7 +1596,7 @@ func (x *RetireEpochRequest) String() string {
 func (*RetireEpochRequest) ProtoMessage() {}
 
 func (x *RetireEpochRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[20]
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1476,7 +1609,7 @@ func (x *RetireEpochRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RetireEpochRequest.ProtoReflect.Descriptor instead.
 func (*RetireEpochRequest) Descriptor() ([]byte, []int) {
-	return file_vaultsync_v1_vault_key_proto_rawDescGZIP(), []int{20}
+	return file_vaultsync_v1_vault_key_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *RetireEpochRequest) GetVaultId() string {
@@ -1502,7 +1635,7 @@ type RetireEpochResponse struct {
 
 func (x *RetireEpochResponse) Reset() {
 	*x = RetireEpochResponse{}
-	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[21]
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1514,7 +1647,7 @@ func (x *RetireEpochResponse) String() string {
 func (*RetireEpochResponse) ProtoMessage() {}
 
 func (x *RetireEpochResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[21]
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1527,7 +1660,7 @@ func (x *RetireEpochResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RetireEpochResponse.ProtoReflect.Descriptor instead.
 func (*RetireEpochResponse) Descriptor() ([]byte, []int) {
-	return file_vaultsync_v1_vault_key_proto_rawDescGZIP(), []int{21}
+	return file_vaultsync_v1_vault_key_proto_rawDescGZIP(), []int{23}
 }
 
 var File_vaultsync_v1_vault_key_proto protoreflect.FileDescriptor
@@ -1624,7 +1757,16 @@ const file_vaultsync_v1_vault_key_proto_rawDesc = "" +
 	"\rinvitation_id\x18\x04 \x01(\tR\finvitationId\"r\n" +
 	"\x16ListLogEntriesResponse\x120\n" +
 	"\aentries\x18\x01 \x03(\v2\x16.vaultsync.v1.LogEntryR\aentries\x12&\n" +
-	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\xe7\x01\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"r\n" +
+	"\x19ListStaleRevisionsRequest\x12\x19\n" +
+	"\bvault_id\x18\x01 \x01(\tR\avaultId\x12\x1b\n" +
+	"\tpage_size\x18\x02 \x01(\rR\bpageSize\x12\x1d\n" +
+	"\n" +
+	"page_token\x18\x03 \x01(\tR\tpageToken\"\x9f\x01\n" +
+	"\x1aListStaleRevisionsResponse\x124\n" +
+	"\trevisions\x18\x01 \x03(\v2\x16.vaultsync.v1.RevisionR\trevisions\x12&\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\x12#\n" +
+	"\rcurrent_epoch\x18\x03 \x01(\rR\fcurrentEpoch\"\xe7\x01\n" +
 	" ReplaceRevisionCiphertextRequest\x12\x19\n" +
 	"\bvault_id\x18\x01 \x01(\tR\avaultId\x12\x1f\n" +
 	"\vrevision_id\x18\x02 \x01(\tR\n" +
@@ -1645,7 +1787,7 @@ const file_vaultsync_v1_vault_key_proto_rawDesc = "" +
 	"\x1eKEY_RECIPIENT_KIND_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17KEY_RECIPIENT_KIND_USER\x10\x01\x12\x1d\n" +
 	"\x19KEY_RECIPIENT_KIND_ESCROW\x10\x02\x12!\n" +
-	"\x1dKEY_RECIPIENT_KIND_INVITATION\x10\x032\x83\x06\n" +
+	"\x1dKEY_RECIPIENT_KIND_INVITATION\x10\x032\xee\x06\n" +
 	"\x0fVaultKeyService\x12W\n" +
 	"\fListKeySlots\x12!.vaultsync.v1.ListKeySlotsRequest\x1a\".vaultsync.v1.ListKeySlotsResponse\"\x00\x12Q\n" +
 	"\n" +
@@ -1653,7 +1795,8 @@ const file_vaultsync_v1_vault_key_proto_rawDesc = "" +
 	"\x10ListMissingSlots\x12%.vaultsync.v1.ListMissingSlotsRequest\x1a&.vaultsync.v1.ListMissingSlotsResponse\"\x00\x12T\n" +
 	"\vRotateEpoch\x12 .vaultsync.v1.RotateEpochRequest\x1a!.vaultsync.v1.RotateEpochResponse\"\x00\x12T\n" +
 	"\vAddKeySlots\x12 .vaultsync.v1.AddKeySlotsRequest\x1a!.vaultsync.v1.AddKeySlotsResponse\"\x00\x12]\n" +
-	"\x0eListLogEntries\x12#.vaultsync.v1.ListLogEntriesRequest\x1a$.vaultsync.v1.ListLogEntriesResponse\"\x00\x12~\n" +
+	"\x0eListLogEntries\x12#.vaultsync.v1.ListLogEntriesRequest\x1a$.vaultsync.v1.ListLogEntriesResponse\"\x00\x12i\n" +
+	"\x12ListStaleRevisions\x12'.vaultsync.v1.ListStaleRevisionsRequest\x1a(.vaultsync.v1.ListStaleRevisionsResponse\"\x00\x12~\n" +
 	"\x19ReplaceRevisionCiphertext\x12..vaultsync.v1.ReplaceRevisionCiphertextRequest\x1a/.vaultsync.v1.ReplaceRevisionCiphertextResponse\"\x00\x12T\n" +
 	"\vRetireEpoch\x12 .vaultsync.v1.RetireEpochRequest\x1a!.vaultsync.v1.RetireEpochResponse\"\x00B@Z>github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyncv1b\x06proto3"
 
@@ -1670,7 +1813,7 @@ func file_vaultsync_v1_vault_key_proto_rawDescGZIP() []byte {
 }
 
 var file_vaultsync_v1_vault_key_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_vaultsync_v1_vault_key_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
+var file_vaultsync_v1_vault_key_proto_msgTypes = make([]protoimpl.MessageInfo, 24)
 var file_vaultsync_v1_vault_key_proto_goTypes = []any{
 	(KeyRecipientKind)(0),                     // 0: vaultsync.v1.KeyRecipientKind
 	(*KeySlot)(nil),                           // 1: vaultsync.v1.KeySlot
@@ -1691,18 +1834,21 @@ var file_vaultsync_v1_vault_key_proto_goTypes = []any{
 	(*AddKeySlotsResponse)(nil),               // 16: vaultsync.v1.AddKeySlotsResponse
 	(*ListLogEntriesRequest)(nil),             // 17: vaultsync.v1.ListLogEntriesRequest
 	(*ListLogEntriesResponse)(nil),            // 18: vaultsync.v1.ListLogEntriesResponse
-	(*ReplaceRevisionCiphertextRequest)(nil),  // 19: vaultsync.v1.ReplaceRevisionCiphertextRequest
-	(*ReplaceRevisionCiphertextResponse)(nil), // 20: vaultsync.v1.ReplaceRevisionCiphertextResponse
-	(*RetireEpochRequest)(nil),                // 21: vaultsync.v1.RetireEpochRequest
-	(*RetireEpochResponse)(nil),               // 22: vaultsync.v1.RetireEpochResponse
-	(*timestamppb.Timestamp)(nil),             // 23: google.protobuf.Timestamp
-	(*LogEntry)(nil),                          // 24: vaultsync.v1.LogEntry
-	(*ContentRef)(nil),                        // 25: vaultsync.v1.ContentRef
+	(*ListStaleRevisionsRequest)(nil),         // 19: vaultsync.v1.ListStaleRevisionsRequest
+	(*ListStaleRevisionsResponse)(nil),        // 20: vaultsync.v1.ListStaleRevisionsResponse
+	(*ReplaceRevisionCiphertextRequest)(nil),  // 21: vaultsync.v1.ReplaceRevisionCiphertextRequest
+	(*ReplaceRevisionCiphertextResponse)(nil), // 22: vaultsync.v1.ReplaceRevisionCiphertextResponse
+	(*RetireEpochRequest)(nil),                // 23: vaultsync.v1.RetireEpochRequest
+	(*RetireEpochResponse)(nil),               // 24: vaultsync.v1.RetireEpochResponse
+	(*timestamppb.Timestamp)(nil),             // 25: google.protobuf.Timestamp
+	(*LogEntry)(nil),                          // 26: vaultsync.v1.LogEntry
+	(*Revision)(nil),                          // 27: vaultsync.v1.Revision
+	(*ContentRef)(nil),                        // 28: vaultsync.v1.ContentRef
 }
 var file_vaultsync_v1_vault_key_proto_depIdxs = []int32{
 	0,  // 0: vaultsync.v1.KeySlot.recipient_kind:type_name -> vaultsync.v1.KeyRecipientKind
-	23, // 1: vaultsync.v1.KeySlot.create_time:type_name -> google.protobuf.Timestamp
-	23, // 2: vaultsync.v1.KeyEpoch.create_time:type_name -> google.protobuf.Timestamp
+	25, // 1: vaultsync.v1.KeySlot.create_time:type_name -> google.protobuf.Timestamp
+	25, // 2: vaultsync.v1.KeyEpoch.create_time:type_name -> google.protobuf.Timestamp
 	4,  // 3: vaultsync.v1.KeyEpoch.record:type_name -> vaultsync.v1.EpochRecord
 	3,  // 4: vaultsync.v1.EpochRecord.recipients:type_name -> vaultsync.v1.EpochRecipient
 	1,  // 5: vaultsync.v1.NextEpoch.slots:type_name -> vaultsync.v1.KeySlot
@@ -1712,32 +1858,35 @@ var file_vaultsync_v1_vault_key_proto_depIdxs = []int32{
 	6,  // 9: vaultsync.v1.ListMissingSlotsResponse.missing_slots:type_name -> vaultsync.v1.MissingSlot
 	5,  // 10: vaultsync.v1.RotateEpochRequest.next_epoch:type_name -> vaultsync.v1.NextEpoch
 	4,  // 11: vaultsync.v1.RotateEpochRequest.record:type_name -> vaultsync.v1.EpochRecord
-	24, // 12: vaultsync.v1.RotateEpochRequest.escrow_entry:type_name -> vaultsync.v1.LogEntry
+	26, // 12: vaultsync.v1.RotateEpochRequest.escrow_entry:type_name -> vaultsync.v1.LogEntry
 	2,  // 13: vaultsync.v1.RotateEpochResponse.epoch:type_name -> vaultsync.v1.KeyEpoch
 	1,  // 14: vaultsync.v1.AddKeySlotsRequest.slots:type_name -> vaultsync.v1.KeySlot
-	24, // 15: vaultsync.v1.ListLogEntriesResponse.entries:type_name -> vaultsync.v1.LogEntry
-	25, // 16: vaultsync.v1.ReplaceRevisionCiphertextRequest.content_ref:type_name -> vaultsync.v1.ContentRef
-	7,  // 17: vaultsync.v1.VaultKeyService.ListKeySlots:input_type -> vaultsync.v1.ListKeySlotsRequest
-	9,  // 18: vaultsync.v1.VaultKeyService.ListEpochs:input_type -> vaultsync.v1.ListEpochsRequest
-	11, // 19: vaultsync.v1.VaultKeyService.ListMissingSlots:input_type -> vaultsync.v1.ListMissingSlotsRequest
-	13, // 20: vaultsync.v1.VaultKeyService.RotateEpoch:input_type -> vaultsync.v1.RotateEpochRequest
-	15, // 21: vaultsync.v1.VaultKeyService.AddKeySlots:input_type -> vaultsync.v1.AddKeySlotsRequest
-	17, // 22: vaultsync.v1.VaultKeyService.ListLogEntries:input_type -> vaultsync.v1.ListLogEntriesRequest
-	19, // 23: vaultsync.v1.VaultKeyService.ReplaceRevisionCiphertext:input_type -> vaultsync.v1.ReplaceRevisionCiphertextRequest
-	21, // 24: vaultsync.v1.VaultKeyService.RetireEpoch:input_type -> vaultsync.v1.RetireEpochRequest
-	8,  // 25: vaultsync.v1.VaultKeyService.ListKeySlots:output_type -> vaultsync.v1.ListKeySlotsResponse
-	10, // 26: vaultsync.v1.VaultKeyService.ListEpochs:output_type -> vaultsync.v1.ListEpochsResponse
-	12, // 27: vaultsync.v1.VaultKeyService.ListMissingSlots:output_type -> vaultsync.v1.ListMissingSlotsResponse
-	14, // 28: vaultsync.v1.VaultKeyService.RotateEpoch:output_type -> vaultsync.v1.RotateEpochResponse
-	16, // 29: vaultsync.v1.VaultKeyService.AddKeySlots:output_type -> vaultsync.v1.AddKeySlotsResponse
-	18, // 30: vaultsync.v1.VaultKeyService.ListLogEntries:output_type -> vaultsync.v1.ListLogEntriesResponse
-	20, // 31: vaultsync.v1.VaultKeyService.ReplaceRevisionCiphertext:output_type -> vaultsync.v1.ReplaceRevisionCiphertextResponse
-	22, // 32: vaultsync.v1.VaultKeyService.RetireEpoch:output_type -> vaultsync.v1.RetireEpochResponse
-	25, // [25:33] is the sub-list for method output_type
-	17, // [17:25] is the sub-list for method input_type
-	17, // [17:17] is the sub-list for extension type_name
-	17, // [17:17] is the sub-list for extension extendee
-	0,  // [0:17] is the sub-list for field type_name
+	26, // 15: vaultsync.v1.ListLogEntriesResponse.entries:type_name -> vaultsync.v1.LogEntry
+	27, // 16: vaultsync.v1.ListStaleRevisionsResponse.revisions:type_name -> vaultsync.v1.Revision
+	28, // 17: vaultsync.v1.ReplaceRevisionCiphertextRequest.content_ref:type_name -> vaultsync.v1.ContentRef
+	7,  // 18: vaultsync.v1.VaultKeyService.ListKeySlots:input_type -> vaultsync.v1.ListKeySlotsRequest
+	9,  // 19: vaultsync.v1.VaultKeyService.ListEpochs:input_type -> vaultsync.v1.ListEpochsRequest
+	11, // 20: vaultsync.v1.VaultKeyService.ListMissingSlots:input_type -> vaultsync.v1.ListMissingSlotsRequest
+	13, // 21: vaultsync.v1.VaultKeyService.RotateEpoch:input_type -> vaultsync.v1.RotateEpochRequest
+	15, // 22: vaultsync.v1.VaultKeyService.AddKeySlots:input_type -> vaultsync.v1.AddKeySlotsRequest
+	17, // 23: vaultsync.v1.VaultKeyService.ListLogEntries:input_type -> vaultsync.v1.ListLogEntriesRequest
+	19, // 24: vaultsync.v1.VaultKeyService.ListStaleRevisions:input_type -> vaultsync.v1.ListStaleRevisionsRequest
+	21, // 25: vaultsync.v1.VaultKeyService.ReplaceRevisionCiphertext:input_type -> vaultsync.v1.ReplaceRevisionCiphertextRequest
+	23, // 26: vaultsync.v1.VaultKeyService.RetireEpoch:input_type -> vaultsync.v1.RetireEpochRequest
+	8,  // 27: vaultsync.v1.VaultKeyService.ListKeySlots:output_type -> vaultsync.v1.ListKeySlotsResponse
+	10, // 28: vaultsync.v1.VaultKeyService.ListEpochs:output_type -> vaultsync.v1.ListEpochsResponse
+	12, // 29: vaultsync.v1.VaultKeyService.ListMissingSlots:output_type -> vaultsync.v1.ListMissingSlotsResponse
+	14, // 30: vaultsync.v1.VaultKeyService.RotateEpoch:output_type -> vaultsync.v1.RotateEpochResponse
+	16, // 31: vaultsync.v1.VaultKeyService.AddKeySlots:output_type -> vaultsync.v1.AddKeySlotsResponse
+	18, // 32: vaultsync.v1.VaultKeyService.ListLogEntries:output_type -> vaultsync.v1.ListLogEntriesResponse
+	20, // 33: vaultsync.v1.VaultKeyService.ListStaleRevisions:output_type -> vaultsync.v1.ListStaleRevisionsResponse
+	22, // 34: vaultsync.v1.VaultKeyService.ReplaceRevisionCiphertext:output_type -> vaultsync.v1.ReplaceRevisionCiphertextResponse
+	24, // 35: vaultsync.v1.VaultKeyService.RetireEpoch:output_type -> vaultsync.v1.RetireEpochResponse
+	27, // [27:36] is the sub-list for method output_type
+	18, // [18:27] is the sub-list for method input_type
+	18, // [18:18] is the sub-list for extension type_name
+	18, // [18:18] is the sub-list for extension extendee
+	0,  // [0:18] is the sub-list for field type_name
 }
 
 func init() { file_vaultsync_v1_vault_key_proto_init() }
@@ -1752,7 +1901,7 @@ func file_vaultsync_v1_vault_key_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_vaultsync_v1_vault_key_proto_rawDesc), len(file_vaultsync_v1_vault_key_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   22,
+			NumMessages:   24,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

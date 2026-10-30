@@ -282,3 +282,48 @@ func TestRetireEpochDeletesTheSlotsOfAnUnusedEpoch(t *testing.T) {
 	assert.True(t, fixture.isMember(t, guest))
 	assert.Zero(t, fixture.slotCount(t, 2))
 }
+
+func TestListStaleRevisionsPagesThroughEveryRevisionOffTheCurrentEpoch(t *testing.T) {
+	fixture := newRekeyFixture(t, 0)
+	content := fixture.blob(t, "epoch-1")
+
+	note := uuid.Must(uuid.NewV7())
+	first := fixture.commit(t, note, uuid.Nil, "text", content, false)
+	tombstone := fixture.commit(t, note, first.ID, "text", content, true)
+	folder := fixture.commit(t, uuid.Must(uuid.NewV7()), uuid.Nil, store.KindFolder, nil, false)
+
+	fixture.rotate(t)
+
+	current := fixture.commit(t, uuid.Must(uuid.NewV7()), uuid.Nil, "text", content, false)
+	require.Equal(t, int32(2), current.Epoch)
+
+	var listed []store.Revision
+
+	pages := 0
+
+	for after := int64(0); ; pages++ {
+		require.Less(t, pages, 10, "the pages end")
+
+		page, err := fixture.vault.ListStaleRevisions(t.Context(), after, 2)
+		require.NoError(t, err)
+		assert.Equal(t, int32(2), page.CurrentEpoch)
+
+		if len(page.Revisions) == 0 {
+			break
+		}
+
+		listed = append(listed, page.Revisions...)
+		after = page.Revisions[len(page.Revisions)-1].Seq
+	}
+
+	assert.Equal(t, 2, pages, "a page of 2, then the last revision")
+	assert.Equal(t, []store.Revision{fixture.revision(t, first.ID), fixture.revision(t, tombstone.ID), fixture.revision(t, folder.ID)}, listed,
+		"every revision off the current epoch, tombstones and folders included, in seq order, as stored")
+
+	// A revision moved to the current epoch is no longer stale.
+	require.True(t, fixture.replace(t, first.ID, 1, 2, "resealed", fixture.blob(t, "epoch-2")))
+
+	page, err := fixture.vault.ListStaleRevisions(t.Context(), 0, 10)
+	require.NoError(t, err)
+	assert.Equal(t, []store.Revision{fixture.revision(t, tombstone.ID), fixture.revision(t, folder.ID)}, page.Revisions)
+}
