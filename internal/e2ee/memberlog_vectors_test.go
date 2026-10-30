@@ -433,13 +433,14 @@ func generateIdentityVectors(t *testing.T) identityVectors {
 	escrowOne, escrowOneSeed := newEscrowBundle("one")
 	escrowTwo, escrowTwoSeed := newEscrowBundle("two")
 	escrowThree, _ := newEscrowBundle("three")
-	escrowThreeUnchained, _ := newEscrowBundle("unchained")
+	escrowThreeUnchained, escrowUnchainedSeed := newEscrowBundle("unchained")
+	escrowFourReset, escrowResetSeed := newEscrowBundle("reset")
 
 	for _, testCase := range []struct {
 		name   string
 		bundle EscrowBundle
 		seed   []byte
-	}{{"one", escrowOne, escrowOneSeed}, {"two", escrowTwo, escrowTwoSeed}} {
+	}{{"one", escrowOne, escrowOneSeed}, {"two", escrowTwo, escrowTwoSeed}, {"unchained", escrowThreeUnchained, escrowUnchainedSeed}, {"reset", escrowFourReset, escrowResetSeed}} {
 		vectors.EscrowBundles = append(vectors.EscrowBundles, escrowBundleVector{
 			Name: testCase.name, SignSeed: hex.EncodeToString(testCase.seed), SignPub: hex.EncodeToString(testCase.bundle.SignPub),
 			Recipient: testCase.bundle.Recipient, Encoded: hex.EncodeToString(must(testCase.bundle.Encode())),
@@ -489,6 +490,11 @@ func generateIdentityVectors(t *testing.T) identityVectors {
 	builder.add(EntryLeave, must(IDPayload(vectorBobID)), bobSeed)       // 11
 	builder.add(EntryEscrow, must(EscrowPayload(nil)), aliceSeed)        // 12
 	builder.add(EntryEscrow, must(EscrowPayload(&escrowTwo)), aliceSeed) // 13
+	// Escrow resets: with escrow on, then with escrow off before turning it on.
+	builder.add(EntryEscrowReset, must(EscrowResetPayload(escrowTwo, escrowThreeUnchained)), aliceSeed)       // 14
+	builder.add(EntryEscrow, must(EscrowPayload(nil)), aliceSeed)                                             // 15
+	builder.add(EntryEscrowReset, must(EscrowResetPayload(escrowThreeUnchained, escrowFourReset)), aliceSeed) // 16
+	builder.add(EntryEscrow, must(EscrowPayload(&escrowFourReset)), aliceSeed)                                // 17
 
 	rotations := []escrowRotationJSON{rotationJSON(oneToTwo), rotationJSON(twoToThree)}
 	entries := decodeEntries(t, vectorVaultID, builder.entries)
@@ -637,6 +643,18 @@ func generateIdentityVectors(t *testing.T) identityVectors {
 	reject("redeem of a revoked invitation", rebuild(7, EntryRedeem, must(RedeemPayload(vectorInvitationSix, carol.bundle)), inviteSeeds[vectorInvitationSix], carolSeed))
 	reject("unchained escrow key", rebuild(8, EntryEscrow, must(EscrowPayload(&EscrowBundle{SignPub: escrowTwo.SignPub, Recipient: escrowThree.Recipient})), aliceSeed))
 	reject("unchained escrow key after escrow was off", rebuild(12, EntryEscrow, must(EscrowPayload(&escrowThreeUnchained)), aliceSeed))
+	reject("escrow reset by a non-owner", rebuild(3, EntryEscrowReset, must(EscrowResetPayload(escrowOne, escrowThreeUnchained)), bobSeed))
+	reject("escrow reset naming a bundle other than lastEscrow", rebuild(13, EntryEscrowReset, must(EscrowResetPayload(escrowOne, escrowThreeUnchained)), aliceSeed))
+	reject("escrow reset to the same bundle", rebuild(13, EntryEscrowReset, must(EscrowResetPayload(escrowTwo, escrowTwo)), aliceSeed))
+	reject("escrow reset in a log without escrow", func([]entryJSON) []entryJSON {
+		rebuilt := &logBuilder{vaultID: vectorVaultID}
+		rebuilt.add(EntryGenesis, must(GenesisPayload(alice.bundle, nil)), aliceSeed)
+		rebuilt.add(EntryEscrowReset, must(EscrowResetPayload(escrowOne, escrowThreeUnchained)), aliceSeed)
+
+		return rebuilt.entries
+	})
+	reject("escrow entry chained from the bundle before a reset", rebuild(14, EntryEscrow, must(EscrowPayload(&escrowThree)), aliceSeed))
+	reject("escrow on after an off-state reset naming the bundle before it", rebuild(16, EntryEscrow, must(EscrowPayload(&escrowThreeUnchained)), aliceSeed))
 	reject("invite without the invitation KEM key", rebuild(3, EntryInvite,
 		slices.Concat(must(canonicalUUID(vectorInvitationTwo)), []byte{byte(RoleViewer)}, invitePubs[vectorInvitationTwo]), aliceSeed))
 	reject("second genesis", rebuild(2, EntryGenesis, must(GenesisPayload(alice.bundle, nil)), aliceSeed))
@@ -991,7 +1009,7 @@ func TestIdentityVectors(t *testing.T) {
 // hand, independently of the replay that generated them.
 func TestMembershipLogVectorStates(t *testing.T) {
 	states := loadVectorFile(t).IdentityKeys.MembershipLog.States
-	require.Len(t, states, 13)
+	require.Len(t, states, 17)
 
 	roles := func(state logStateJSON) map[string]uint8 {
 		out := map[string]uint8{}
@@ -1029,6 +1047,10 @@ func TestMembershipLogVectorStates(t *testing.T) {
 		{map[string]uint8{vectorAliceID: owner}, []string{}, "two"},
 		{map[string]uint8{vectorAliceID: owner}, []string{}, ""},
 		{map[string]uint8{vectorAliceID: owner}, []string{}, "two"},
+		{map[string]uint8{vectorAliceID: owner}, []string{}, "unchained"},
+		{map[string]uint8{vectorAliceID: owner}, []string{}, ""},
+		{map[string]uint8{vectorAliceID: owner}, []string{}, ""},
+		{map[string]uint8{vectorAliceID: owner}, []string{}, "reset"},
 	}
 
 	bundles := map[string]string{"": ""}

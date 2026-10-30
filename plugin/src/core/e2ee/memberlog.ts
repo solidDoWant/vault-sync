@@ -15,6 +15,7 @@ import {
   encodeBundle,
   encodeEscrowBundle,
   type EscrowBundle,
+  escrowEqual,
   escrowKeyId,
   escrowReachable,
   type EscrowRotation,
@@ -72,6 +73,7 @@ export const EntryType = Object.freeze({
   setRole: 0x07,
   escrow: 0x08,
   members: 0x09,
+  escrowReset: 0x0a,
 });
 
 /** The only position of a members entry: directly after genesis. */
@@ -113,6 +115,15 @@ export function signEntry(entry: Omit<Entry, "signatures">, ...signSeeds: Uint8A
 /** 0x00 for no escrow, or 0x01 || escrow bundle. */
 export function escrowPayload(escrow: EscrowBundle | undefined): Uint8Array {
   return escrow === undefined ? Uint8Array.of(0x00) : concat(Uint8Array.of(0x01), encodeEscrowBundle(escrow));
+}
+
+/**
+ * SHA-256(lastEscrow) || new escrow bundle, the payload of an escrow reset
+ * entry: an owner moves the vault from the escrow bundle its log named last
+ * to one no signed rotation leads to.
+ */
+export function escrowResetPayload(lastEscrow: EscrowBundle, escrow: EscrowBundle): Uint8Array {
+  return concat(sha256(encodeEscrowBundle(lastEscrow)), encodeEscrowBundle(escrow));
 }
 
 /** The creator's bundle, then the escrow part. */
@@ -364,6 +375,24 @@ function applyEntry(vaultId: string, state: LogState, used: Set<string>, entry: 
       }
       escrow = parsed.escrow;
       if (parsed.escrow !== undefined) lastEscrow = parsed.escrow;
+      break;
+    }
+    case EntryType.escrowReset: {
+      // An owner signed it, its hash names lastEscrow and its bundle differs
+      // from that one. No escrow chain is checked.
+      if (payload.length <= HASH_SIZE) throw new Error("malformed escrow reset");
+      let reset: EscrowBundle;
+      try {
+        reset = parseEscrowBundle(payload.subarray(HASH_SIZE));
+      } catch {
+        throw new Error("malformed escrow reset");
+      }
+      requireOwner();
+      if (state.lastEscrow === undefined) throw new Error("escrow reset in a log that never named an escrow bundle");
+      if (!equalBytes(sha256(encodeEscrowBundle(state.lastEscrow)), payload.subarray(0, HASH_SIZE))) throw new Error("escrow reset does not name the last escrow bundle");
+      if (escrowEqual(state.lastEscrow, reset)) throw new Error("escrow reset to the same bundle");
+      lastEscrow = reset;
+      if (state.escrow !== undefined) escrow = reset;
       break;
     }
     case EntryType.members: {
