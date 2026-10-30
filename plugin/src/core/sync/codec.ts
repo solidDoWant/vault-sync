@@ -20,7 +20,7 @@ import { contentAad, pathAad } from "../e2ee/revision";
 import { sha256Hex } from "../hash";
 import { isEpochNotCurrent } from "../keys/vault-keys";
 import { isPathText, isVaultRelativePath } from "../vaultpath/vaultpath";
-import { errorCode } from "./errors";
+import { errorCode, vaultEncrypted } from "./errors";
 import { RemoteContentError, baseContent, downloadBlob, downloadContent, toIncoming, type IncomingRevision, type PullApi } from "./remote";
 import { isComplete, uploadBlob, uploadContent } from "./upload";
 
@@ -73,8 +73,8 @@ export interface RevisionCodec {
   content(subject: ContentSubject): Promise<ContentRefFields | "missing">;
   /** The path, path key and epoch of a commit. */
   commitFields(subject: CommitSubject): CommitFields;
-  /** Whether a refused commit is retried at once, re-encrypted: the epoch it used is no longer current. */
-  retryCommit(error: unknown): Promise<boolean>;
+  /** Whether a commit refused with `error` is retried at once, re-encrypted: `epoch`, the one it used, is no longer current. */
+  retryCommit(error: unknown, epoch: number): Promise<boolean>;
 }
 
 const encoder = new TextEncoder();
@@ -179,8 +179,6 @@ export class EncryptedCodec implements RevisionCodec {
   private cachedBytes = 0;
   /** Sealed bytes of blobs whose upload has not completed: a resumed upload continues with the same bytes. */
   private readonly uploading = new Map<string, Uint8Array>();
-  /** The sealed path of each commit, so that a retried commit sends the same bytes (it is idempotent by its fields). */
-  private readonly sealedPaths = new Map<string, { epoch: number; path: string; sealed: Uint8Array }>();
 
   constructor(
     private readonly api: PullApi,
@@ -338,20 +336,15 @@ export class EncryptedCodec implements RevisionCodec {
     // path_key_secret comes from epoch 1's key for the vault's whole life.
     const first = this.keys.epochKey(1);
     if (first === undefined) throw new VaultKeyUnavailableError(1);
-    let sealed = this.sealedPaths.get(subject.revisionId);
-    if (sealed?.epoch !== epoch || sealed.path !== subject.path) {
-      sealed = { epoch, path: subject.path, sealed: seal(deriveSubkey(key, "path"), encoder.encode(subject.path), pathAad(this.vaultId, subject.documentId, epoch)) };
-      this.sealedPaths.set(subject.revisionId, sealed);
-    }
-    return { path: sealed.sealed, pathKey: hmacPathKey(deriveSubkey(first, "path_key_secret"), subject.path), epoch };
+    const sealed = seal(deriveSubkey(key, "path"), encoder.encode(subject.path), pathAad(this.vaultId, subject.documentId, epoch));
+    return { path: sealed, pathKey: hmacPathKey(deriveSubkey(first, "path_key_secret"), subject.path), epoch };
   }
 
-  async retryCommit(error: unknown): Promise<boolean> {
-    if (!isEpochNotCurrent(error)) return false;
-    // A rotation replaced the epoch: take the new one, and the commit is sealed again under it.
-    const before = this.currentEpoch;
+  async retryCommit(error: unknown, epoch: number): Promise<boolean> {
+    // A rotation replaced the epoch, or the conversion refuses an epoch-0 (plaintext) commit sent before it: take the current epoch, and the commit is sealed again under it.
+    if (!isEpochNotCurrent(error) && !(epoch === 0 && vaultEncrypted(error))) return false;
     await this.prepare();
-    return this.currentEpoch !== before;
+    return this.currentEpoch !== epoch;
   }
 
   /** The revision `revisionId` as the server stores it now. */
