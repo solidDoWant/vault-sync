@@ -100,10 +100,13 @@ Entry types and payloads:
 | 0x06 | leave | `uuid(user_id)` | that member |
 | 0x07 | set role | `uuid(user_id)` · role (u8) | an owner |
 | 0x08 | escrow | `0x00` (off) or `0x01 || escrow_bundle` (on) | an owner |
+| 0x09 | members (conversion) | `count (u16)` · (`bundle` · role (u8))* of every member except the creator | the genesis creator |
 
 The invitation's KEM public key is in the log so that every owner device wraps new epochs to it from the verified log, and verifiers check its recipient hash. Because the server sees that public key, the invitation anchor is authenticated with a MAC under a key derived from `<secret>`, which the server never learns, not by sealing. The redeemer checks the MAC in constant time before trusting the genesis hash.
 
 The replay refuses, as an out-of-order entry: an invite whose invitation id was already used; a redeem or revoke of an invitation that is not pending; a redeem by a user who is already a member; a remove, set-role or leave of a non-member; and any entry that leaves the vault with no owner.
+
+A *members* entry (`0x09`) is valid only at sequence number 2, directly after genesis, and only once. It is how a converted vault's log names the members it already had. Replay adds each listed member with its role and keys, and refuses a listed user who is the creator or appears twice.
 
 Roles are `0x01` owner, `0x02` editor and `0x03` viewer. An invitation is pending from its invite entry until its redeem or revoke entry. Expiry is enforced by the server, and an owner device appends a revoke entry for an invitation it sees has expired. Recipient kinds and ids are those of the key slots. The escrow recipient's public key is its age recipient string as bytes. Both implementations pass shared vectors for every format above, including rejected inputs: a wrong signer, a broken link, a reordered or omitted recipient, an unsigned rotation, and an unchained escrow key.
 
