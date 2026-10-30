@@ -130,7 +130,7 @@ Do these steps after the install to make sure that the server works.
    kubectl -n vault-sync rollout status deployment/vault-sync
    ```
 
-   A replica becomes ready only after it connects to PostgreSQL, applies the schema migrations and reaches the bucket. If the rollout does not complete, read the logs of a pod (`kubectl -n vault-sync logs deployment/vault-sync`) and see [Startup and shutdown](../configuration.md#startup-and-shutdown).
+   A replica becomes ready only after it connects to PostgreSQL, applies the schema migrations and reaches the bucket. If the rollout does not complete, read the logs of a pod (`kubectl -n vault-sync logs deployment/vault-sync`) and see [The server does not start](troubleshooting.md#the-server-does-not-start).
 2. On a device, install the plugin and open **Settings → Vault Sync**. In **Server URL**, enter the address of your route, for example `https://sync.example.com`. [Getting started](../user/getting-started.md) shows the plugin steps.
 3. Click **Sign in**. Sign in with your sign-in provider on the page that the dialog links to, and enter the code. If the sign-in fails, see [Identity provider](identity-provider.md).
 4. In **Remote vault**, click **Create a vault**. The status shows `syncing` and then `idle`.

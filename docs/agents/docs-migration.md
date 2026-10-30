@@ -157,7 +157,7 @@ SPEC keeps its section numbers and its rules. The SPEC readability issue applies
 
 | Section | W | Class | Destination | Notes |
 |---|---|---|---|---|
-| [ ] Intro (env-only config, validation, exit status) | 88 | keep | `admin/configuration.md`; failure messages to `admin/troubleshooting.md` | The intro is in `admin/configuration.md`; the failure messages stay here for `admin/troubleshooting.md`. |
+| [x] Intro (env-only config, validation, exit status) | 88 | keep | `admin/configuration.md`; failure messages to `admin/troubleshooting.md` | The intro is in `admin/configuration.md`; the failure messages stay here for `admin/troubleshooting.md`. The failure messages are in `admin/troubleshooting.md`. |
 | [x] Environment variables (table) | 2,884 | generate | `admin/configuration-reference.md` (generated) | See Generators. Descriptions move into the constants' doc comments first; `admin/configuration.md` keeps only the grouped concepts below. |
 | [x] Authentication | 437 | keep | `admin/identity-provider.md`; token checks to `admin/security.md` | Provider requirements are in `admin/identity-provider.md`; the token checks stay here for `admin/security.md`. Token checks are in `admin/security.md`. |
 | [ ] Authorization | 1,004 | keep | `admin/security.md` (≈300 W) | Per-procedure role lists duplicate SPEC §9.2 and the proto comments: delete. The operator view (no bypass, errors, limits) is in `admin/security.md`; the per-procedure lists and device and key details are left to delete with the stubs. |
@@ -170,7 +170,7 @@ SPEC keeps its section numbers and its rules. The SPEC readability issue applies
 | [x] Endpoints | 138 | keep | `admin/configuration.md`; CORS and health detail to `admin/security.md`, `admin/monitoring.md` | The listeners are in `admin/configuration.md`; CORS and health detail stay here for `admin/security.md` and `admin/monitoring.md`. CORS is in `admin/security.md`; health detail in `admin/monitoring.md`. |
 | [x] Metrics | 708 | generate | `admin/metrics-reference.md` (generated) | See Generators. `admin/monitoring.md` keeps the concepts (two ports, what to scrape). |
 | [x] Service-wide metrics | 762 | generate | `admin/metrics-reference.md` (generated) | See Generators. Why service-wide metrics are separate (one exporter, not per replica) stays in `admin/monitoring.md`. The table is generated; the paragraph on how the values are refreshed stays in `configuration.md` until `admin/monitoring.md` is written. |
-| [ ] Startup and shutdown | 471 | keep | `admin/requirements.md` (PostgreSQL 14+); `admin/upgrades.md` (migrations, graceful shutdown); `admin/troubleshooting.md` | Done for `admin/requirements.md` and `admin/upgrades.md`; the failure facts stay here for `admin/troubleshooting.md`. |
+| [x] Startup and shutdown | 471 | keep | `admin/requirements.md` (PostgreSQL 14+); `admin/upgrades.md` (migrations, graceful shutdown); `admin/troubleshooting.md` | Done for `admin/requirements.md` and `admin/upgrades.md`; the failure facts stay here for `admin/troubleshooting.md`. The failure facts are in `admin/troubleshooting.md`. |
 | [x] High-availability deployment | 453 | keep | `admin/upgrades.md` (rolling upgrades, HA) | Design detail duplicates SPEC §12 HA rules: delete. Done: `admin/upgrades.md`. |
 
 ## docs/deployment.md → admin (6.7k W)
