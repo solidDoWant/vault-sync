@@ -121,6 +121,7 @@ func TestPluginE2E(t *testing.T) {
 		server.Command.Env = append(server.Command.Env,
 			config.ListenAddressEnv+"="+addresses.API,
 			config.MetricsListenAddressEnv+"="+addresses.Metrics,
+			config.ServiceMetricsListenAddressEnv+"=127.0.0.1:0",
 		)
 		server.Command.Stdout = logs
 		server.Command.Stderr = logs

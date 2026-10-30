@@ -58,16 +58,18 @@ func TestLoadDefaults(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, config.Config{
-		ListenAddress:            ":8080",
-		MetricsListenAddress:     ":9090",
-		Database:                 store.Config{DSN: testDSN},
-		OIDC:                     config.OIDCConfig{IssuerURL: testIssuer, Audience: testAudience, ClientID: testAudience},
-		MaxRequestBytes:          1 << 20,
-		WriteTimeout:             2 * time.Minute,
-		MaxConcurrentRPCsPerUser: 32,
-		ShutdownDelay:            5 * time.Second,
-		ShutdownTimeout:          30 * time.Second,
-		LogLevel:                 slog.LevelInfo,
+		ListenAddress:               ":8080",
+		MetricsListenAddress:        ":9090",
+		ServiceMetricsListenAddress: ":9091",
+		ServiceMetricsInterval:      time.Minute,
+		Database:                    store.Config{DSN: testDSN},
+		OIDC:                        config.OIDCConfig{IssuerURL: testIssuer, Audience: testAudience, ClientID: testAudience},
+		MaxRequestBytes:             1 << 20,
+		WriteTimeout:                2 * time.Minute,
+		MaxConcurrentRPCsPerUser:    32,
+		ShutdownDelay:               5 * time.Second,
+		ShutdownTimeout:             30 * time.Second,
+		LogLevel:                    slog.LevelInfo,
 		Blobs: config.BlobConfig{
 			MaxChunkBytes:      768 << 10,
 			MaxSizeBytes:       1 << 30,
@@ -660,23 +662,38 @@ func TestLoadRetentionSettings(t *testing.T) {
 
 func TestLoadOverrides(t *testing.T) {
 	cfg, err := config.Load(lookup(withRequired(map[string]string{
-		config.ListenAddressEnv:        "127.0.0.1:8443",
-		config.MetricsListenAddressEnv: "127.0.0.1:9443",
-		config.MaxRequestBytesEnv:      "2097152",
-		config.WriteTimeoutEnv:         "5m",
-		config.ShutdownDelayEnv:        "10s",
-		config.ShutdownTimeoutEnv:      "45s",
-		config.LogLevelEnv:             "DEBUG",
+		config.ListenAddressEnv:               "127.0.0.1:8443",
+		config.MetricsListenAddressEnv:        "127.0.0.1:9443",
+		config.ServiceMetricsListenAddressEnv: "127.0.0.1:9444",
+		config.ServiceMetricsIntervalEnv:      "5m",
+		config.MaxRequestBytesEnv:             "2097152",
+		config.WriteTimeoutEnv:                "5m",
+		config.ShutdownDelayEnv:               "10s",
+		config.ShutdownTimeoutEnv:             "45s",
+		config.LogLevelEnv:                    "DEBUG",
 	})))
 	require.NoError(t, err)
 
 	assert.Equal(t, "127.0.0.1:8443", cfg.ListenAddress)
 	assert.Equal(t, "127.0.0.1:9443", cfg.MetricsListenAddress)
+	assert.Equal(t, "127.0.0.1:9444", cfg.ServiceMetricsListenAddress)
+	assert.Equal(t, 5*time.Minute, cfg.ServiceMetricsInterval)
 	assert.Equal(t, int64(2<<20), cfg.MaxRequestBytes)
 	assert.Equal(t, 5*time.Minute, cfg.WriteTimeout)
 	assert.Equal(t, 10*time.Second, cfg.ShutdownDelay)
 	assert.Equal(t, 45*time.Second, cfg.ShutdownTimeout)
 	assert.Equal(t, slog.LevelDebug, cfg.LogLevel)
+}
+
+func TestLoadAcceptsServiceMetricsIntervalBounds(t *testing.T) {
+	for _, interval := range []time.Duration{time.Second, time.Hour} {
+		t.Run(interval.String(), func(t *testing.T) {
+			cfg, err := config.Load(lookup(withRequired(map[string]string{config.ServiceMetricsIntervalEnv: interval.String()})))
+			require.NoError(t, err)
+
+			assert.Equal(t, interval, cfg.ServiceMetricsInterval)
+		})
+	}
 }
 
 func TestLoadAcceptsWriteTimeoutBounds(t *testing.T) {
@@ -761,6 +778,36 @@ func TestLoadRejectsInvalidSettings(t *testing.T) {
 				config.MetricsListenAddressEnv: ":8080",
 			}),
 			wantProblems: []string{config.MetricsListenAddressEnv + " must differ from " + config.ListenAddressEnv},
+		},
+		{
+			name:         "service metrics listen address with bad port",
+			env:          withRequired(map[string]string{config.ServiceMetricsListenAddressEnv: ":metrics"}),
+			wantProblems: []string{config.ServiceMetricsListenAddressEnv},
+		},
+		{
+			name:         "service metrics port equals metrics port",
+			env:          withRequired(map[string]string{config.ServiceMetricsListenAddressEnv: ":9090"}),
+			wantProblems: []string{config.ServiceMetricsListenAddressEnv + " must differ from"},
+		},
+		{
+			name:         "service metrics port equals API port",
+			env:          withRequired(map[string]string{config.ServiceMetricsListenAddressEnv: ":8080"}),
+			wantProblems: []string{config.ServiceMetricsListenAddressEnv + " must differ from"},
+		},
+		{
+			name:         "service metrics interval not a duration",
+			env:          withRequired(map[string]string{config.ServiceMetricsIntervalEnv: "60"}),
+			wantProblems: []string{config.ServiceMetricsIntervalEnv},
+		},
+		{
+			name:         "service metrics interval below the minimum",
+			env:          withRequired(map[string]string{config.ServiceMetricsIntervalEnv: "999ms"}),
+			wantProblems: []string{config.ServiceMetricsIntervalEnv},
+		},
+		{
+			name:         "service metrics interval above the maximum",
+			env:          withRequired(map[string]string{config.ServiceMetricsIntervalEnv: "1h0m0.001s"}),
+			wantProblems: []string{config.ServiceMetricsIntervalEnv},
 		},
 		{
 			name:         "max request bytes not a number",

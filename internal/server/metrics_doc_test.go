@@ -15,6 +15,7 @@ import (
 	"github.com/solidDoWant/vault-sync/internal/blobstore"
 	"github.com/solidDoWant/vault-sync/internal/realtime"
 	"github.com/solidDoWant/vault-sync/internal/retention"
+	"github.com/solidDoWant/vault-sync/internal/servicemetrics"
 	"github.com/solidDoWant/vault-sync/internal/store"
 )
 
@@ -30,16 +31,24 @@ type documentedMetric struct {
 var descPattern = regexp.MustCompile(`^Desc\{fqName: "([^"]+)", .*variableLabels: \{([^}]*)\}\}$`)
 
 // registeredMetrics returns the name, type and label names of every
-// vault_sync_* metric the server registers.
+// vault_sync_* metric the server registers on the per-instance port.
 func registeredMetrics(t *testing.T) map[string]documentedMetric {
 	t.Helper()
 
 	hub := realtime.NewHub(realtime.Options{})
-	registered := map[string]documentedMetric{}
-
 	dependencies := DependencyMetrics{Database: store.NewMetrics(), ObjectStore: blobstore.NewMetrics(), OIDC: auth.NewMetrics()}
 
-	for _, collector := range serverCollectors(hub, newRPCMetrics(), newConcurrencyMetrics(), retention.NewMetrics(), dependencies) {
+	return collectorMetrics(t, serverCollectors(hub, newRPCMetrics(), newConcurrencyMetrics(), retention.NewMetrics(), dependencies))
+}
+
+// collectorMetrics returns the name, type and label names of every metric
+// of collected.
+func collectorMetrics(t *testing.T, collected []prometheus.Collector) map[string]documentedMetric {
+	t.Helper()
+
+	registered := map[string]documentedMetric{}
+
+	for _, collector := range collected {
 		var kind string
 
 		// Gauge before Counter: a Gauge also satisfies the Counter interface.
@@ -92,17 +101,18 @@ func funcMetricKind(t *testing.T, metric prometheus.Metric) string {
 	return strings.ToLower(families[0].GetType().String())
 }
 
-// documentedMetrics parses the Metrics table of docs/configuration.md. It
-// fails if the section has a table row outside its one table.
-func documentedMetrics(t *testing.T) map[string]documentedMetric {
+// documentedMetrics parses the metrics table of the section of
+// docs/configuration.md with the given heading. It fails if the section has
+// a table row outside its one table.
+func documentedMetrics(t *testing.T, heading string) map[string]documentedMetric {
 	t.Helper()
 
 	content, err := os.ReadFile("../../docs/configuration.md")
 	require.NoError(t, err)
 
 	lines := strings.Split(string(content), "\n")
-	start := slices.Index(lines, "## Metrics")
-	require.NotEqual(t, -1, start, "no Metrics section")
+	start := slices.Index(lines, heading)
+	require.NotEqual(t, -1, start, "no %s section", heading)
 
 	section := lines[start+1:]
 	if end := slices.IndexFunc(section, func(line string) bool { return strings.HasPrefix(line, "## ") }); end != -1 {
@@ -152,11 +162,30 @@ func documentedMetrics(t *testing.T) map[string]documentedMetric {
 }
 
 func TestMetricsTableMatchesRegisteredMetrics(t *testing.T) {
-	registered := registeredMetrics(t)
-	documented := documentedMetrics(t)
+	assertDocumented(t, registeredMetrics(t), documentedMetrics(t, "## Metrics"))
+}
+
+func TestServiceWideMetricsTableMatchesRegisteredMetrics(t *testing.T) {
+	registered := collectorMetrics(t, servicemetrics.NewMetrics().Collectors())
 
 	for name := range registered {
-		assert.Contains(t, documented, name, "registered metric missing from the Metrics table in docs/configuration.md")
+		assert.True(t, strings.HasPrefix(name, "vault_sync_service_"), "service-wide metric %s must be named vault_sync_service_*", name)
+	}
+
+	for name := range registeredMetrics(t) {
+		assert.False(t, strings.HasPrefix(name, "vault_sync_service_"), "per-instance metric %s must not be named vault_sync_service_*", name)
+	}
+
+	assertDocumented(t, registered, documentedMetrics(t, "## Service-wide metrics"))
+}
+
+// assertDocumented checks that registered and documented list the same
+// metrics with the same types and labels.
+func assertDocumented(t *testing.T, registered, documented map[string]documentedMetric) {
+	t.Helper()
+
+	for name := range registered {
+		assert.Contains(t, documented, name, "registered metric missing from its table in docs/configuration.md")
 	}
 
 	for name, metric := range documented {

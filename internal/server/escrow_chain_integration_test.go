@@ -63,13 +63,14 @@ func TestServerRefusesToStartWithAnEscrowChainThatDoesNotLink(t *testing.T) {
 			defer cancel()
 
 			code := server.Main(ctx, nil, lookup(map[string]string{
-				config.DatabaseURLEnv:          cfg.DSN,
-				config.OIDCIssuerURLEnv:        "https://issuer.example",
-				config.OIDCAudienceEnv:         "vault-sync",
-				config.ListenAddressEnv:        "127.0.0.1:0",
-				config.MetricsListenAddressEnv: "127.0.0.2:0",
-				config.EscrowRecipientEnv:      test.configured.bundle.Recipient,
-				config.EscrowSigningKeyEnv:     base64.StdEncoding.EncodeToString(test.configured.bundle.SignPub),
+				config.DatabaseURLEnv:                 cfg.DSN,
+				config.OIDCIssuerURLEnv:               "https://issuer.example",
+				config.OIDCAudienceEnv:                "vault-sync",
+				config.ListenAddressEnv:               "127.0.0.1:0",
+				config.MetricsListenAddressEnv:        "127.0.0.2:0",
+				config.ServiceMetricsListenAddressEnv: "127.0.0.3:0",
+				config.EscrowRecipientEnv:             test.configured.bundle.Recipient,
+				config.EscrowSigningKeyEnv:            base64.StdEncoding.EncodeToString(test.configured.bundle.SignPub),
 			}), &stdout, &stderr)
 
 			assert.Equal(t, 1, code)

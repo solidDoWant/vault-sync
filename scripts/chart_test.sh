@@ -407,7 +407,7 @@ render --set config.logLevel=debug --set config.s3.region=r --set config.s3.forc
 	--set config.server.retention.overrideMinKeepDaily=24h --set config.server.realtime.maxConnections=1 \
 	--set config.server.realtime.maxConnectionsPerUser=1 --set config.server.realtime.maxSubscriptions=1 \
 	--set config.server.escrow.recipient=age1pq1x --set config.server.escrow.signingKey=c2lnbg== --set config.server.escrow.default=false \
-	--set config.server.escrow.retiringKeyIds=sha256:00 --set config.export.escrow.signingKeysKey=signing.keys
+	--set config.server.escrow.retiringKeyIds=sha256:00 --set config.server.metrics.serviceWide.interval=1m --set config.export.escrow.signingKeysKey=signing.keys
 documented_vars="$(grep -oE '^\| `VAULT_SYNC_[A-Z0-9_]+`' "$repo_root/docs/configuration.md" | tr -d '|` ')"
 if [[ -z $documented_vars ]]; then
 	fail "found the environment variables in docs/configuration.md"

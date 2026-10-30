@@ -64,6 +64,7 @@ func TestServerDrainsOnSIGTERM(t *testing.T) {
 			config.DatabaseURLEnv + "=" + database.DSN,
 			config.ListenAddressEnv + "=" + addresses.API,
 			config.MetricsListenAddressEnv + "=" + addresses.Metrics,
+			config.ServiceMetricsListenAddressEnv + "=127.0.0.1:0",
 			config.ShutdownDelayEnv + "=2s",
 			config.ShutdownTimeoutEnv + "=20s",
 			// The issuer is contacted only to authenticate a request, so an

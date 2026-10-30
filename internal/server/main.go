@@ -15,6 +15,7 @@ import (
 	"github.com/solidDoWant/vault-sync/internal/config"
 	"github.com/solidDoWant/vault-sync/internal/realtime"
 	"github.com/solidDoWant/vault-sync/internal/retention"
+	"github.com/solidDoWant/vault-sync/internal/servicemetrics"
 	"github.com/solidDoWant/vault-sync/internal/store"
 	"github.com/solidDoWant/vault-sync/internal/version"
 )
@@ -124,6 +125,24 @@ func Main(ctx context.Context, args []string, lookup func(string) (string, bool)
 		<-hubDone
 	}()
 
+	// The refresher stops with ctx, or when Main returns; the pool closes
+	// only after it has.
+	serviceMetrics := servicemetrics.NewMetrics()
+	refresher := &servicemetrics.Refresher{Store: queries, Metrics: serviceMetrics, Logger: logger}
+	refresherCtx, stopRefresher := context.WithCancel(ctx)
+	refresherDone := make(chan struct{})
+
+	go func() {
+		defer close(refresherDone)
+
+		refresher.Run(refresherCtx, cfg.ServiceMetricsInterval)
+	}()
+
+	defer func() {
+		stopRefresher()
+		<-refresherDone
+	}()
+
 	srv := New(Options{
 		MaxRequestBytes:          cfg.MaxRequestBytes,
 		WriteTimeout:             cfg.WriteTimeout,
@@ -147,11 +166,12 @@ func Main(ctx context.Context, args []string, lookup func(string) (string, bool)
 		Blobs:                    blobs,
 		Realtime:                 hub,
 		Retention:                retained,
+		ServiceMetrics:           serviceMetrics,
 		Dependencies:             dependencies,
 		Logger:                   logger,
 	})
 
-	if err := srv.ListenAndServe(ctx, cfg.ListenAddress, cfg.MetricsListenAddress); err != nil {
+	if err := srv.ListenAndServe(ctx, cfg.ListenAddress, cfg.MetricsListenAddress, cfg.ServiceMetricsListenAddress); err != nil {
 		logger.ErrorContext(ctx, "server stopped with an error", "error", err)
 
 		return 1

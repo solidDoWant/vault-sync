@@ -36,6 +36,8 @@ dockerTools.streamLayeredImage {
       "8080/tcp" = { };
       # Metrics and health, VAULT_SYNC_METRICS_LISTEN_ADDRESS.
       "9090/tcp" = { };
+      # Service-wide metrics, VAULT_SYNC_SERVICE_METRICS_LISTEN_ADDRESS.
+      "9091/tcp" = { };
     };
     Labels = {
       "org.opencontainers.image.title" = "vault-sync";

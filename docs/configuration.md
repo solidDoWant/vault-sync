@@ -14,6 +14,8 @@ The `vault-sync-server export` subcommand reads the database, S3 and log-level v
 | `VAULT_SYNC_DATABASE_TLS_CA_FILE` | unset | PEM bundle of CAs trusted to sign the PostgreSQL server certificate. Re-read for every new connection. See the note below about verification. |
 | `VAULT_SYNC_LISTEN_ADDRESS` | `:8080` | `host:port` for the API listener (ConnectRPC). This is the port to expose through the ingress. |
 | `VAULT_SYNC_METRICS_LISTEN_ADDRESS` | `:9090` | `host:port` for the metrics and health listener (`/metrics`, `/healthz`, `/readyz`). Must differ from `VAULT_SYNC_LISTEN_ADDRESS`. Do not expose it to the internet. |
+| `VAULT_SYNC_SERVICE_METRICS_LISTEN_ADDRESS` | `:9091` | `host:port` for the service-wide metrics listener (`/metrics` only, see [Service-wide metrics](#service-wide-metrics)). Must differ from `VAULT_SYNC_LISTEN_ADDRESS` and `VAULT_SYNC_METRICS_LISTEN_ADDRESS`. Do not expose it to the internet. |
+| `VAULT_SYNC_SERVICE_METRICS_INTERVAL` | `1m` | How often each replica refreshes the service-wide metrics from PostgreSQL. A Go duration from `1s` to `1h`. |
 | `VAULT_SYNC_MAX_REQUEST_BYTES` | `1048576` (1 MiB) | Maximum size of a request body in bytes, applied both to the bytes on the wire and to the decompressed message. Allowed range: 16384 to 67108864 (a response carrying one revision with a maximum-length path, or one vault with a maximum-length name, must fit; the chunk size check below requires more in practice). The default matches the 1 MiB inspected-body limit of the WAF in front of the server. Request bodies are read and decoded before the bearer token is checked, so unauthenticated callers can make the server read up to this many bytes per request; keep the limit low. |
 | `VAULT_SYNC_WRITE_TIMEOUT` | `2m` | How long writing an API response may take, counted from its first byte until the whole response is written. A response the client has not finished reading by then is cut off and the connection closed, so a client that sends a request and then stops reading cannot hold a connection open. The timeout does not limit how long the server works on a request before it starts the response: a long `CommitBlob` (composing a large blob in the object store) is not cut short. The default lets a 1 MiB response reach a client on a link of about 100 kbit/s. Raise it if you raise `VAULT_SYNC_MAX_REQUEST_BYTES` for slow clients. The timeout does not apply to the realtime WebSocket once it is open. A Go duration from `1s` to `1h`. |
 | `VAULT_SYNC_MAX_CONCURRENT_RPCS_PER_USER` | `32` | Authenticated RPCs one user may have in flight on this replica at once (1 to 10000). A further call from that user is rejected immediately with `resource_exhausted`, before any work is done for it, and is not queued; other users are unaffected. A refused plugin waits, from about a second up to a minute, before it tries again (see `docs/plugin.md`). An RPC counts from authentication until its response has been completely written, so a client that stops reading its responses keeps holding its calls until `VAULT_SYNC_WRITE_TIMEOUT` cuts them off. The limit is per replica and keeps no state shared between replicas or after a user's calls end. The plugin makes one RPC at a time per device, so the default admits 32 devices of one user syncing on the same replica at once (matching `VAULT_SYNC_REALTIME_MAX_CONNECTIONS_PER_USER`) while one user can hold at most 32 response buffers of up to `VAULT_SYNC_MAX_REQUEST_BYTES` each. `GetServerInfo`, which needs no authentication, is not counted. |
@@ -155,7 +157,9 @@ The metrics listener serves:
 |---|---|
 | `/healthz` | Liveness. Returns 200 while the process is serving. |
 | `/readyz` | Readiness. Returns 200 when PostgreSQL answers a ping within 2 seconds, and 503 when it does not or while the server is shutting down. Concurrent checks share one ping, so a burst of probes against a slow database holds at most one pool connection. No result is reused after its ping ends, and each replica checks only its own connection pool. |
-| `/metrics` | Prometheus metrics. |
+| `/metrics` | Prometheus metrics of this replica (see [Metrics](#metrics)). |
+
+The service-wide metrics listener serves only `/metrics`, the [service-wide metrics](#service-wide-metrics).
 
 ## Metrics
 
@@ -193,6 +197,24 @@ Besides the standard Go runtime (`go_*`) and process (`process_*`) metrics:
 | `vault_sync_oidc_jwks_age_seconds` | gauge | | Seconds since this replica last fetched the issuer's key set successfully, `NaN` before the first fetch. Keys are fetched when a token needs them and at most hourly, so on an idle replica the age keeps growing; alert on a high age together with refresh failures. |
 
 Calls rejected for authentication are counted with code `unauthenticated`. Requests rejected before reaching an RPC handler (oversized declared bodies, unknown routes, malformed messages) are not counted.
+
+## Service-wide metrics
+
+These describe the whole deployment rather than one replica, and are served only on `VAULT_SYNC_SERVICE_METRICS_LISTEN_ADDRESS` (`/metrics`), never on the per-instance metrics port. Every replica serves the same values, so a scrape config may scrape them from a single replica. A scrape never queries the database: each replica reads the values from PostgreSQL in the background every `VAULT_SYNC_SERVICE_METRICS_INTERVAL`, each query bounded by a 10-second timeout, and serves the last values read. A query that fails is logged (`service metrics query failed`) and keeps its metrics' previous values; alert when `vault_sync_service_metrics_last_refresh_success_timestamp_seconds` falls behind. No metric has a per-user, per-vault or per-device label.
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `vault_sync_service_devices` | gauge | | Devices registered and not removed. |
+| `vault_sync_service_users_with_devices` | gauge | | Users with at least one device not removed. |
+| `vault_sync_service_active_devices_24h` | gauge | | Devices not removed that committed within the last 24 hours (a device's last activity is recorded at most once a minute). |
+| `vault_sync_service_active_devices_30d` | gauge | | Devices not removed that committed within the last 30 days. |
+| `vault_sync_service_vaults` | gauge | `encryption`, `shared` | Vaults not deleted, by `encryption` (`none`, `e2ee`) and `shared` (`true` when the vault has more than one member, `false` otherwise). Every combination is always exported. |
+| `vault_sync_service_vault_memberships` | gauge | | Memberships of vaults not deleted. |
+| `vault_sync_service_pending_invitations` | gauge | | Unexpired invitations to vaults not deleted. |
+| `vault_sync_service_live_documents_approximate` | gauge | | Approximate documents not deleted, read from PostgreSQL's planner statistics (`pg_class.reltuples`) instead of counting rows; autovacuum and `ANALYZE` update it, and it is 0 until the table is first analyzed. Deleted vaults' documents count until the vault is purged. |
+| `vault_sync_service_revisions_approximate` | gauge | | Approximate stored revisions, from the planner statistics like the live documents. |
+| `vault_sync_service_schema_version` | gauge | | Highest database migration version applied. During a rolling upgrade it shows when the schema is ahead of the replicas. |
+| `vault_sync_service_metrics_last_refresh_success_timestamp_seconds` | gauge | | Unix time of the last refresh on this replica in which every service-wide query succeeded; 0 before the first. |
 
 ## Startup and shutdown
 

@@ -1,5 +1,6 @@
 // Package server wires the vault-sync HTTP server: the ConnectRPC API on one
-// listener and /metrics, /healthz and /readyz on a separate one (SPEC.md §12).
+// listener, /metrics, /healthz and /readyz on a second one and the
+// service-wide /metrics on a third (SPEC.md §12).
 package server
 
 import (
@@ -29,6 +30,7 @@ import (
 	"github.com/solidDoWant/vault-sync/internal/config"
 	"github.com/solidDoWant/vault-sync/internal/realtime"
 	"github.com/solidDoWant/vault-sync/internal/retention"
+	"github.com/solidDoWant/vault-sync/internal/servicemetrics"
 )
 
 // AllowedOrigins are the Obsidian app origins allowed to call the API from a
@@ -133,6 +135,9 @@ type Options struct {
 	// Retention holds the retention job's metrics, served with the
 	// server's. When nil, they are not served.
 	Retention *retention.Metrics
+	// ServiceMetrics holds the service-wide metrics, served on their own
+	// listener. When nil, that listener serves no metrics.
+	ServiceMetrics *servicemetrics.Metrics
 	// Dependencies holds the metrics of the server's PostgreSQL pool, object
 	// store and OIDC key set, served with the server's. Those left nil are
 	// not served.
@@ -156,10 +161,12 @@ type Drainer interface {
 
 // Server serves the API and the metrics/health endpoints.
 type Server struct {
-	options  Options
-	api      http.Handler
-	metrics  http.Handler
-	draining atomic.Bool
+	options Options
+	api     http.Handler
+	metrics http.Handler
+	// serviceMetrics serves the service-wide /metrics.
+	serviceMetrics http.Handler
+	draining       atomic.Bool
 	// readiness shares one database ping among concurrent /readyz calls.
 	readiness singleflight.Group
 }
@@ -187,6 +194,12 @@ func New(options Options) *Server {
 	srv.api = newAPIHandler(options, rpcMetrics, newUserLimiter(options.MaxConcurrentRPCsPerUser, concurrency))
 	srv.metrics = srv.newMetricsHandler(registry)
 
+	if options.ServiceMetrics == nil {
+		options.ServiceMetrics = servicemetrics.NewMetrics()
+	}
+
+	srv.serviceMetrics = options.ServiceMetrics.Handler()
+
 	return srv
 }
 
@@ -198,6 +211,11 @@ func (srv *Server) Handler() http.Handler {
 // MetricsHandler returns the handler for /metrics, /healthz and /readyz.
 func (srv *Server) MetricsHandler() http.Handler {
 	return srv.metrics
+}
+
+// ServiceMetricsHandler returns the handler for the service-wide /metrics.
+func (srv *Server) ServiceMetricsHandler() http.Handler {
+	return srv.serviceMetrics
 }
 
 // PublicProcedures are the only procedures served without authentication.
@@ -564,9 +582,9 @@ func (srv *Server) pingDatabase(ctx context.Context) error {
 	}
 }
 
-// ListenAndServe listens on the API and metrics addresses and serves until
-// ctx is canceled (see Serve).
-func (srv *Server) ListenAndServe(ctx context.Context, apiAddress, metricsAddress string) error {
+// ListenAndServe listens on the API, metrics and service-wide metrics
+// addresses and serves until ctx is canceled (see Serve).
+func (srv *Server) ListenAndServe(ctx context.Context, apiAddress, metricsAddress, serviceMetricsAddress string) error {
 	var listenConfig net.ListenConfig
 
 	apiListener, err := listenConfig.Listen(ctx, "tcp", apiAddress)
@@ -581,18 +599,27 @@ func (srv *Server) ListenAndServe(ctx context.Context, apiAddress, metricsAddres
 		return fmt.Errorf("listen for metrics: %w", err)
 	}
 
-	return srv.Serve(ctx, apiListener, metricsListener)
+	serviceMetricsListener, err := listenConfig.Listen(ctx, "tcp", serviceMetricsAddress)
+	if err != nil {
+		_ = apiListener.Close()
+		_ = metricsListener.Close()
+
+		return fmt.Errorf("listen for service-wide metrics: %w", err)
+	}
+
+	return srv.Serve(ctx, apiListener, metricsListener, serviceMetricsListener)
 }
 
-// Serve serves the API on apiListener and metrics/health on metricsListener
-// until ctx is canceled. It then reports not ready on /readyz, keeps serving
+// Serve serves the API on apiListener, metrics/health on metricsListener
+// and the service-wide metrics on serviceMetricsListener until ctx is
+// canceled. It then reports not ready on /readyz, keeps serving
 // the API for ShutdownDelay (closing each connection after its response),
 // stops accepting connections, runs the Drainers, and waits up to
 // ShutdownTimeout for in-flight API requests and the Drainers before closing
 // the remaining connections. It returns nil after a clean drain, an
 // error wrapping context.DeadlineExceeded if the timeout forced connections
 // closed, or the error that stopped a listener.
-func (srv *Server) Serve(ctx context.Context, apiListener, metricsListener net.Listener) error {
+func (srv *Server) Serve(ctx context.Context, apiListener, metricsListener, serviceMetricsListener net.Listener) error {
 	errorLog := slog.NewLogLogger(srv.options.Logger.Handler(), slog.LevelWarn)
 	baseContext := func(net.Listener) context.Context { return context.WithoutCancel(ctx) }
 
@@ -616,14 +643,27 @@ func (srv *Server) Serve(ctx context.Context, apiListener, metricsListener net.L
 		BaseContext:       baseContext,
 	}
 
-	serveErrors := make(chan error, 2)
+	serviceMetricsServer := &http.Server{
+		Handler:           srv.serviceMetrics,
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      metricsWriteTimeout,
+		IdleTimeout:       idleTimeout,
+		MaxHeaderBytes:    maxHeaderBytes,
+		ErrorLog:          errorLog,
+		BaseContext:       baseContext,
+	}
+
+	serveErrors := make(chan error, 3)
 
 	go func() { serveErrors <- serve(apiServer, apiListener, "API") }()
 	go func() { serveErrors <- serve(metricsServer, metricsListener, "metrics") }()
+	go func() { serveErrors <- serve(serviceMetricsServer, serviceMetricsListener, "service-wide metrics") }()
 
 	srv.options.Logger.InfoContext(ctx, "server started",
 		"api_address", apiListener.Addr().String(),
-		"metrics_address", metricsListener.Addr().String())
+		"metrics_address", metricsListener.Addr().String(),
+		"service_metrics_address", serviceMetricsListener.Addr().String())
 
 	var serveErr error
 
@@ -673,6 +713,10 @@ func (srv *Server) Serve(ctx context.Context, apiListener, metricsListener net.L
 
 	if err := metricsServer.Shutdown(shutdownCtx); err != nil {
 		_ = metricsServer.Close()
+	}
+
+	if err := serviceMetricsServer.Shutdown(shutdownCtx); err != nil {
+		_ = serviceMetricsServer.Close()
 	}
 
 	if serveErr == nil && shutdownErr == nil {

@@ -104,7 +104,8 @@ config:
   # such as 30s or 1h30m (values.schema.json checks both).
   # The listen addresses are fixed by the chart: the API on 8080
   # (VAULT_SYNC_LISTEN_ADDRESS) and metrics and health on 9090
-  # (VAULT_SYNC_METRICS_LISTEN_ADDRESS).
+  # (VAULT_SYNC_METRICS_LISTEN_ADDRESS), and service-wide metrics on 9091
+  # (VAULT_SYNC_SERVICE_METRICS_LISTEN_ADDRESS).
   server:
     # VAULT_SYNC_MAX_REQUEST_BYTES. Keep it at or below the WAF's inspected
     # body limit (1 MiB by default).
@@ -176,6 +177,10 @@ config:
         enabled: false
         interval: 1m
         scrapeTimeout: 10s
+      serviceWide:
+        # VAULT_SYNC_SERVICE_METRICS_INTERVAL: how often each replica reads
+        # the service-wide metrics from PostgreSQL (served on 9091).
+        interval: null
 
   # export configures the plaintext export CronJob (docs/export.md). It runs
   # `vault-sync-server export -out /export/<directory>` with its own Secret
