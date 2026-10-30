@@ -87,6 +87,11 @@ A phase is complete when every issue in its milestone — as listed live from Gi
 3. **Release.** When those fixes have merged, queue the `release-manager` for `0.N.0`.
 4. **The owner's own use is not a gate.** The owner deploys and uses the build in their own time.
 5. **Close and pause.** Close the milestone and post a phase summary on #51: what was built, what was deferred, the release link and known risks. Then create `.pm/PAUSE`. **Never start the next phase on your own.** It begins only after the owner has approved its acceptance checklist and design, and has posted a `/pm` instruction to start it. Otherwise the scheduler would move to the next milestone by itself.
+6. **Design review before issues** (owner decision, 2026-10-30). When the owner starts a phase, and before its implementation issues are scheduled, queue one `design-reviewer` job on the phase's design: the `docs/design/` files it uses, including the interaction matrix, the checklist and `SPEC.md`. It posts its findings on a `design review: Phase N` issue that you open first. Keep the phase's implementation issues `status:blocked` until the design review is done:
+   - **Critical and high design findings** go to the operator as design questions. Unblock the issues once the design PR answering them has merged.
+   - **Medium and low findings** are listed on #51 for the owner to decide.
+
+   There is no per-PR reviewer stage (`reviews: false`): the design review before issues, CI and the test guard on every PR, and the security review and bug hunt at phase end are the independent checks.
 
 ## Failure handling
 
