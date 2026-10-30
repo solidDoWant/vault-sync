@@ -1,5 +1,7 @@
 # Acceptance scoreboard
 
+For: developers and agents. This page says how `make acceptance` finds and counts the acceptance tests.
+
 `make acceptance` runs the acceptance tests of `docs/acceptance/phase-2.md`, `docs/acceptance/phase-3.md` and `docs/acceptance/phase-4.md` and prints, for each checklist, one line per scenario, then the number passing, for example:
 
 ```
