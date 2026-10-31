@@ -236,7 +236,7 @@ Older peers and missing markers:
 Clients pull on startup, on a realtime `subscribed{head_seq}` or `vault_changed{seq}` whose head is above the durable cursor (§6.4), and on a timer as a fallback.
 ### 6.2 Push (optimistic concurrency)
 
-1. Upload the content: `BeginBlob`, then `PutBlobChunk` zero or more times, then `CommitBlob`. The rules are in "Upload" below.
+1. Upload the content: `BeginBlob`, then `PutBlobChunk` zero or more times, then `CommitBlob`. The rules are in the Upload groups below.
 2. Commit the revision: `CommitRevision(document_id, revision_id, base_rev_id, kind, content_ref, path, path_key, deleted, device_id)`. The rules are in "Commit" below.
 3. On `FAILED_PRECONDITION` (head moved), the client pulls the new head, merges (§7) against the common base, and retries with the new head as base.
 
@@ -247,9 +247,12 @@ Upload, client side:
 - An upload is idempotent: a `BeginBlob` for a `blob_id` that is already complete short-circuits.
 - An upload is resumable. `BeginBlob` reports the bytes that the server already received. Chunks are appended strictly in sequence by offset.
 - A chunk is at most the configured size (§3).
-- For a plaintext vault, the server verifies the content hash on commit.
 - The client first looks the blob up with a zero-length `DownloadBlob` at offset `size`. If the server already holds the blob, the client uploads nothing and does not read the local file.
-- Otherwise the client reads the local content and checks its hash before `BeginBlob`. So content that changed or disappeared after the operation was recorded never opens a session. Then the client only looks the blob up with a zero-length `DownloadBlob` at offset `size`. If the server holds the blob, the client commits the operation. If not, the client replaces the operation with the current content of the file.
+- Otherwise the client reads the local content and checks its hash before `BeginBlob`.
+- If the hash does not match (the content changed or disappeared after the operation was recorded), the client opens no session. It only looks the blob up with a zero-length `DownloadBlob` at offset `size`. If the server holds the blob, the client commits the operation. If not, the client replaces the operation with the current content of the file. If the hash matches, the client uploads with `BeginBlob`.
+
+Downloads:
+
 - Downloads are ranged (`DownloadBlob(offset, length)`), and the server bounds each response. If a range is shorter than the client asked for, the client continues from its end.
 
 Chunk and range sizes hold in the codec of the request:
@@ -260,6 +263,7 @@ Chunk and range sizes hold in the codec of the request:
 
 Upload, server side:
 
+- For a plaintext vault, the server verifies the content hash on commit.
 - S3 multipart parts must be at least 5 MiB, except the last. Chunks are below the 1 MiB body limit, so they never are. So chunks are staged objects, and a server-side compose joins them.
 - Each accepted chunk is its own object under `vaults/{vault_id}/uploads/{upload_id}/`. Its key is unique to the write. So a writer that lost a race for an offset never overwrites the accepted chunk.
 - A compare-and-set on the `received_size` of the session accepts a chunk. Concurrent uploaders of one blob share a session. A loser gets `FAILED_PRECONDITION` and resumes from `BeginBlob`.
@@ -271,7 +275,7 @@ Upload bounds:
 
 - The maximum chunk size plus 1 KiB of framing must fit the maximum request body. The server checks this at startup.
 - The Connect send limit equals the request limit.
-- A blob is at most the configured maximum. The maximum is at most 80 GiB (the 10,000 parts of 8 MiB that S3 allows).
+- A blob is at most the configured maximum. The maximum is at most 80 GiB (S3 allows 10,000 parts, and the server uses 8 MiB parts).
 - A vault has a bounded number of sessions in progress (`VAULT_SYNC_BLOB_MAX_UPLOADS_PER_VAULT`).
 
 Reclaiming idle sessions:
@@ -335,7 +339,7 @@ After the checks:
 
 - The server updates the `head_rev_id`, `path_key` and `deleted` of the document row in the same transaction as the revision insert. So `deleted` always mirrors the head, and the index on the live `path_key` is exact. A collision on it is `ALREADY_EXISTS`.
 - Then, if the revision is live and its `path_key` is new to the document (or the document was a tombstone), a file/folder collision with another live document (§5) is also `ALREADY_EXISTS`. This check runs under the vault row lock. So two commits that would each complete a collision, on any replicas, are serialized, and the server refuses the second.
-- The server never refuses a revision for a collision if the revision keeps the live `path_key` of its document (an edit) or deletes it. So a collision committed before the rule existed never blocks an edit or a delete.
+- The server never refuses a revision for a file/folder collision if the revision keeps the live `path_key` of its document (an edit) or deletes it. So a collision committed before the rule existed never blocks an edit or a delete.
 - Client-generated ids that another vault already uses are `INVALID_ARGUMENT`. Every lookup is scoped to the authorized vault, so the ids of another vault are otherwise not found.
 - The commit transaction also queues a PostgreSQL `NOTIFY` on channel `vault_changed` (payload `<vault_id>:<seq>`). PostgreSQL delivers it to every replica exactly when, and only if, the transaction commits. An idempotent retry notifies nothing (§6.4).
 
@@ -380,7 +384,7 @@ Both languages must agree on the path rules:
 Path rules on the client:
 
 - Clients apply every one of these path rules before they commit (`pathProblem` in `plugin/src/core/vaultpath`). A local file at a path that the server would refuse is never uploaded or committed, on any push. It stays on disk, untouched, with its operation pending. Every push reports it as rejected, with the rule that it breaks, until the user renames or removes it (§8).
-- A client must apply both rules to every path that it receives before it touches its disk. This includes E2EE paths after decryption, which the server cannot check.
+- A client must apply the length and character-set rule (`isPathText`) and the vault-relative rule (`isVaultRelativePath`), but not the new-path rules, to every path that it receives before it touches its disk. This includes E2EE paths after decryption, which the server cannot check.
 - The client must apply them to the exact string that it hands to the file system. The adapters for the Obsidian vault and config folder refuse any path that the Obsidian `normalizePath` would change. The Obsidian `DataAdapter` normalizes every path that it is given, and `normalizePath` turns, for example, the accepted `..` followed by U+00A0 into the traversal segment `.. `.
 
 ### 6.3 Renames, deletes, creates
