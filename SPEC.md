@@ -748,7 +748,7 @@ User key storage:
 - `CreateUserKey` is create-only. A user who has a key gets `ALREADY_EXISTS`, and the stored key is unchanged. So two devices that enable encryption at once cannot replace each other's key.
 - `UnlockUserKey` returns the wrapped private key only for the matching `auth_key`. A wrong one is `PERMISSION_DENIED` with reason `ERROR_REASON_WRONG_PASSPHRASE` and no key material.
 - `ChangePassphrase` takes the current `auth_key` and the stored public key. It replaces the wrapped key, its parameters and the verifier in one transaction, as a compare-and-swap on the public key. A different public key is `FAILED_PRECONDITION` and changes nothing.
-- Key rotation and reset are out of scope.
+- Rotating or resetting the user key pair is out of scope.
 - `CreateUserKey` takes the signing public key (`sign_public_key`, exactly 32 bytes) with the key pair. `GetUserKeyParams` and `UnlockUserKey` return it, empty for a key stored without one.
 - `AddSignPublicKey` adds a signing public key to such a key once. It takes `auth_key`: a wrong one is `PERMISSION_DENIED` and is counted as below. Presenting the stored signing public key again succeeds without a change. Another one is `ALREADY_EXISTS` and changes nothing.
 - `Member.sign_public_key` reports the signing public key of each member next to `public_key` (empty without one). So a member list gives the `bundle` of every keyed member (`docs/design/crypto.md`).
@@ -823,7 +823,7 @@ Epochs and key slots:
 - `VaultKeyService` stores epochs and slots as opaque bytes. The server never sees an epoch key.
 - A new E2EE vault has no epoch (`current_epoch = 0`) and a pending rotation. An owner client creates epoch 1.
 - Every epoch change is a compare-and-set on `vaults.current_epoch` under the vault row lock (which commits and membership changes take too). So of concurrent changes with the same `expected_epoch`, exactly one wins, on any replica. The others get `FAILED_PRECONDITION` with reason `ERROR_REASON_EPOCH_NOT_CURRENT` and adopt the epoch of the winner.
-- The recipients of an epoch are exactly the members of the vault **who have a user key**, plus at most one escrow slot in an escrow vault.
+- The recipients of an epoch are exactly the members of the vault **who have a user key**, plus exactly one escrow slot in an escrow vault and none in a vault without escrow.
 - A member without a user key cannot be wrapped to and is not required. Missing or extra recipients are `INVALID_ARGUMENT`.
 - An owner's `RemoveMember` on an E2EE vault must carry `next_epoch` (a commitment and a slot for every remaining recipient, not the removed member). It commits the removal and epoch N+1 in one transaction. Without a valid one, the member stays.
 - A plaintext vault takes no `next_epoch`.
@@ -924,7 +924,7 @@ The escrow fingerprint:
 
 Escrow reset:
 
-- Any other change of the bundle, for example after an unsigned reset point in the chain, is an **escrow reset**.
+- A change of the current bundle that rotation statements, each signed by the key that it replaces, do not chain to the pinned bundle (for example, after an unsigned reset point in the chain) is an **escrow reset**.
 - The plugin wraps no key to the new bundle until the user accepts it in a prompt. The prompt shows the old and the new escrow fingerprint and needs the last group of the new fingerprint typed.
 - Declining keeps the vaults that the user owns escrowed to the previous key.
 - An accepted reset reaches each escrowed vault only through an owner-signed *escrow reset* log entry sent with a rotation. Until then, the new epochs of the vault stay escrowed to the bundle that its log names, and the server accepts that slot.
