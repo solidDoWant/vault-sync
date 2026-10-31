@@ -443,7 +443,21 @@ Client rules:
 
 ## 7. Merge rules (client side)
 
-Defined by `docs/design/engine.md` §5 (rule M, rule W, rule C). Summary: Markdown (`TEXT`) is merged three-way. Other files (`BLOB`): the newest wins and the other is kept as a conflict copy. Some `BLOB` types, picked by extension (the kind stays `BLOB`), are first merged three-way: Obsidian Bases (`.base`) as schema-validated YAML (views matched by name, filter `and`/`or` lists as sets), JSON Canvas (`.canvas`) with nodes and edges matched by `id` and the result validated (unique ids, edge endpoints present), other JSON (`.json`) per key with arrays as one value, and plain-text types (`txt`, `csv`, `tsv`, common source and markup files, `yaml`/`yml`/`toml`; valid UTF-8 up to 1 MiB) line by line with diff3 semantics, where overlapping changes refuse the merge and a YAML or TOML result must still parse. Any conflict, a side that does not parse or validate, or an invalid merged result falls back to the `BLOB` rule for the whole file; conflict markers are never written. When the merge equals one side, that side's bytes are kept as they are. The table of strategies is in `docs/design/engine.md` §5, rule M. Overlapping Markdown edits: the server's version stays at the path, and the local version is saved as a conflict copy, named `<name> (Conflicted copy <user> <device> <YYYYMMDDHHMM>).<ext>` after the local user and device.
+`docs/design/engine.md` §5 defines the merge rules (rule M, rule W, rule C), and rule M has the table of strategies. In short:
+
+| Files | Rule |
+|---|---|
+| Markdown (`TEXT`) | Merged three-way. |
+| Obsidian Bases (`.base`) | Merged three-way as schema-validated YAML. Views are matched by name. Filter `and`/`or` lists are sets. |
+| JSON Canvas (`.canvas`) | Merged three-way. Nodes and edges are matched by `id`. The result is validated: ids are unique and edge endpoints are present. |
+| Other JSON (`.json`) | Merged three-way per key. An array is one value. |
+| Plain-text types (`txt`, `csv`, `tsv`, common source and markup files, `yaml`/`yml`/`toml`), valid UTF-8 up to 1 MiB | Merged three-way line by line with diff3 semantics. Overlapping changes refuse the merge. A YAML or TOML result must still parse. |
+| Every other `BLOB` file (no merge) | The newest wins, and the other is kept as a conflict copy. |
+
+- The merged types other than Markdown are picked by extension. Their kind stays `BLOB`.
+- If the merge of one of the extension-picked types has a conflict, a side does not parse or validate, or the merged result is invalid, the whole file falls back to the `BLOB` rule. Markdown never falls back: see the last bullet. Conflict markers are never written.
+- If the merge equals one side, the bytes of that side are kept as they are.
+- If Markdown edits overlap, the version of the server stays at the path. The local version is saved as a conflict copy, named `<name> (Conflicted copy <user> <device> <YYYYMMDDHHMM>).<ext>` after the local user and device.
 
 ## 8. Client durability
 
@@ -511,13 +525,13 @@ A vault with `escrow = true` also wraps each epoch key to a deployment-wide **es
 
 ## 10. Live collaborative editing (Phase 5)
 
-The v1 protocol includes the hooks for this from the start: stable document ids, the `kind` field, the multiplexed WebSocket, and an append-only per-document log.
+The v1 protocol has the hooks for this from the start: stable document ids, the `kind` field, the multiplexed WebSocket, and an append-only log per document.
 
-- A `yjs` document's state is its ordered `yjs_updates` log plus periodic snapshots. For E2EE vaults each update is encrypted (the server stores and relays opaque bytes).
-- **Conversion** of a `text` document to `yjs` happens **exactly once**, as a server-side compare-and-set on `documents.kind` performed by a single elected client (the server grants a lease). Two clients independently initializing a `Y.Text` from the same file duplicates the content — the classic Yjs bug — and must be impossible.
-- The plugin binds `Y.Text` to Obsidian's CodeMirror 6 editor (`y-codemirror.next`) and to the file on disk. Edits that arrive outside the editor (other plugins, `processFrontMatter`, external editors, git) are diffed into the `Y.Text`.
-- Awareness (cursors, presence) is ephemeral over the WebSocket and never persisted.
-- **Compaction** folds the update log into a snapshot. Plaintext and escrow vaults can compact server-side (the export job can do it for escrow vaults); other E2EE vaults compact on clients. The compaction runtime (a Go Yjs implementation is not mature) is an open question for Phase 5.
+- The state of a `yjs` document is its ordered `yjs_updates` log plus periodic snapshots. For E2EE vaults, each update is encrypted, and the server stores and relays opaque bytes.
+- **Conversion** of a `text` document to `yjs` happens **exactly once**. It is a server-side compare-and-set on `documents.kind`, done by a single elected client that holds a lease from the server. If two clients each initialize a `Y.Text` from the same file, the content is duplicated (the classic Yjs bug). This must be impossible.
+- The plugin binds `Y.Text` to the CodeMirror 6 editor of Obsidian (`y-codemirror.next`) and to the file on disk. Edits that arrive outside the editor (other plugins, `processFrontMatter`, external editors, git) are diffed into the `Y.Text`.
+- Awareness (cursors, presence) is ephemeral over the WebSocket and is never persisted.
+- **Compaction** folds the update log into a snapshot. Plaintext and escrow vaults can compact on the server (for escrow vaults, the export job can do it). Other E2EE vaults compact on clients. The compaction runtime is an open question for Phase 5, because no Go Yjs implementation is mature.
 
 ## 11. Retention and history
 
@@ -558,11 +572,11 @@ The v1 protocol includes the hooks for this from the start: stable document ids,
 | Go unit | `go test -race`, testify | `make test`, CI |
 | TS unit | vitest | `make test`, CI |
 | Server integration | real PostgreSQL + S3-compatible store via `docker compose` | `make test-integration`, CI |
-| **Acceptance** | One test per scenario in `docs/acceptance/phase-N.md`, named `[AC-nn] …` (Go: `TestACnn…` or an `[AC-nn] …` subtest; `docs/testing/acceptance.md`): end-to-end in Obsidian, or server integration where no Obsidian is involved. `make acceptance` runs them and prints the scoreboard. AC-25 is the seeded three-device convergence test. | `make acceptance`, CI |
+| **Acceptance** | One test per scenario in `docs/acceptance/phase-N.md`, named `[AC-nn] …` (Go: `TestACnn…` or an `[AC-nn] …` subtest, see `docs/testing/acceptance.md`). It runs end-to-end in Obsidian, or as a server integration test where no Obsidian is involved. `make acceptance` runs them and prints the scoreboard. AC-25 is the seeded three-device convergence test. | `make acceptance`, CI |
 | Crypto vectors | shared `testdata/crypto/` vectors | Go + TS unit tests |
 | Path vectors | shared `testdata/paths/` vectors: `path_key` (`vectors.json`) and validity (`validity.json`) | Go + TS unit tests; validity also through `CommitRevision` (integration) |
-| Plugin e2e | `wdio-obsidian-service`: the built plugin in a real Obsidian whose version is pinned (Renovate bumps it), driven by WebdriverIO against a real `vault-sync-server` that an `e2e`-tagged Go driver starts. Specs check that the plugin loads, that a second vault opens, that the server is reachable with a test token, and run the `VaultAdapter` conformance suite inside Obsidian against the Obsidian adapter through a test-only harness plugin. The `Journal` conformance suite runs there too, against the IndexedDB journal on Obsidian's own IndexedDB. They also cover editor-safe writes to an open note, that startup indexing is not reported as changes, that each vault's journal is keyed by its own vault id, and that disabling and re-enabling the plugin resumes sync from the IndexedDB journal. Also runs in emulated mobile mode. See `docs/testing/e2e.md`. | `make test-e2e` (Linux, headless via xvfb, in the dev VM); CI on Linux, Windows and macOS, plus emulated mobile |
-| Android | checklist in `docs/testing/android.md`: each check the layers above can make is an automated test there (including that the manifest allows mobile and the bundle loads no Node or Electron module); only what needs a physical device (BRAT on Android, Android pausing or killing the app, real network changes, battery) is manual. The Android emulator job runs the real Android app (`docs/testing/e2e.md`, "Android emulator job"). | CI for the automated checks; a human, on a device, before each release |
+| Plugin e2e | `wdio-obsidian-service`: WebdriverIO drives the built plugin in a real Obsidian whose version is pinned (Renovate bumps it), against a real `vault-sync-server` that an `e2e`-tagged Go driver starts. The specs check that the plugin loads, that a second vault opens, and that the server is reachable with a test token. Through a test-only harness plugin, they run the `VaultAdapter` conformance suite inside Obsidian against the Obsidian adapter. The `Journal` conformance suite runs there too, against the IndexedDB journal on the IndexedDB of Obsidian. The specs also cover editor-safe writes to an open note, that startup indexing is not reported as changes, that the journal of each vault is keyed by its own vault id, and that disabling and re-enabling the plugin resumes sync from the IndexedDB journal. The suite also runs in emulated mobile mode. See `docs/testing/e2e.md`. | `make test-e2e` (Linux, headless via xvfb, in the dev VM); CI on Linux, Windows and macOS, plus emulated mobile |
+| Android | The checklist in `docs/testing/android.md`. Each check that the layers above can make is an automated test there, including that the manifest allows mobile and that the bundle loads no Node or Electron module. Only what needs a physical device is manual: BRAT on Android, Android pausing or killing the app, real network changes, battery. The Android emulator job runs the real Android app (`docs/testing/e2e.md`, "Android emulator job"). | CI for the automated checks; a human, on a device, before each release |
 
 ## 14. Repository layout
 
@@ -587,14 +601,14 @@ nix/                     Nix package/image definitions
 
 ## 15. Phases
 
-Work is tracked as GitHub milestones and parent issues. A phase is done when its owner-approved acceptance checklist passes; a security review runs where a phase touches the attack surface.
+GitHub milestones and parent issues track the work. A phase is done when its acceptance checklist, approved by the owner, passes. A security review runs where a phase touches the attack surface.
 
-1. **Foundations** — protocol schema, server core (store, blobs, revisions, auth, authz), simulation harness skeleton, CI.
-2. **Single-user file sync**: a new plugin engine (`docs/design/engine.md`) plus the adapter for desktop and Android, conflicts, history and restore, Markdown import, and the Helm chart. Done as defined in `docs/acceptance/phase-2.md`: the checklist passes on `master`, a security review and a narrow bug hunt have run with critical and high findings fixed, and `0.2.0` is released.
-3. **Vault sharing** — membership management, invitations, roles in UI.
-4. **End-to-end encryption** — key hierarchy, escrow, export decryption, crypto vectors, independent crypto review. Until then, creating an E2EE vault is rejected (§9.3).
-5. **Live collaborative editing** — Yjs documents, conversion, editor binding, awareness, compaction.
+1. **Foundations:** protocol schema, server core (store, blobs, revisions, auth, authz), simulation harness skeleton, CI.
+2. **Single-user file sync:** a new plugin engine (`docs/design/engine.md`) plus the adapter for desktop and Android, conflicts, history and restore, Markdown import, and the Helm chart. It is done as `docs/acceptance/phase-2.md` defines: the checklist passes on `master`, a security review and a narrow bug hunt ran and their critical and high findings are fixed, and `0.2.0` is released.
+3. **Vault sharing:** membership management, invitations, roles in the UI.
+4. **End-to-end encryption:** key hierarchy, escrow, export decryption, crypto vectors, independent crypto review. Until then, creating an E2EE vault is rejected (§9.3).
+5. **Live collaborative editing:** Yjs documents, conversion, editor binding, awareness, compaction.
 
 ## 16. Open questions
 
-Tracked as issues labelled `question`. Decisions made autonomously by the planner agent are logged on the decision-log issue for later human review.
+Issues labelled `question` track them. The planner agent logs the decisions it makes on its own on the decision-log issue, for later human review.
