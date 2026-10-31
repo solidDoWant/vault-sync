@@ -467,61 +467,473 @@ Defined by `docs/design/engine.md` §2 (journal), §8 (crash safety) and §9 (re
 
 ### 9.1 Authentication
 
-The plugin authenticates against Authentik with the **OAuth 2.0 Device Authorization Grant** (works identically on desktop and Android, with no redirect handling). The plugin stores the refresh token in Obsidian's per-vault, device-local storage (`app.saveLocalStorage`, key `vault-sync-refresh-token`), never in `data.json`, so tools that back up or sync the vault folder never copy it (the unlocked encryption keys are kept the same way, §9.3); access tokens are JWTs validated by the server against the issuer's JWKS (refreshed on unknown `kid`, with a bounded refresh rate). `iss`, `aud`, and `exp` are always checked.
+Overview:
 
-Client-side details (decision, #25):
+- The plugin authenticates against Authentik with the **OAuth 2.0 Device Authorization Grant**. It works the same on desktop and Android, with no redirect handling.
+- The plugin stores the refresh token in the per-vault, device-local storage of Obsidian (`app.saveLocalStorage`, key `vault-sync-refresh-token`), never in `data.json`. So tools that back up or sync the vault folder never copy it. The unlocked encryption keys are kept the same way (§9.3).
+- Access tokens are JWTs. The server validates them against the JWKS of the issuer, which it refreshes on an unknown `kid`, with a bounded refresh rate.
+- `iss`, `aud` and `exp` are always checked.
 
-- The OAuth calls live in `plugin/src/core/auth` and go through an injected HTTP client: Obsidian's `requestUrl` in the plugin, which is not subject to CORS and behaves the same on desktop and Android. The plugin's ConnectRPC transport uses `requestUrl` too; `requestUrl` cannot be cancelled, so an aborted or timed-out RPC rejects at once and its late response is dropped. Identity provider responses are bounded at 64 KiB of UTF-8 (checked once `requestUrl` has buffered the body, as it offers no streaming). The discovery document must name the configured issuer exactly, and the issuer, every endpoint and the server URL must be `https` (plain `http` only to loopback hosts). The plugin checks `GetServerInfo`'s protocol version before it signs in, and takes the identity provider from it (decision, #194): `GetServerInfo` advertises the issuer (`VAULT_SYNC_OIDC_ISSUER_URL`) and the plugin's public client id (`VAULT_SYNC_OIDC_CLIENT_ID`, by default the audience), both public, so only the server URL must be entered. The plugin's issuer and client id settings are optional overrides: an entered client id wins, and an entered issuer is used only when the server advertises none (one that differs from the advertised issuer is refused). So the server URL decides the identity provider unless the issuer is entered: with none entered, the first sign-in trusts the issuer the server advertises, and a malicious or compromised server can send the user to a verification page of its choosing. This is accepted, because the user already trusts that server with the vault's notes; entering the issuer pins it. The advertised issuer must pass the same `https` rule, and an advertised client id must be 1 to 255 printable ASCII characters. The issuer and client id a sign-in used are stored with the refresh token and used for its refreshes, so refreshing never depends on the server. The device flow requests `openid offline_access`, follows RFC 8628 polling (the provider's interval, plus 5 s on every `slow_down`; network failures and 5xx responses are retried until the code expires), and is cancelled when its dialog closes, leaving the authentication state as it was. The server and identity provider settings are locked while a sign-in runs and while signed in. A signed-in device must sign out before it can sign in again. A grant without a refresh token is refused.
-- The refresh token is the only token stored (device-local storage, never synced). A refresh token found in `data.json` (written by older versions) is moved to local storage on load and removed from `data.json`. When `data.json` still names the sign-in's identity provider but local storage holds no token (it was cleared), the device starts in "sign-in required", as after a revoked token. The access token is kept in memory and refreshed a minute before its `exp` (from the JWT, else `expires_in`), or halfway through its lifetime if that is shorter. Concurrent callers share one refresh. A rotated refresh token is persisted before the new access token is used. Writes of the refresh token never overlap, and a sign-in or sign-out wins over a refresh still running: that refresh's tokens are dropped and its rotated refresh token is never left on disk. A sign-in forgets the previous session's tokens before it stores the new refresh token, so while that write runs no caller gets the previous session's access token, and a failed write leaves the device signed out and then removes the stored refresh token (best effort), so a restart does not resume the session the sign-in replaced. A unary RPC refused with `UNAUTHENTICATED` invalidates its token and is sent once more, unchanged, with a fresh one, so a retried `CommitRevision` keeps its `revision_id` (§6.2). `GetServerInfo`, the one public procedure, never waits for a token.
-- A refresh refused with `invalid_grant` (the refresh token expired or was revoked, or the provider session ended) deletes the refresh token and moves to "sign-in required". From then on authenticated calls fail with `UNAUTHENTICATED` without reaching the server, and the engine keeps its pending operations (principle 1) until a new sign-in. A provider that cannot be reached fails calls with `UNAVAILABLE` and keeps the device signed in. A request `requestUrl` could not deliver at all (no network, DNS, TLS) fails with `UNAVAILABLE` too. "Sign-in required" stops sync; the session that starts after the next sign-in pushes what was changed meanwhile. Tokens are never logged.
+Client: transport and identity provider:
 
-Server-side details (decision):
+- The OAuth calls live in `plugin/src/core/auth` and go through an injected HTTP client. In the plugin, that is the `requestUrl` of Obsidian, which is not subject to CORS and behaves the same on desktop and Android.
+- The ConnectRPC transport of the plugin uses `requestUrl` too. `requestUrl` cannot be cancelled, so an aborted or timed-out RPC rejects at once, and its late response is dropped.
+- Identity provider responses are bounded at 64 KiB of UTF-8. The check runs once `requestUrl` has buffered the body, because it offers no streaming.
+- The discovery document must name the configured issuer exactly.
+- The issuer, every endpoint and the server URL must be `https`. Plain `http` is allowed only to loopback hosts.
+- The plugin checks the protocol version from `GetServerInfo` before it signs in, and takes the identity provider from it. `GetServerInfo` advertises the issuer (`VAULT_SYNC_OIDC_ISSUER_URL`) and the public client id of the plugin (`VAULT_SYNC_OIDC_CLIENT_ID`, by default the audience). Both are public, so only the server URL must be entered.
+- The issuer and client id settings of the plugin are optional overrides. An entered client id wins. An entered issuer is used only when the server advertises none. An entered issuer that differs from the advertised issuer is refused.
+- So the server URL decides the identity provider unless the issuer is entered. With none entered, the first sign-in trusts the issuer that the server advertises, and a malicious or compromised server can send the user to a verification page of its choosing. This is accepted, because the user already trusts that server with the notes of the vault. Entering the issuer pins it.
+- The advertised issuer must pass the same `https` rule. An advertised client id must be 1 to 255 printable ASCII characters.
+- The issuer and client id that a sign-in used are stored with the refresh token and used for its refreshes. So refreshing never depends on the server.
 
-- Only RS256, ES256 and EdDSA signatures are accepted; `none` and HMAC algorithms are rejected. Tokens are size-bounded before parsing. `exp` has no leeway; `nbf`, when present, tolerates one minute of clock skew.
-- The JWKS (discovered from the issuer's OpenID configuration) is fetched lazily, refetched on an unknown `kid` and when older than one hour, and never more than once per 30 seconds. A failed refetch keeps the cached keys. At most one fetch is in flight and no lock is held across it: while hour-old keys are being refetched, other requests use the cached keys rather than wait. The discovery document, `jwks_uri` and redirects must be `https` (plain `http` only to loopback hosts, and only for a loopback `http` issuer); redirects must stay on the requested host and never downgrade to `http`.
-- Users are created on their first authenticated request, keyed by `(issuer, subject)`; concurrent first requests create exactly one user. `sub` must be non-empty, at most 255 bytes, and free of control characters (Unicode `Cc`); other tokens are rejected as unauthenticated before any user lookup.
-- Authentication is **default-deny**: one interceptor on every ConnectRPC service authenticates every procedure that is not on an explicit public allow-list (only `ServerInfoService/GetServerInfo`, which returns only public, configuration-derived data: versions, the realtime subscription cap, the issuer and the plugin's public client id). The realtime WebSocket upgrade (§6.4) authenticates with the same authenticator. A test enumerates every procedure in the schema and asserts it is authenticated or allow-listed.
+Client: sign-in:
+
+- The device flow requests `openid offline_access`.
+- It follows RFC 8628 polling: the interval of the provider, plus 5 s on every `slow_down`. Network failures and 5xx responses are retried until the code expires.
+- It is cancelled when its dialog closes, which leaves the authentication state as it was.
+- The server and identity provider settings are locked while a sign-in runs and while signed in.
+- A signed-in device must sign out before it can sign in again.
+- A grant without a refresh token is refused.
+
+Client: tokens:
+
+- The refresh token is the only token stored (device-local storage, never synced).
+- A refresh token found in `data.json` (written by older versions) is moved to local storage on load and removed from `data.json`.
+- When `data.json` still names the identity provider of the sign-in but local storage holds no token (it was cleared), the device starts in "sign-in required", as after a revoked token.
+- The access token is kept in memory. It is refreshed a minute before its `exp` (from the JWT, else `expires_in`), or halfway through its lifetime if that is shorter.
+- Concurrent callers share one refresh.
+- A rotated refresh token is persisted before the new access token is used.
+- Writes of the refresh token never overlap.
+- A sign-in or sign-out wins over a refresh that is still running. The tokens of that refresh are dropped, and its rotated refresh token is never left on disk.
+- A sign-in forgets the tokens of the previous session before it stores the new refresh token. So while that write runs, no caller gets the access token of the previous session.
+- If that write fails, the device is left signed out, and the stored refresh token is then removed (best effort). So a restart does not resume the session that the sign-in replaced.
+- A unary RPC refused with `UNAUTHENTICATED` invalidates its token and is sent once more, unchanged, with a fresh one. So a retried `CommitRevision` keeps its `revision_id` (§6.2).
+- `GetServerInfo`, the one public procedure, never waits for a token.
+
+Client: failures:
+
+- A refresh refused with `invalid_grant` (the refresh token expired or was revoked, or the provider session ended) deletes the refresh token and moves to "sign-in required".
+- From then on, authenticated calls fail with `UNAUTHENTICATED` without reaching the server. The engine keeps its pending operations (principle 1) until a new sign-in.
+- A provider that cannot be reached fails calls with `UNAVAILABLE` and keeps the device signed in.
+- A request that `requestUrl` could not deliver at all (no network, DNS, TLS) fails with `UNAVAILABLE` too.
+- "Sign-in required" stops sync. The session that starts after the next sign-in pushes what was changed meanwhile.
+- Tokens are never logged.
+
+Server: tokens:
+
+- Only RS256, ES256 and EdDSA signatures are accepted. `none` and HMAC algorithms are rejected.
+- Tokens are size-bounded before parsing.
+- `exp` has no leeway. `nbf`, when present, tolerates one minute of clock skew.
+
+Server: JWKS:
+
+- The JWKS is discovered from the OpenID configuration of the issuer.
+- It is fetched lazily, and fetched again on an unknown `kid` and when it is older than one hour, but never more than once per 30 seconds.
+- A failed refetch keeps the cached keys.
+- At most one fetch is in flight, and no lock is held across it. While keys that are an hour old are fetched again, other requests use the cached keys rather than wait.
+- The discovery document, `jwks_uri` and redirects must be `https`. Plain `http` is allowed only to loopback hosts, and only for a loopback `http` issuer.
+- Redirects must stay on the requested host and never downgrade to `http`.
+
+Server: users:
+
+- Users are created on their first authenticated request, keyed by `(issuer, subject)`. Concurrent first requests create exactly one user.
+- `sub` must be non-empty, at most 255 bytes, and free of control characters (Unicode `Cc`). Other tokens are rejected as unauthenticated before any user lookup.
+
+Server: default-deny:
+
+- Authentication is **default-deny**. One interceptor on every ConnectRPC service authenticates every procedure that is not on an explicit public allow-list.
+- The allow-list holds only `ServerInfoService/GetServerInfo`. It returns only public data derived from the configuration: versions, the realtime subscription cap, the issuer and the public client id of the plugin.
+- The realtime WebSocket upgrade (§6.4) authenticates with the same authenticator.
+- A test enumerates every procedure in the schema and asserts that it is authenticated or allow-listed.
 
 ### 9.2 Authorization
 
-Every RPC and every WebSocket message resolves `(user, vault_id)` to a `vault_members` role before touching data. `viewer` can read; `editor` can read and write; `owner` can also manage members and vault settings. There is no admin bypass in the API.
+Every RPC and every WebSocket message resolves `(user, vault_id)` to a `vault_members` role before it touches data. A `viewer` can read. An `editor` can read and write. An `owner` can also manage members and vault settings. The API has no admin bypass.
 
-Server-side details (decision):
+The central check:
 
-- Authorization is **central and runs before the handler**: one interceptor, after authentication, on every ConnectRPC service. A single table (`server.VaultProcedures`) classifies every vault-scoped procedure — every procedure whose request carries `vault_id` — as read or write. A request carrying a `vault_id` for an unclassified procedure is rejected, and a test derived from the schema descriptors fails if any such procedure is missing from the table. The interceptor reads only the top-level `vault_id`, so a request must name its vault nowhere else: a second schema-derived test walks every RPC input message (nested messages, `oneof` members, repeated and map fields, stopping at recursive types) and fails, naming the procedure and field path, on any vault-identifying field other than a single top-level, singular, non-`oneof` `string vault_id`. A field is vault-identifying if its name ends in `vault`, `vaults`, `vault_id` or `vault_ids` (also without the underscore before `id`; for example `target_vault_id`) or its type is the `Vault` message. Streaming calls to vault-scoped procedures are rejected before the handler runs, because their messages arrive only after it starts.
-- `vault_id` must be a canonical lowercase UUID (`INVALID_ARGUMENT` otherwise) and is checked before any query. The role is then resolved with one `vault_members` lookup: a vault that does not exist and a vault the caller is not a member of take the same path and return the same `NOT_FOUND` error. A `viewer` calling a write procedure gets `PERMISSION_DENIED`.
-- Handlers take the authorized vault from the interceptor, never from the request, and query through a vault-scoped store handle whose every query filters by that vault, so ids from another vault (documents, revisions, blobs) are simply not found.
-- `CreateVault` makes the caller the `owner` (a user may own at most 100 vaults that are not deleted); `ListVaults` returns only vaults the caller is a member of, with the caller's role, paginated by an opaque `page_token` (`page_size` defaults to 100 and is capped at 1000; like `ListChanges`, a page also ends early where its encoding would exceed the send limit, with a `next_page_token` to continue, and holds at least one vault if one remains; startup requires the send limit to fit a response with one vault with a maximum-length name). Vault names are non-blank, at most 256 bytes, and contain no control characters (Unicode category `Cc`, including U+0000, which PostgreSQL `text` cannot store), no format characters (`Cf`: bidi embeddings, overrides, isolates and marks, zero-width characters, the byte order mark, tag characters) and no line or paragraph separator (`Zl`, `Zp`; decision, #548), so a name other members see cannot hide text or reorder the label around it; anything else is `INVALID_ARGUMENT` before the database is touched.
-- **Deleting a vault (`docs/design/sharing.md`).** `VaultService.DeleteVault(vault_id)` is owner-only (`Manage`; `PERMISSION_DENIED` for editors and viewers, and the vault is unchanged). It sets `vaults.deleted_at` under the vault row lock and keeps every row and blob. From then on every vault-scoped RPC from a member of the vault, `DeleteVault` included, is `NOT_FOUND` with an `ErrorDetail` of reason `ERROR_REASON_VAULT_DELETED`, and its realtime subscriptions end the same way (§6.4). A non-member gets the same `NOT_FOUND` as for a vault that does not exist. `ListVaults` no longer lists it, its pending invitations no longer redeem, and it no longer counts toward its owners' limit of 100 owned vaults. The check is read from PostgreSQL on every request, so it takes effect on every replica at once. **Purge and undelete.** The retention job (§11) purges a vault deleted more than 30 days ago: one transaction sets `vaults.purged_at` (migration 0018) and deletes every row of the vault, then the job deletes every object under the vault's S3 prefix, at most 10,000 per run, then the `vaults` row; a purge cut short resumes on the next run. `vault-sync-server vault undelete <vault-id>` clears `deleted_at` while `purged_at` is unset; an unknown vault or one whose purge has started exits 1. The export keeps writing a deleted vault until its purge starts, with a `<vault-id>.DELETED` file holding the deletion time (`docs/admin/backup-and-restore.md`).
-- **Membership (decision, #33).** `MembershipService` manages members. `CreateInvitation`, `ListInvitations`, `RevokeInvitation`, `ListMembers`, `UpdateMemberRole` and `RemoveMember` are owner-only (the `Manage` class of `server.VaultProcedures`, PERMISSION_DENIED for editors and viewers); `LeaveVault` is open to every member (`Read`); `RedeemInvitation` is not vault-scoped, since the person redeeming is not a member yet: it carries only the code. An invitation grants one role (owner, editor or viewer) and expires after `ttl_seconds` (default 7 days, at most 30 days; more is `INVALID_ARGUMENT`). Its code is 32 random bytes, base64url-encoded without padding, returned only by `CreateInvitation`; the server stores only its SHA-256. Redeeming makes the caller a member with the invitation's role and deletes the invitation in one transaction, so a code works once even when redeemed concurrently. A code that is malformed, unknown, expired, revoked or used gets one and the same `NOT_FOUND` error, which names no vault. When a member is removed or leaves, or an owner is demoted, the invitations they created are deleted in the same transaction: their codes get that same `NOT_FOUND` and `ListInvitations` no longer lists them, so a former owner cannot use a code they created earlier to get back in. Redeeming as an existing member is `ALREADY_EXISTS` and leaves both the role and the invitation as they were. A vault has at most 100 members and 100 pending invitations (`RESOURCE_EXHAUSTED`; a redemption refused by the member limit keeps the invitation), so `ListMembers` and `ListInvitations` are not paginated. A vault always has at least one owner: demoting or removing its last owner, and the last owner leaving, is `FAILED_PRECONDITION`. Every membership change locks the vault row (as commits do), so concurrent changes cannot leave a vault without an owner or over the member limit. Changes take effect on the member's next request on every replica, because authorization reads `vault_members` on every request and nothing caches roles, and a removal ends the member's realtime subscriptions at once (§6.4). An in-flight request authorized before the change may still complete, except a commit: `CommitRevision` re-reads the caller's role and the vault's `deleted_at` under the vault row lock that membership changes and `DeleteVault` also take, so once a removal, a demotion to viewer or a vault deletion returns, no revision by that member lands after it (a commit waiting for the lock is refused with `NOT_FOUND`, with reason `ERROR_REASON_VAULT_DELETED` for a deleted vault, or `PERMISSION_DENIED` for a viewer). An owner role granted by invitation or promotion counts toward `CreateVault`'s limit of 100 owned vaults, but is never refused by it.
-- `RegisterDevice` registers a device for the caller (one per plugin installation, so every reinstall adds one). A user may have at most 100 devices that are not removed (decision #52 item 8 counted every registration over the account's lifetime; #205 made devices removable, so the limit can be recovered from). The 101st call gets `RESOURCE_EXHAUSTED` ("at most 100 devices may be registered") with an `ErrorDetail` of reason `ERROR_REASON_DEVICE_LIMIT`, which clients match instead of the message (#428); registrations are serialized on the user row, so concurrent calls cannot overshoot the cap. Registration is idempotent with a client-chosen `registration_id` (a canonical lowercase UUID; #428): the plugin saves one before its first attempt and sends it with every retry, and a retry with the same id and public key returns the device the first call registered as it is now, with its current name, without using another place, even at the cap; the retry's name is ignored, since the device may have been renamed in between (decision, #52). So a crash or a lost response between the server registering the device and the plugin saving it does not burn a place. The plugin drops the saved id after `INVALID_ARGUMENT` or `ALREADY_EXISTS`, which mean nothing was registered under it, so its next attempt uses a new id and the current Device name; after any other error it keeps the id, since the first call may have registered the device. The same id with a different public key is `ALREADY_EXISTS`; the id is scoped to the caller and to devices that are not removed, so after removal it registers a new device; an empty id registers a new device on every call (older plugins). Device names follow the same character rule as vault names (no `Cc`, `Cf`, `Zl` or `Zp`; #548), are non-blank and at most 256 bytes; names stored before #548 are kept as they are, and the plugin strips those characters, replaces double quotation marks, bounds the shown length and isolates the name (Unicode FSI/PDI) wherever it shows another device's or a vault's name, writes invisible characters in file paths it shows as `\uXXXX` and a backslash as `\\`, except the zero-width joiners of an emoji sequence, and lays each path out on its own (an element with `dir="auto"`) inside the label that shows it (display only; #557, #605), and registers at most 256 bytes of its Device name setting (§11). The public key is empty or exactly 32 bytes. Anything else is `INVALID_ARGUMENT` before the database is touched.
-- `ListDevices` returns the caller's devices that are not removed, oldest first, each with its id, name, registration time and last activity (its last commit, to within a minute; unset if it never committed), and nothing secret (no public key). It is not paginated: the device limit bounds it to 100 entries. `RemoveDevice` removes one of the caller's devices (decision, #205): `device_id` must be a canonical lowercase UUID (`INVALID_ARGUMENT`), and a device that is not the caller's, does not exist or is already removed is `NOT_FOUND`, so a user can neither see nor remove another user's devices. The row is kept with `removed_at` set, because `revisions.device_id` references it: the device's revisions keep their history and attribution, and their device name is still shown (§11). A removed device no longer counts toward the limit, is not listed, and can no longer commit (`CommitRevision` answers `NOT_FOUND`, as for an unknown device, with the reason `ERROR_REASON_DEVICE_NOT_FOUND`); the installation must register again to sync. The plugin lists the user's devices in its settings and removes another one there, never its own (#590). When a commit of its own is refused with that reason, it stops sync, says so, and waits for the user to register the installation again, which it never does by itself (the device may have been removed because it was lost); its pending operations stay in the journal and are pushed under the new device, and a retry of a commit that landed before the removal gets the committed revision back (§6.2). Removal is not undoable. It takes effect on every replica once the call returns, with PostgreSQL as the only coordination: every commit locks its device row (after the vault row, so no deadlock) until it ends and checks `removed_at` under that lock, and the removal updates that row, so it waits for the device's commits in flight and every later commit, on any replica, sees it. No replica caches devices. Removed rows are not deleted, so a user's device rows grow by one per removal; each removal needs an authenticated registration and removal, and the rows are small. They are kept on purpose (decision, #428): deleting one is only safe once no revision references it, and checking that needs an index on `revisions (device_id)`, which every commit would have to maintain, for rows of about a hundred bytes. `RenameDevice(device_id, name)` renames one of the caller's devices that is not removed and returns it; its id stays the same, and `ListDevices` and history (`device_names`, §11) show the new name. The name follows `RegisterDevice`'s rules and `device_id` must be canonical (`INVALID_ARGUMENT`); another user's device, a removed device and an unknown id are `NOT_FOUND`, as for `RemoveDevice`. The rename is one update of the device row, so it takes that row's lock like a removal and every commit by the device, and is serialized with them. The plugin renames its own device when the Device name setting is edited while signed in, once the edit has settled (debounced), and stores the name the server accepted; a failed rename shows a notice and puts the setting back to that name. After a registration completes, it renames the device to the setting only if the setting changed while the registration was pending (setting ≠ the pending name); otherwise it keeps the server's name (decision, #52).
+- Authorization is **central and runs before the handler**: one interceptor, after authentication, on every ConnectRPC service.
+- A single table (`server.VaultProcedures`) classifies every vault-scoped procedure as read or write. A vault-scoped procedure is every procedure whose request carries `vault_id`.
+- A request that carries a `vault_id` for an unclassified procedure is rejected. A test derived from the schema descriptors fails if any such procedure is missing from the table.
+- The interceptor reads only the top-level `vault_id`, so a request must name its vault nowhere else.
+- A second schema-derived test walks every RPC input message (nested messages, `oneof` members, repeated and map fields, stopping at recursive types). It fails, and names the procedure and the field path, on any vault-identifying field other than a single top-level, singular, non-`oneof` `string vault_id`.
+- A field is vault-identifying if its name ends in `vault`, `vaults`, `vault_id` or `vault_ids` (also without the underscore before `id`, for example `target_vault_id`), or if its type is the `Vault` message.
+- Streaming calls to vault-scoped procedures are rejected before the handler runs, because their messages arrive only after it starts.
+- `vault_id` must be a canonical lowercase UUID (`INVALID_ARGUMENT` otherwise). It is checked before any query.
+- The role is then resolved with one `vault_members` lookup. A vault that does not exist and a vault that the caller is not a member of take the same path and return the same `NOT_FOUND` error.
+- A `viewer` that calls a write procedure gets `PERMISSION_DENIED`.
+- Handlers take the authorized vault from the interceptor, never from the request. They query through a vault-scoped store handle whose every query filters by that vault. So ids from another vault (documents, revisions, blobs) are not found.
+
+Vaults:
+
+- `CreateVault` makes the caller the `owner`. A user can own at most 100 vaults that are not deleted.
+- `ListVaults` returns only the vaults that the caller is a member of, with the role of the caller. It is paginated by an opaque `page_token`. `page_size` defaults to 100 and is capped at 1000.
+- Like `ListChanges`, a `ListVaults` page also ends early where its encoding would exceed the send limit, with a `next_page_token` to continue. It holds at least one vault if one remains. Startup requires the send limit to fit a response with one vault with a maximum-length name.
+- Vault names are non-blank and at most 256 bytes.
+- Vault names contain no control characters (Unicode category `Cc`, including U+0000, which PostgreSQL `text` cannot store), no format characters (`Cf`: bidi embeddings, overrides, isolates and marks, zero-width characters, the byte order mark, tag characters) and no line or paragraph separator (`Zl`, `Zp`). So a name that other members see cannot hide text or reorder the label around it.
+- Any other vault name is `INVALID_ARGUMENT` before the database is touched.
+
+Deleting a vault (`docs/design/sharing.md`):
+
+- `VaultService.DeleteVault(vault_id)` is owner-only (`Manage`). Editors and viewers get `PERMISSION_DENIED`, and the vault is unchanged.
+- It sets `vaults.deleted_at` under the vault row lock and keeps every row and blob.
+- From then on, every vault-scoped RPC from a member of the vault, `DeleteVault` included, is `NOT_FOUND` with an `ErrorDetail` of reason `ERROR_REASON_VAULT_DELETED`. Its realtime subscriptions end the same way (§6.4).
+- A non-member gets the same `NOT_FOUND` as for a vault that does not exist.
+- `ListVaults` no longer lists the vault, its pending invitations no longer redeem, and it no longer counts toward the limit of 100 owned vaults of its owners.
+- The check is read from PostgreSQL on every request, so it takes effect on every replica at once.
+
+Purge and undelete:
+
+- The retention job (§11) purges a vault that was deleted more than 30 days ago.
+- One transaction sets `vaults.purged_at` (migration 0018) and deletes every row of the vault. Then the job deletes every object under the S3 prefix of the vault, at most 10,000 per run. Then it deletes the `vaults` row.
+- A purge that is cut short resumes on the next run.
+- `vault-sync-server vault undelete <vault-id>` clears `deleted_at` while `purged_at` is unset. For an unknown vault, or one whose purge started, it exits 1.
+- The export keeps writing a deleted vault until its purge starts, with a `<vault-id>.DELETED` file that holds the deletion time (`docs/admin/backup-and-restore.md`).
+
+Membership:
+
+- `MembershipService` manages members.
+- `CreateInvitation`, `ListInvitations`, `RevokeInvitation`, `ListMembers`, `UpdateMemberRole` and `RemoveMember` are owner-only: the `Manage` class of `server.VaultProcedures`, `PERMISSION_DENIED` for editors and viewers.
+- `LeaveVault` is open to every member (`Read`).
+- `RedeemInvitation` is not vault-scoped, because the person who redeems is not a member yet. It carries only the code.
+- An invitation grants one role (owner, editor or viewer). It expires after `ttl_seconds` (default 7 days, at most 30 days). More is `INVALID_ARGUMENT`.
+- Its code is 32 random bytes, base64url-encoded without padding. Only `CreateInvitation` returns it. The server stores only its SHA-256.
+- Redeeming makes the caller a member with the role of the invitation and deletes the invitation, in one transaction. So a code works once, even when it is redeemed concurrently.
+- A code that is malformed, unknown, expired, revoked or used gets one and the same `NOT_FOUND` error, which names no vault.
+- When a member is removed or leaves, or an owner is demoted, the invitations that they created are deleted in the same transaction. Their codes get that same `NOT_FOUND`, and `ListInvitations` no longer lists them. So a former owner cannot use a code that they created earlier to get back in.
+- Redeeming as an existing member is `ALREADY_EXISTS`. It leaves both the role and the invitation as they were.
+- A vault has at most 100 members and 100 pending invitations (`RESOURCE_EXHAUSTED`). A redemption that the member limit refuses keeps the invitation. So `ListMembers` and `ListInvitations` are not paginated.
+- A vault always has at least one owner. Demoting or removing its last owner, and the last owner leaving, is `FAILED_PRECONDITION`.
+- Every membership change locks the vault row (as commits do). So concurrent changes cannot leave a vault without an owner or over the member limit.
+- Changes take effect on the next request of the member on every replica, because authorization reads `vault_members` on every request and nothing caches roles.
+- A removal ends the realtime subscriptions of the member at once (§6.4).
+- A request in flight that was authorized before the change can still complete, except a commit.
+- `CommitRevision` re-reads the role of the caller and the `deleted_at` of the vault under the vault row lock, which membership changes and `DeleteVault` also take. So once a removal, a demotion to viewer or a vault deletion returns, no revision by that member lands after it.
+- A commit that waits for that lock is refused with `NOT_FOUND` (with reason `ERROR_REASON_VAULT_DELETED` for a deleted vault), or with `PERMISSION_DENIED` for a viewer.
+- An owner role granted by invitation or promotion counts toward the `CreateVault` limit of 100 owned vaults, but that limit never refuses it.
+
+Registering devices:
+
+- `RegisterDevice` registers a device for the caller, one per plugin installation, so every reinstall adds one.
+- A user can have at most 100 devices that are not removed.
+- The 101st call gets `RESOURCE_EXHAUSTED` ("at most 100 devices may be registered") with an `ErrorDetail` of reason `ERROR_REASON_DEVICE_LIMIT`. Clients match the reason instead of the message.
+- Registrations are serialized on the user row, so concurrent calls cannot overshoot the cap.
+- Registration is idempotent with a `registration_id` that the client chooses (a canonical lowercase UUID). The plugin saves one before its first attempt and sends it with every retry.
+- A retry with the same id and public key returns the device that the first call registered, as it is now, with its current name. It uses no other place, even at the cap. The name of the retry is ignored, because the device may have been renamed in between. So a crash or a lost response between the server registering the device and the plugin saving it does not burn a place.
+- The plugin drops the saved id after `INVALID_ARGUMENT` or `ALREADY_EXISTS`, which mean that nothing was registered under it. So its next attempt uses a new id and the current Device name. After any other error, it keeps the id, because the first call may have registered the device.
+- The same id with a different public key is `ALREADY_EXISTS`.
+- The id is scoped to the caller and to devices that are not removed. So after a removal, it registers a new device.
+- An empty id registers a new device on every call (older plugins).
+- Device names follow the same character rule as vault names (no `Cc`, `Cf`, `Zl` or `Zp`), are non-blank and are at most 256 bytes. Names stored before this character rule existed are kept as they are.
+- The plugin registers at most 256 bytes of its Device name setting (§11).
+- The public key is empty or exactly 32 bytes.
+- Any other registration input is `INVALID_ARGUMENT` before the database is touched.
+
+How the plugin shows names (display only):
+
+- Wherever the plugin shows the name of another device or of a vault, it strips `Cc`, `Cf`, `Zl` and `Zp` characters, replaces double quotation marks, bounds the shown length and isolates the name (Unicode FSI/PDI).
+- In file paths that it shows, it writes invisible characters as `\uXXXX` and a backslash as `\\`, except the zero-width joiners of an emoji sequence. It lays each path out on its own (an element with `dir="auto"`) inside the label that shows it.
+
+Listing and removing devices:
+
+- `ListDevices` returns the devices of the caller that are not removed, oldest first. Each has its id, name, registration time and last activity: its last commit, to within a minute, unset if it never committed. It returns nothing secret (no public key).
+- `ListDevices` is not paginated: the device limit bounds it to 100 entries.
+- `RemoveDevice` removes one of the devices of the caller. `device_id` must be a canonical lowercase UUID (`INVALID_ARGUMENT`).
+- A device that is not the caller's, does not exist or is already removed is `NOT_FOUND`. So a user can neither see nor remove the devices of another user.
+- The row is kept with `removed_at` set, because `revisions.device_id` references it. The revisions of the device keep their history and attribution, and their device name is still shown (§11).
+- A removed device no longer counts toward the limit and is not listed.
+- A removed device can no longer commit: `CommitRevision` answers `NOT_FOUND`, as for an unknown device, with the reason `ERROR_REASON_DEVICE_NOT_FOUND`. The installation must register again to sync.
+- The plugin lists the devices of the user in its settings and removes another one there, never its own.
+- When a commit of its own is refused with that reason, the plugin stops sync, says so, and waits for the user to register the installation again. It never does that by itself, because the device may have been removed because it was lost.
+- Its pending operations stay in the journal and are pushed under the new device. A retry of a commit that landed before the removal gets the committed revision back (§6.2).
+- Removal is not undoable.
+- Removal takes effect on every replica once the call returns, with PostgreSQL as the only coordination. Every commit locks its device row (after the vault row, so no deadlock) until it ends, and checks `removed_at` under that lock. The removal updates that row. So it waits for the commits of the device that are in flight, and every later commit, on any replica, sees it.
+- No replica caches devices.
+- Removed rows are not deleted, so the device rows of a user grow by one per removal. Each removal needs an authenticated registration and removal, and the rows are small.
+- The rows are kept on purpose. Deleting one is only safe once no revision references it. Checking that needs an index on `revisions (device_id)`, which every commit would have to maintain, for rows of about a hundred bytes.
+
+Renaming devices:
+
+- `RenameDevice(device_id, name)` renames one of the devices of the caller that is not removed, and returns it. Its id stays the same, and `ListDevices` and history (`device_names`, §11) show the new name.
+- The name follows the rules of `RegisterDevice`, and `device_id` must be canonical (`INVALID_ARGUMENT`).
+- The device of another user, a removed device and an unknown id are `NOT_FOUND`, as for `RemoveDevice`.
+- The rename is one update of the device row. So it takes the lock of that row, like a removal and every commit by the device, and is serialized with them.
+- The plugin renames its own device when the Device name setting is edited while signed in, once the edit settled (debounced). It stores the name that the server accepted. A failed rename shows a notice and puts the setting back to that name.
+- After a registration completes, the plugin renames the device to the setting only if the setting changed while the registration was pending (setting ≠ the pending name). Otherwise it keeps the name of the server.
 
 ### 9.3 End-to-end encryption (opt-in per vault)
 
-Encryption is chosen when a vault is created (`CreateVault` with `VAULT_ENCRYPTION_E2EE`); the owner's device then creates epoch 1 itself (`RotateEpoch(expected_epoch = 0)`), wrapping its key to the owner and, with escrow, to the escrow key (§9.4), so the server never sees an epoch key. Escrow on a plaintext vault is `INVALID_ARGUMENT`, and escrow on a server without an escrow key is `FAILED_PRECONDITION`. An E2EE `CreateVault` carries the vault's id (`new_vault_id`, chosen by the creator's device) and the genesis entry of its membership log, which the creator signs over that id (`docs/design/crypto.md`). The server checks the genesis with the log replay (`e2ee.ReplayLog`): it must be the first entry of that vault's log, signed by its creator, the creator must be the caller, and it records an escrow bundle exactly when escrow is requested. Otherwise the request is `INVALID_ARGUMENT`, and an id naming an existing vault is `ALREADY_EXISTS`; a refused request creates no vault. The vault and its genesis are stored in one transaction. A plaintext `CreateVault` takes neither field, and the server chooses its id. `VaultKeyService.ListLogEntries` returns the vault's log in `seq` order to every member, viewers included (non-members get `NOT_FOUND`), in pages of 100 by default and at most 1000, cut to the send limit; a plaintext vault's log is empty. A non-member may also read it with `invitation_id`, the `<id>` of an E2EE invite code (22 characters of base64url), so that a newcomer can verify the log and sign its redeem entry before redeeming (`docs/design/encryption.md`, *Redemption takes two steps*): the request is served when SHA-256 of the id's 16 bytes names a pending, unexpired invitation to the requested vault (the `ReadOrInvitation` class of `server.VaultProcedures`); a malformed, unknown, expired, revoked or redeemed id, or one for another vault, gets the same `NOT_FOUND` as `GetInvitationSlots`. Members are served whatever `invitation_id` they send, and anonymous callers are still `UNAUTHENTICATED`. In an E2EE vault, `CreateInvitation`, `RevokeInvitation`, `RedeemInvitation`, `UpdateMemberRole`, `RemoveMember` and `LeaveVault` each carry their signed log entry (`log_entry`: invite, revoke invitation, redeem, set role, remove member, leave). Under the vault row lock, in the change's transaction, the server requires the entry's `seq` to be the log's next (otherwise `ABORTED`: the client lists the log and retries on top of the new head), replays it onto the stored log (signatures, hash chain, the signer's right to sign), checks that it records exactly the requested change (an invitation's id is its invite entry's; a redeem names the redeemed invitation and the caller; a leave names the caller), and appends it; a missing entry or one that fails these checks is `INVALID_ARGUMENT`. A refused change changes nothing. An E2EE `RevokeInvitation` also accepts an invitation that has expired but is still pending in the log, so owner devices can record its end. A plaintext vault's membership changes take no entry (`INVALID_ARGUMENT` with one). **Invitations carry key slots** (`docs/design/encryption.md`, *Invitations*). For an E2EE vault the inviting device generates the code `<id>.<secret>` (128 random bits each, base64url without padding) and `CreateInvitation` carries only `id_hash` (SHA-256 of the 16 bytes of `<id>`), the invite anchor (96 bytes) and the invitation's key slots: exactly one per existing epoch, each for this invitation (`KEY_RECIPIENT_KIND_INVITATION`), otherwise `INVALID_ARGUMENT` (or `FAILED_PRECONDITION` with reason `ERROR_REASON_EPOCH_NOT_CURRENT` when an epoch is missing); the response carries no code, and an `id_hash` in use is `ALREADY_EXISTS`. A plaintext invitation takes none of these fields and keeps its server-generated code. `MembershipService.GetInvitationSlots(id)` is open to any authenticated user and names no vault: for a pending E2EE invitation it returns the invitation id, vault id and role, its slots, the vault's epochs with their commitments and records, and the invite anchor; a malformed, unknown, expired, revoked or used id gets the same `NOT_FOUND` as a failed redemption. `RedeemInvitation(code, slots)` then takes the redeemer's own slots, exactly one per existing epoch, all for the caller's user id; the caller must have a user key. Under the vault row lock it stores them, makes the caller a member and deletes the invitation and its slots in one transaction, so a member never lacks a slot for an epoch that existed when they joined. A missing epoch (the vault rotated since `GetInvitationSlots`) is `FAILED_PRECONDITION` with reason `ERROR_REASON_EPOCH_NOT_CURRENT`; other mismatches, or slots on a plaintext redemption, are `INVALID_ARGUMENT`; a refused redemption changes nothing. Revoking, redeeming, pruning expired rows and deleting a former owner's invitations delete the invitations' slots in the same transaction; the vault purge deletes the rest. Invitation slots are never listed by `ListKeySlots` and are refused by `AddKeySlots`. An E2EE `RotateEpoch` carries the new epoch's signed record (`record`: the log position, the sorted recipients with their key hashes, and an owner's signature over `epoch_body`, `docs/design/crypto.md`). Under the vault row lock the server replays the stored log, and the record must verify there with `e2ee.VerifyEpochRecord`: signed by an owner at the position it names, over this vault, epoch, commitment and the current epoch's commitment, with exactly the recipients the log names there. The user, invitation and escrow slots must be exactly the record's user, invitation and escrow recipients, and every stored invitation (expired ones included, until revoked) needs its slot; a slot for a pending invitation whose expired row was already pruned is accepted and dropped. To turn escrow on or off, or to move an escrowed vault to a later key of the published escrow chain (§9.4), the request also carries the owner's signed escrow entry (`escrow_entry`, type 8), and the record's position must be that entry. The server replays the log with its stored escrow chain at every check, so an escrow entry naming a key the chain links to the log's previous one verifies, and any other new key is refused. An owner's device sends that entry with its next rotation when the vault's log still names an older escrow key that the chain links to the key it pinned; a member removal in such a vault first runs that rotation, then the removal (two epochs). The server appends the entry, sets the vault's escrow flag, and creates the epoch in one transaction. A record or entry that does not verify is `INVALID_ARGUMENT`, and nothing changes. An E2EE `RemoveMember` carries its `next_epoch`'s signed record the same way (`record`), and its position must be the request's remove-member entry: the record must be signed by an owner at that entry, and its recipients must be the log's after it. The server appends the entry, creates the epoch with its record and removes the member in one transaction. A missing record, another signer, another position or other recipients are `INVALID_ARGUMENT`, as for `RotateEpoch`, and nothing changes; a plaintext vault's removal takes no `record`. The compare-and-set on the current epoch is unchanged, and a plaintext vault's `RotateEpoch` is still `FAILED_PRECONDITION`. `ListEpochs` and `RotateEpoch` return each epoch's stored record. `CommitRevision` in an E2EE vault takes a ciphertext path and a client-computed `path_key` under the vault's current epoch (§5, §6.2); the server never derives a `path_key` there.
+Creating an E2EE vault:
+
+- Encryption is chosen when a vault is created (`CreateVault` with `VAULT_ENCRYPTION_E2EE`).
+- The device of the owner then creates epoch 1 itself (`RotateEpoch(expected_epoch = 0)`). It wraps the key to the owner and, with escrow, to the escrow key (§9.4). So the server never sees an epoch key.
+- Escrow on a plaintext vault is `INVALID_ARGUMENT`. Escrow on a server without an escrow key is `FAILED_PRECONDITION`.
+- An E2EE `CreateVault` carries the id of the vault (`new_vault_id`, chosen by the device of the creator) and the genesis entry of its membership log. The creator signs the genesis over that id (`docs/design/crypto.md`).
+- The server checks the genesis with the log replay (`e2ee.ReplayLog`). It must be the first entry of the log of that vault, signed by its creator. The creator must be the caller. The genesis records an escrow bundle exactly when escrow is requested.
+- Otherwise the request is `INVALID_ARGUMENT`. An id that names an existing vault is `ALREADY_EXISTS`. A refused request creates no vault.
+- The vault and its genesis are stored in one transaction.
+- A plaintext `CreateVault` takes neither field, and the server chooses its id.
+
+Reading the membership log:
+
+- `VaultKeyService.ListLogEntries` returns the log of the vault in `seq` order to every member, viewers included. Non-members get `NOT_FOUND`.
+- Pages hold 100 entries by default and at most 1000, cut to the send limit. The log of a plaintext vault is empty.
+- A non-member can also read the log with `invitation_id`, the `<id>` of an E2EE invite code (22 characters of base64url). So a newcomer can verify the log and sign its redeem entry before it redeems (`docs/design/encryption.md`, *Redemption takes two steps*).
+- The server serves that request when SHA-256 of the 16 bytes of the id names a pending, unexpired invitation to the requested vault (the `ReadOrInvitation` class of `server.VaultProcedures`).
+- A malformed, unknown, expired, revoked or redeemed id, or an id for another vault, gets the same `NOT_FOUND` as `GetInvitationSlots`.
+- Members are served whatever `invitation_id` they send. Anonymous callers are still `UNAUTHENTICATED`.
+
+Signed log entries for membership changes:
+
+- In an E2EE vault, `CreateInvitation`, `RevokeInvitation`, `RedeemInvitation`, `UpdateMemberRole`, `RemoveMember` and `LeaveVault` each carry their signed log entry (`log_entry`: invite, revoke invitation, redeem, set role, remove member, leave).
+- Under the vault row lock, in the transaction of the change, the server requires the `seq` of the entry to be the next of the log. Otherwise the change is `ABORTED`: the client lists the log and retries on top of the new head.
+- The server then replays the entry onto the stored log (signatures, hash chain, the right of the signer to sign). It makes sure that the entry records exactly the requested change: the id of an invitation is the id of its invite entry, a redeem names the redeemed invitation and the caller, and a leave names the caller. Then it appends the entry.
+- A missing entry, or an entry that fails these checks, is `INVALID_ARGUMENT`. A refused change changes nothing.
+- An E2EE `RevokeInvitation` also accepts an invitation that expired but is still pending in the log, so owner devices can record its end.
+- Membership changes of a plaintext vault take no entry (`INVALID_ARGUMENT` with one).
+
+Invitations carry key slots (`docs/design/encryption.md`, *Invitations*):
+
+- For an E2EE vault, the inviting device generates the code `<id>.<secret>` (128 random bits each, base64url without padding).
+- `CreateInvitation` carries only `id_hash` (SHA-256 of the 16 bytes of `<id>`), the invite anchor (96 bytes) and the key slots of the invitation. It needs exactly one slot per existing epoch, each for this invitation (`KEY_RECIPIENT_KIND_INVITATION`). Otherwise it is `INVALID_ARGUMENT`, or `FAILED_PRECONDITION` with reason `ERROR_REASON_EPOCH_NOT_CURRENT` when an epoch is missing.
+- The response carries no code. An `id_hash` in use is `ALREADY_EXISTS`.
+- A plaintext invitation takes none of these fields and keeps its server-generated code.
+- `MembershipService.GetInvitationSlots(id)` is open to any authenticated user and names no vault. For a pending E2EE invitation, it returns the invitation id, the vault id and the role, its slots, the epochs of the vault with their commitments and records, and the invite anchor.
+- A malformed, unknown, expired, revoked or used id gets the same `NOT_FOUND` as a failed redemption.
+- `RedeemInvitation(code, slots)` then takes the own slots of the redeemer: exactly one per existing epoch, all for the user id of the caller. The caller must have a user key.
+- Under the vault row lock, in one transaction, the redemption stores the slots, makes the caller a member, and deletes the invitation and its slots. So a member never lacks a slot for an epoch that existed when they joined.
+- A missing epoch (the vault rotated since `GetInvitationSlots`) is `FAILED_PRECONDITION` with reason `ERROR_REASON_EPOCH_NOT_CURRENT`. Other mismatches, or slots on a plaintext redemption, are `INVALID_ARGUMENT`. A refused redemption changes nothing.
+- Revoking, redeeming, pruning expired rows and deleting the invitations of a former owner delete the slots of those invitations in the same transaction. The vault purge deletes the rest.
+- `ListKeySlots` never lists invitation slots, and `AddKeySlots` refuses them.
+
+Signed epoch records:
+
+- An E2EE `RotateEpoch` carries the signed record of the new epoch (`record`: the log position, the sorted recipients with their key hashes, and the signature of an owner over `epoch_body`, `docs/design/crypto.md`).
+- Under the vault row lock, the server replays the stored log, and the record must verify there with `e2ee.VerifyEpochRecord`. It must be signed by an owner at the position that it names, over this vault, epoch, commitment and the commitment of the current epoch, with exactly the recipients that the log names there.
+- The user, invitation and escrow slots must be exactly the user, invitation and escrow recipients of the record.
+- Every stored invitation (expired ones included, until revoked) needs its slot. A slot for a pending invitation whose expired row was already pruned is accepted and dropped.
+- To turn escrow on or off, or to move an escrowed vault to a later key of the published escrow chain (§9.4), the request also carries the signed escrow entry of the owner (`escrow_entry`, type 8). The position of the record must be that entry.
+- The server replays the log with its stored escrow chain at every check. So an escrow entry that names a key that the chain links to the previous key of the log verifies, and any other new key is refused.
+- An owner device sends that entry with its next rotation when the log of the vault still names an older escrow key that the chain links to the key that the device pinned.
+- In such a vault, a member removal first runs that rotation, then the removal (two epochs).
+- The server appends the entry, sets the escrow flag of the vault, and creates the epoch in one transaction.
+- A record or entry that does not verify is `INVALID_ARGUMENT`, and nothing changes.
+- An E2EE `RemoveMember` carries the signed record of its `next_epoch` the same way (`record`). Its position must be the remove-member entry of the request: the record must be signed by an owner at that entry, and its recipients must be those of the log after it.
+- The server appends the entry, creates the epoch with its record, and removes the member in one transaction.
+- A missing record, another signer, another position or other recipients are `INVALID_ARGUMENT`, as for `RotateEpoch`, and nothing changes. The removal in a plaintext vault takes no `record`.
+- The compare-and-set on the current epoch is unchanged. `RotateEpoch` on a plaintext vault is still `FAILED_PRECONDITION`.
+- `ListEpochs` and `RotateEpoch` return the stored record of each epoch.
+
+Commits:
+
+- `CommitRevision` in an E2EE vault takes a ciphertext path and a client-computed `path_key` under the current epoch of the vault (§5, §6.2). The server never derives a `path_key` there.
 
 Envelope encryption with multiple recipients:
 
-- Each **user** has a hybrid post-quantum key pair, ML-KEM-768 + X25519 in age's `mlkem768x25519` format (cipher suite 2, `docs/design/encryption.md`): a 32-byte private key (an age hybrid identity) and a 1216-byte public key. The private key is stored server-side wrapped by a key derived from a user recovery passphrase (Argon2id). The Argon2id output is split with HKDF-SHA256 into a `wrap_key`, which wraps the private key and never leaves the device, and an `auth_key`, a verifier the device presents so the server releases the wrapped key. The server stores only `SHA-256(auth_key)`, compares in constant time, and rate-limits failed attempts per user in PostgreSQL. Neither key can be derived from the other, so the server cannot unwrap the key. A stolen session therefore allows only a rate-limited online guessing attack; a dump of the database allows an offline attack at Argon2id cost per guess; and a lockout ends with its window. Devices unwrap it once and keep it in local storage. (Device-to-device linking and Shamir-split recovery are later enhancements.)
-- **User key storage (decision, #52, #665).** `UserKeyService` stores each user's key pair; every procedure acts on the caller's own key only and none names a user, so another user can neither read, unlock nor replace it. The server stores the public key, the Ed25519 signing public key, the wrapped private key, the wrapping's public parameters (suite, Argon2id memory, passes, lanes and salt) and `SHA-256(auth_key)`, never `auth_key`, the passphrase, the Argon2id output or the private key, and never logs `auth_key` or key material. `GetUserKeyParams` returns the public key and parameters a device needs to derive `auth_key`. `CreateUserKey` is create-only: a user who has a key gets `ALREADY_EXISTS` and the stored key is unchanged, so two devices enabling encryption at once cannot replace each other's key. `UnlockUserKey` returns the wrapped private key only for the matching `auth_key`; a wrong one is `PERMISSION_DENIED` with reason `ERROR_REASON_WRONG_PASSPHRASE` and no key material. `ChangePassphrase` takes the current `auth_key` and the stored public key and replaces the wrapped key, its parameters and the verifier in one transaction, as a compare-and-swap on the public key (a different public key is `FAILED_PRECONDITION` and changes nothing); key rotation and reset are out of scope. `CreateUserKey` takes the signing public key (`sign_public_key`, exactly 32 bytes) with the key pair; `GetUserKeyParams` and `UnlockUserKey` return it, empty for a key stored without one. `AddSignPublicKey` adds it to such a key once: it takes `auth_key` (a wrong one is `PERMISSION_DENIED` and counted as below), presenting the stored signing public key again succeeds without a change, and another one is `ALREADY_EXISTS` and changes nothing. `Member.sign_public_key` reports each member's signing public key next to `public_key` (empty without one), so a member list gives every keyed member's `bundle` (`docs/design/crypto.md`). A user without a key gets `NOT_FOUND`. `GetUserKeyParams`, `CreateUserKey` and `UnlockUserKey` also return `user_id`, the caller's server user id (`Member.user_id`, a canonical lowercase UUID): the id a signed genesis, redeem or leave entry must name for the caller, which a device cannot learn from its token (whose `sub` is the OIDC subject). Wrong `auth_key`s presented to `UnlockUserKey`, `ChangePassphrase` or `AddSignPublicKey` are counted per user in the `user_keys` row, under its row lock and with the database clock, so every replica sees one count: after 10 within one hour (the hour starting at the first counted failure), every attempt is `RESOURCE_EXHAUSTED` with reason `ERROR_REASON_PASSPHRASE_ATTEMPTS_EXHAUSTED` and `ErrorDetail.retry_time` set to the end of the hour, even with the right `auth_key`; refused attempts are not counted and do not extend the hour, and a success does not reset the count. Inputs are bounded before the database is touched (`INVALID_ARGUMENT`): public key exactly 1216 bytes, `auth_key` exactly 32 bytes, wrapped private key 1 to 256 bytes, suite 2, salt exactly 16 bytes, and the Argon2id bounds below. A device remembers, per account, the Argon2id parameters it has seen (in its plugin data, kept on sign-out). It refuses to unlock or change the passphrase with parameters lower in memory, passes or lanes, before it derives or sends anything (`docs/design/encryption.md`, *Passphrase parameters*).
-- **Anchor list storage.** `UserKeyService` also stores each user's sealed anchor list (`docs/design/encryption.md`, *Trust anchors*): opaque bytes and a version, which the server never opens. `GetAnchorList` and `PutAnchorList` act on the caller's own list only and name no user. A user without a list reads version 0 and an empty list. `PutAnchorList` is a compare-and-set: it stores the list only when its version is the stored version plus one (1 for the first list), and otherwise returns `FAILED_PRECONDITION` and leaves the stored list unchanged, so of concurrent writers of one version exactly one succeeds. Inputs are bounded before the database is touched (`INVALID_ARGUMENT`): version 1 to 2^63 - 1, and sealed list 1 to 4,800,045 bytes, the sealed size of `MaxAnchors` (100,000) vaults. The request size limit (`VAULT_SYNC_MAX_REQUEST_BYTES`) also applies.
-- **Plugin key manager (decision, #667).** Enabling E2EE creates the key pair on the device (`plugin/src/core/keys`) and calls `CreateUserKey` with only the public key, the signing public key, the wrapped private key, its parameters and `auth_key`; a new passphrase has at least 10 characters. The wrap binds the associated data `"vault-sync/v1/user-key" || public_key`, so a wrapped key cannot be passed off as another key pair's, and after unwrapping the device checks that the private key yields the stored public key and that the signing seed yields the stored signing public key; when the server has none, the device adds it (`AddSignPublicKey`). A device that gets `ALREADY_EXISTS` (another device enabled E2EE first) unlocks the stored key with the passphrase it was given instead of replacing it. Unlocking derives `auth_key` from the parameters `GetUserKeyParams` returns, presents it to `UnlockUserKey` and unwraps the released key on the device; a wrong passphrase and the attempt limit (with the server's `retry_time`) are reported to the user. The unlocked key pair is cached only in Obsidian's per-vault, device-local storage (`app.saveLocalStorage`, key `vault-sync-user-key`), never in `data.json`, so tools that back up or sync the vault folder never copy it, with the server and account it belongs to, is never logged, and is dropped on sign-out. A cached key is used only while its public key is the one `GetUserKeyParams` returns (decision, #692): otherwise the device reports the key as locked, says the server's key is not the one it unlocked, and asks for the passphrase again; the cached key is replaced only by that unlock, never deleted silently.
-- Each **vault** has a symmetric vault key per **epoch**. `key_slots` hold the epoch key wrapped to every member, and to the escrow public key if escrow is enabled. Every wrapping is a binary age file to the recipient's hybrid ML-KEM-768 + X25519 key, 1 to 2048 bytes, so the standard `age` tool opens an escrow slot with the escrow identity. User keys stored under suite 1 (X25519, 32 bytes) before migration 0019 stay stored as they are; the server accepts only suite 2 keys.
-- **Key slots and key commitments (decision, #52).** A slot's payload is the epoch key followed by `"vault-sync/v1/key-slot" || vault_id || epoch || recipient_kind || recipient_id`, which the reader checks, so it opens only as the slot of that vault, epoch and recipient. Every epoch stores a key commitment, `HMAC-SHA256(epoch_key, "vault-sync/v1/key-commitment" || vault_id || epoch)`, which a recipient verifies after unwrapping. Byte encodings: `docs/design/crypto.md`.
+- Each **user** has a hybrid post-quantum key pair, ML-KEM-768 + X25519 in the `mlkem768x25519` format of age (cipher suite 2, `docs/design/encryption.md`). It has a 32-byte private key (an age hybrid identity) and a 1216-byte public key.
+- The private key is stored on the server, wrapped by a key derived from a user recovery passphrase (Argon2id).
+- HKDF-SHA256 splits the Argon2id output into a `wrap_key` and an `auth_key`. The `wrap_key` wraps the private key and never leaves the device. The `auth_key` is a verifier that the device presents so that the server releases the wrapped key.
+- The server stores only `SHA-256(auth_key)`, compares in constant time, and rate-limits failed attempts per user in PostgreSQL.
+- Neither key can be derived from the other, so the server cannot unwrap the key.
+- So a stolen session allows only a rate-limited online guessing attack. A dump of the database allows an offline attack at Argon2id cost per guess. A lockout ends with its window.
+- Devices unwrap the key once and keep it in local storage. (Device-to-device linking and Shamir-split recovery are later enhancements.)
+
+User key storage:
+
+- `UserKeyService` stores the key pair of each user. Every procedure acts on the own key of the caller only, and none names a user. So another user can neither read, unlock nor replace it.
+- The server stores the public key, the Ed25519 signing public key, the wrapped private key, the public parameters of the wrapping (suite, Argon2id memory, passes, lanes and salt) and `SHA-256(auth_key)`.
+- The server never stores `auth_key`, the passphrase, the Argon2id output or the private key. It never logs `auth_key` or key material.
+- `GetUserKeyParams` returns the public key and the parameters that a device needs to derive `auth_key`.
+- `CreateUserKey` is create-only. A user who has a key gets `ALREADY_EXISTS`, and the stored key is unchanged. So two devices that enable encryption at once cannot replace each other's key.
+- `UnlockUserKey` returns the wrapped private key only for the matching `auth_key`. A wrong one is `PERMISSION_DENIED` with reason `ERROR_REASON_WRONG_PASSPHRASE` and no key material.
+- `ChangePassphrase` takes the current `auth_key` and the stored public key. It replaces the wrapped key, its parameters and the verifier in one transaction, as a compare-and-swap on the public key. A different public key is `FAILED_PRECONDITION` and changes nothing.
+- Key rotation and reset are out of scope.
+- `CreateUserKey` takes the signing public key (`sign_public_key`, exactly 32 bytes) with the key pair. `GetUserKeyParams` and `UnlockUserKey` return it, empty for a key stored without one.
+- `AddSignPublicKey` adds a signing public key to such a key once. It takes `auth_key`: a wrong one is `PERMISSION_DENIED` and is counted as below. Presenting the stored signing public key again succeeds without a change. Another one is `ALREADY_EXISTS` and changes nothing.
+- `Member.sign_public_key` reports the signing public key of each member next to `public_key` (empty without one). So a member list gives the `bundle` of every keyed member (`docs/design/crypto.md`).
+- A user without a key gets `NOT_FOUND`.
+- `GetUserKeyParams`, `CreateUserKey` and `UnlockUserKey` also return `user_id`, the server user id of the caller (`Member.user_id`, a canonical lowercase UUID). It is the id that a signed genesis, redeem or leave entry must name for the caller. A device cannot learn it from its token, whose `sub` is the OIDC subject.
+
+Passphrase attempt limit:
+
+- Wrong `auth_key`s presented to `UnlockUserKey`, `ChangePassphrase` or `AddSignPublicKey` are counted per user in the `user_keys` row, under its row lock and with the database clock. So every replica sees one count.
+- After 10 within one hour (the hour that starts at the first counted failure), every attempt is `RESOURCE_EXHAUSTED` with reason `ERROR_REASON_PASSPHRASE_ATTEMPTS_EXHAUSTED` and `ErrorDetail.retry_time` set to the end of the hour, even with the right `auth_key`.
+- Refused attempts are not counted and do not extend the hour. A success does not reset the count.
+
+User key input bounds and parameters:
+
+- Inputs are bounded before the database is touched (`INVALID_ARGUMENT`): public key exactly 1216 bytes, `auth_key` exactly 32 bytes, wrapped private key 1 to 256 bytes, suite 2, salt exactly 16 bytes, and the Argon2id bounds below.
+- A device remembers, per account, the Argon2id parameters that it saw (in its plugin data, kept on sign-out). It refuses to unlock or change the passphrase with parameters lower in memory, passes or lanes, before it derives or sends anything (`docs/design/encryption.md`, *Passphrase parameters*).
+
+Anchor list storage:
+
+- `UserKeyService` also stores the sealed anchor list of each user (`docs/design/encryption.md`, *Trust anchors*): opaque bytes and a version, which the server never opens.
+- `GetAnchorList` and `PutAnchorList` act on the own list of the caller only and name no user.
+- A user without a list reads version 0 and an empty list.
+- `PutAnchorList` is a compare-and-set. It stores the list only when its version is the stored version plus one (1 for the first list). Otherwise it returns `FAILED_PRECONDITION` and leaves the stored list unchanged. So of concurrent writers of one version, exactly one succeeds.
+- Inputs are bounded before the database is touched (`INVALID_ARGUMENT`): version 1 to 2^63 - 1, and sealed list 1 to 4,800,045 bytes, the sealed size of `MaxAnchors` (100,000) vaults. The request size limit (`VAULT_SYNC_MAX_REQUEST_BYTES`) also applies.
+
+Plugin key manager:
+
+- Enabling E2EE creates the key pair on the device (`plugin/src/core/keys`). The device calls `CreateUserKey` with only the public key, the signing public key, the wrapped private key, its parameters and `auth_key`.
+- A new passphrase has at least 10 characters.
+- The wrap binds the associated data `"vault-sync/v1/user-key" || public_key`, so a wrapped key cannot be passed off as the key of another key pair.
+- After unwrapping, the device makes sure that the private key yields the stored public key and that the signing seed yields the stored signing public key. When the server has no signing public key, the device adds it (`AddSignPublicKey`).
+- If a device gets `ALREADY_EXISTS` (another device enabled E2EE first), it unlocks the stored key with the passphrase that it was given instead of replacing it.
+- Unlocking derives `auth_key` from the parameters that `GetUserKeyParams` returns, presents it to `UnlockUserKey`, and unwraps the released key on the device.
+- A wrong passphrase and the attempt limit (with the `retry_time` of the server) are reported to the user.
+- The unlocked key pair is cached only in the per-vault, device-local storage of Obsidian (`app.saveLocalStorage`, key `vault-sync-user-key`), never in `data.json`. So tools that back up or sync the vault folder never copy it.
+- The cache holds the key with the server and the account that it belongs to. The key is never logged and is dropped on sign-out.
+- A cached key is used only while its public key is the one that `GetUserKeyParams` returns. Otherwise the device reports the key as locked, says that the key of the server is not the one that it unlocked, and asks for the passphrase again.
+- Only that unlock replaces the cached key. The cached key is never deleted silently.
+
+Vault keys and key slots:
+
+- Each **vault** has a symmetric vault key per **epoch**.
+- `key_slots` hold the epoch key wrapped to every member, and to the escrow public key if escrow is enabled.
+- Every wrapping is a binary age file to the hybrid ML-KEM-768 + X25519 key of the recipient, 1 to 2048 bytes. So the standard `age` tool opens an escrow slot with the escrow identity.
+- User keys stored under suite 1 (X25519, 32 bytes) before migration 0019 stay stored as they are. The server accepts only suite 2 keys.
+- The payload of a slot is the epoch key followed by `"vault-sync/v1/key-slot" || vault_id || epoch || recipient_kind || recipient_id`. The reader checks it, so the slot opens only as the slot of that vault, epoch and recipient.
+- Every epoch stores a key commitment, `HMAC-SHA256(epoch_key, "vault-sync/v1/key-commitment" || vault_id || epoch)`. A recipient verifies it after unwrapping.
+- Byte encodings: `docs/design/crypto.md`.
+
+Ciphers and suites:
+
 - Sub-keys are derived from the epoch key with HKDF: `content`, `path`, `path_key_secret`.
-- Content and paths are encrypted with **XChaCha20-Poly1305**, random nonce, the revision's document id and epoch bound as associated data.
-- Every ciphertext carries a **suite version** byte so that the algorithms can change later, and every open authenticates the whole header (suite byte included) with the caller's associated data, so a ciphertext with an unknown suite, a changed header or associated data, or a truncated tag fails closed. Suite 1 (byte formats in `docs/design/crypto.md`): HKDF-SHA256 sub-keys; XChaCha20-Poly1305 with a random 24-byte nonce from the platform CSPRNG; sealed box = ephemeral X25519, HKDF-SHA256 salted with both public keys, XChaCha20-Poly1305, refusing low-order keys; HMAC-SHA256 `path_key`; SHA-256 `blob_id` of the sealed content; the user's private key wrapped under a `wrap_key` split by HKDF-SHA256 (with an `auth_key` under a separate label) from Argon2id (default 64 MiB, 3 passes, 1 lane) of the passphrase in NFC (the libraries of §5; a passphrase may use only code points assigned in Unicode 15.0 and any other is refused when it is set or used, so every device derives the same key), with the parameters stored in the header and bounded (19–128 MiB, 2–8 passes, 1–4 lanes) before any derivation, so a stored value can neither weaken the derivation nor exhaust a device.
-- **Member removal** creates a new epoch. Subsequent revisions use it; historical content is not re-encrypted (the removed member may already hold it).
-- **Epochs and key slots (decision, #52, #694).** `VaultKeyService` stores epochs and slots as opaque bytes; the server never sees an epoch key. A new E2EE vault has no epoch (`current_epoch = 0`) and a pending rotation; an owner client creates epoch 1. Every epoch change is a compare-and-set on `vaults.current_epoch` under the vault row lock (which commits and membership changes take too), so of concurrent changes with the same `expected_epoch` exactly one wins, on any replica, and the others get `FAILED_PRECONDITION` with reason `ERROR_REASON_EPOCH_NOT_CURRENT` and adopt the winner's epoch. An epoch's recipients are exactly the vault's members **who have a user key**, plus at most one escrow slot in an escrow vault (requiring it is #40); a member without a user key cannot be wrapped to and is not required, and missing or extra recipients are `INVALID_ARGUMENT`. An owner's `RemoveMember` on an E2EE vault must carry `next_epoch` (commitment and a slot for every remaining recipient, not the removed member) and commits the removal and epoch N+1 in one transaction; without a valid one the member stays. A plaintext vault takes no `next_epoch`. An owner cannot remove themselves from an E2EE vault with `RemoveMember`, since they would create, and so know, the epoch meant to exclude them: it is `FAILED_PRECONDITION`, names `LeaveVault`, and changes nothing (#710). Self-removal from an E2EE vault goes through `LeaveVault`. In a plaintext vault an owner may still remove themselves with `RemoveMember`. `LeaveVault` (no owner client involved) sets `rotation_pending`; an owner client then calls `RotateEpoch(expected_epoch = N)`, which creates N+1 and clears the flag. `CommitRevision` carries the revision's `epoch`: 0 in a plaintext vault and the vault's current epoch in an E2EE vault, checked under the vault row lock after the idempotency check (a retry of a commit applied before a rotation gets its revision back); any other epoch is `FAILED_PRECONDITION` with reason `ERROR_REASON_EPOCH_NOT_CURRENT`. A pending rotation does not change the current epoch, so commits under it continue until the next epoch exists. A new member gets slots for every epoch (decision #52): `ListMissingSlots` (owner-only) lists every (epoch, member with a user key) pair without a slot, with the member's public key, until an owner grants it with `AddKeySlots`, which keeps an existing slot rather than replacing it. `ListKeySlots` returns the caller's own slots, and `ListEpochs` the epochs with their commitments and the vault's key state; both are open to every member, viewers included. With `recipient_kind = KEY_RECIPIENT_KIND_ESCROW`, `ListKeySlots` returns the vault's escrow slots instead, to editors and owners only (a viewer gets `PERMISSION_DENIED`), so that the import can open them with the escrow identity; an escrow slot is useless without that identity. No call returns another member's slots. `ListMembers` reports each member's user public key. Inputs are bounded before the database is touched (`INVALID_ARGUMENT`): commitment exactly 32 bytes, wrapped key 1 to 256 bytes, user recipient ids canonical lowercase UUIDs, escrow recipient ids 1 to 255 printable ASCII bytes (the key-slot format allows 255), at most 101 slots in a new epoch and 1 to 1000 per `AddKeySlots`, no duplicate slots, and list pages of 100 by default and at most 1000, cut to the send limit.
-- **Re-encrypting history and retiring epochs (decision).** Three owner-only `VaultKeyService` calls serve the re-key job (`docs/design/encryption.md`, *Re-encrypting history*); editors, viewers and non-members are refused as for every owner-only call. `ListStaleRevisions(vault_id, page_size, page_token)` pages, in `seq` order and from one snapshot per page, through every retained revision whose epoch is not the current epoch (tombstones, folders and conflict copies included, epoch 0 history of a converted vault too), with its stored sealed path, content reference and epoch, and the current epoch the job re-seals to. It is empty on a plaintext vault. Pages are capped at 1000 revisions (default 100) and by the response size limit. `ReplaceRevisionCiphertext(revision_id, from_epoch, to_epoch, path, content_ref)` replaces one stored revision's sealed path and content reference with ones sealed under `to_epoch`, under the vault row lock that commits and rotations take, and only while the revision is still at `from_epoch` and `to_epoch` is the current epoch. Otherwise the rewrite is skipped and reported (`replaced = false`), and the job restarts with the newer target. It changes nothing else: not the revision's `seq`, document or tombstone flag, not the document's `path_key`, and not which revision is the head, so sync is unaffected. The new content must be a complete blob of the vault, given exactly when the revision has content. The replaced blob is released, so the blob garbage collector (§11) deletes the old ciphertext once no revision references it. `RetireEpoch(epoch)` refuses epoch 1 (its key derives every `path_key`), the current epoch, and any epoch a stored revision still uses (`FAILED_PRECONDITION`). Otherwise it deletes the epoch's key slots, for every recipient, and marks the epoch retired, and retiring it again changes nothing. The epoch's commitment and signed record stay, and `ListEpochs` reports `retired`, so devices can still verify the chain of epoch records. A retired epoch needs no slots: `ListMissingSlots` skips it, and `AddKeySlots`, `CreateInvitation` and `RedeemInvitation` accept slots for it but do not store them.
-- **Plugin vault key manager (decision, #695).** `plugin/src/core/keys` keeps an E2EE vault's epoch keys on the device. Each sync reads every page of `ListEpochs` and `ListKeySlots` and unwraps each of the user's slots it does not hold yet with the unlocked user key. It uses a key only once it matches its epoch's key commitment. A slot that does not open, has no commitment or does not match is refused and reported to the user, never used. A held key whose epoch's commitment changes is refused too: an epoch's key never changes, so the device then stops using and sharing it. The keys are cached only in Obsidian's device-local storage (key `vault-sync-vault-keys`), never in `data.json`, for the server, account and vault they belong to, are never logged, and are dropped on sign-out together with the user key. Only an owner device rotates and grants. When the vault is rotation-pending (a new vault has no epoch yet, or a member left), it creates the next epoch with `RotateEpoch(expected_epoch = current)`. The next epoch has a fresh random key, wrapped for every member `ListMembers` lists with a user public key, and a member without one is skipped. If the device gets `ERROR_REASON_EPOCH_NOT_CURRENT` because another owner device won, it re-reads and adopts that epoch without creating another. An owner's removal of a member sends `RemoveMember` with the next epoch built the same way, without the removed member, and retries over a newer epoch at most three times when another epoch change wins. Once a sync is done reading, an owner device grants every `ListMissingSlots` entry for an epoch whose key it holds, in `AddKeySlots` batches of at most 1000. A new epoch's key is kept once the server accepted it: should the response be lost, the device's own slot in that epoch still holds it. Until the device holds the key of every epoch up to the current one, the member sees "Waiting for an owner to share the vault key."
-- Implementations: `@noble/ciphers`, `@noble/curves`, `@noble/hashes` in TypeScript (pure JS, audited, identical on Electron and Android WebView); `golang.org/x/crypto` in Go. A shared set of **cross-language test vectors** in `testdata/crypto/` (generated by the Go tests, including published known answers for the primitives and ciphertexts that must be refused) must pass in both (`internal/e2ee`, `plugin/src/core/e2ee`).
-- With E2EE, the server cannot merge, search, or render content — none of which it does anyway (§4).
+- Content and paths are encrypted with **XChaCha20-Poly1305**, with a random nonce, and the document id and the epoch of the revision bound as associated data.
+- Every ciphertext carries a **suite version** byte so that the algorithms can change later.
+- Every open authenticates the whole header (suite byte included) with the associated data of the caller. So a ciphertext with an unknown suite, a changed header or associated data, or a truncated tag fails closed.
+- Suite 1 (byte formats in `docs/design/crypto.md`):
+  - HKDF-SHA256 sub-keys.
+  - XChaCha20-Poly1305 with a random 24-byte nonce from the platform CSPRNG.
+  - Sealed box = ephemeral X25519, HKDF-SHA256 salted with both public keys, XChaCha20-Poly1305, refusing low-order keys.
+  - HMAC-SHA256 `path_key`.
+  - SHA-256 `blob_id` of the sealed content.
+  - The private key of the user is wrapped under a `wrap_key`. HKDF-SHA256 derives the `wrap_key`, and an `auth_key` under a separate label, from the Argon2id output (default 64 MiB, 3 passes, 1 lane) of the passphrase in NFC (the libraries of §5).
+  - A passphrase can use only code points assigned in Unicode 15.0. Any other passphrase is refused when it is set or used, so every device derives the same key.
+  - The parameters are stored in the header and bounded (19–128 MiB, 2–8 passes, 1–4 lanes) before any derivation. So a stored value can neither weaken the derivation nor exhaust a device.
+
+Member removal:
+
+- **Member removal** creates a new epoch. Later revisions use it. Historical content is not re-encrypted (the removed member may already hold it).
+
+Epochs and key slots:
+
+- `VaultKeyService` stores epochs and slots as opaque bytes. The server never sees an epoch key.
+- A new E2EE vault has no epoch (`current_epoch = 0`) and a pending rotation. An owner client creates epoch 1.
+- Every epoch change is a compare-and-set on `vaults.current_epoch` under the vault row lock (which commits and membership changes take too). So of concurrent changes with the same `expected_epoch`, exactly one wins, on any replica. The others get `FAILED_PRECONDITION` with reason `ERROR_REASON_EPOCH_NOT_CURRENT` and adopt the epoch of the winner.
+- The recipients of an epoch are exactly the members of the vault **who have a user key**, plus at most one escrow slot in an escrow vault.
+- A member without a user key cannot be wrapped to and is not required. Missing or extra recipients are `INVALID_ARGUMENT`.
+- An owner's `RemoveMember` on an E2EE vault must carry `next_epoch` (a commitment and a slot for every remaining recipient, not the removed member). It commits the removal and epoch N+1 in one transaction. Without a valid one, the member stays.
+- A plaintext vault takes no `next_epoch`.
+- An owner cannot remove themselves from an E2EE vault with `RemoveMember`, because they would create, and so know, the epoch that is meant to exclude them. It is `FAILED_PRECONDITION`, names `LeaveVault`, and changes nothing.
+- Self-removal from an E2EE vault goes through `LeaveVault`. In a plaintext vault, an owner can still remove themselves with `RemoveMember`.
+- `LeaveVault` (no owner client involved) sets `rotation_pending`. An owner client then calls `RotateEpoch(expected_epoch = N)`, which creates N+1 and clears the flag.
+- `CommitRevision` carries the `epoch` of the revision: 0 in a plaintext vault, and the current epoch of the vault in an E2EE vault. It is checked under the vault row lock after the idempotency check, so a retry of a commit applied before a rotation gets its revision back. Any other epoch is `FAILED_PRECONDITION` with reason `ERROR_REASON_EPOCH_NOT_CURRENT`.
+- A pending rotation does not change the current epoch. So commits under it continue until the next epoch exists.
+- A new member gets slots for every epoch. `ListMissingSlots` (owner-only) lists every pair of an epoch and a member with a user key that has no slot, with the public key of the member, until an owner grants it with `AddKeySlots`. `AddKeySlots` keeps an existing slot rather than replacing it.
+- `ListKeySlots` returns the own slots of the caller. `ListEpochs` returns the epochs with their commitments and the key state of the vault. Both are open to every member, viewers included.
+- With `recipient_kind = KEY_RECIPIENT_KIND_ESCROW`, `ListKeySlots` returns the escrow slots of the vault instead, to editors and owners only (a viewer gets `PERMISSION_DENIED`). So the import can open them with the escrow identity. An escrow slot is useless without that identity.
+- No call returns the slots of another member.
+- `ListMembers` reports the user public key of each member.
+- Inputs are bounded before the database is touched (`INVALID_ARGUMENT`):
+  - commitment exactly 32 bytes;
+  - wrapped key 1 to 256 bytes;
+  - user recipient ids canonical lowercase UUIDs;
+  - escrow recipient ids 1 to 255 printable ASCII bytes (the key-slot format allows 255);
+  - at most 101 slots in a new epoch, and 1 to 1000 per `AddKeySlots`;
+  - no duplicate slots;
+  - list pages of 100 by default and at most 1000, cut to the send limit.
+
+Re-encrypting history and retiring epochs:
+
+- Three owner-only `VaultKeyService` calls serve the re-key job (`docs/design/encryption.md`, *Re-encrypting history*). Editors, viewers and non-members are refused as for every owner-only call.
+- `ListStaleRevisions(vault_id, page_size, page_token)` pages through every retained revision whose epoch is not the current epoch, in `seq` order and from one snapshot per page. That includes tombstones, folders and conflict copies, and the epoch 0 history of a converted vault too.
+- Each entry has the stored sealed path, the content reference and the epoch of the revision, and the current epoch that the job re-seals to.
+- It is empty on a plaintext vault. Pages are capped at 1000 revisions (default 100) and by the response size limit.
+- `ReplaceRevisionCiphertext(revision_id, from_epoch, to_epoch, path, content_ref)` replaces the stored sealed path and content reference of one revision with ones sealed under `to_epoch`. It runs under the vault row lock that commits and rotations take.
+- It replaces them only while the revision is still at `from_epoch` and `to_epoch` is the current epoch. Otherwise the rewrite is skipped and reported (`replaced = false`), and the job restarts with the newer target.
+- It changes nothing else: not the `seq`, document or tombstone flag of the revision, not the `path_key` of the document, and not which revision is the head. So sync is unaffected.
+- The new content must be a complete blob of the vault, given exactly when the revision has content.
+- The replaced blob is released, so the blob garbage collector (§11) deletes the old ciphertext once no revision references it.
+- `RetireEpoch(epoch)` refuses epoch 1 (its key derives every `path_key`), the current epoch, and any epoch that a stored revision still uses (`FAILED_PRECONDITION`).
+- Otherwise it deletes the key slots of the epoch, for every recipient, and marks the epoch retired. Retiring it again changes nothing.
+- The commitment and signed record of the epoch stay, and `ListEpochs` reports `retired`. So devices can still verify the chain of epoch records.
+- A retired epoch needs no slots. `ListMissingSlots` skips it. `AddKeySlots`, `CreateInvitation` and `RedeemInvitation` accept slots for it but do not store them.
+
+Plugin vault key manager:
+
+- `plugin/src/core/keys` keeps the epoch keys of an E2EE vault on the device.
+- Each sync reads every page of `ListEpochs` and `ListKeySlots`. It unwraps each slot of the user that it does not hold yet with the unlocked user key.
+- It uses a key only once the key matches the key commitment of its epoch. A slot that does not open, has no commitment or does not match is refused and reported to the user, never used.
+- A held key whose epoch commitment changes is refused too. The key of an epoch never changes, so the device then stops using and sharing it.
+- The keys are cached only in the device-local storage of Obsidian (key `vault-sync-vault-keys`), never in `data.json`, for the server, account and vault that they belong to. They are never logged, and are dropped on sign-out together with the user key.
+- Only an owner device rotates and grants.
+- When the vault is rotation-pending (a new vault has no epoch yet, or a member left), an owner device creates the next epoch with `RotateEpoch(expected_epoch = current)`.
+- The next epoch has a fresh random key, wrapped for every member that `ListMembers` lists with a user public key. A member without one is skipped.
+- If the device gets `ERROR_REASON_EPOCH_NOT_CURRENT` because another owner device won, it re-reads and adopts that epoch without creating another.
+- When an owner removes a member, the device sends `RemoveMember` with the next epoch built the same way, without the removed member. It retries over a newer epoch at most three times when another epoch change wins.
+- Once a sync is done reading, an owner device grants every `ListMissingSlots` entry for an epoch whose key it holds, in `AddKeySlots` batches of at most 1000.
+- The key of a new epoch is kept once the server accepted it. If the response is lost, the own slot of the device in that epoch still holds it.
+- Until the device holds the key of every epoch up to the current one, the member sees "Waiting for an owner to share the vault key."
+
+Implementations:
+
+- `@noble/ciphers`, `@noble/curves`, `@noble/hashes` in TypeScript (pure JS, audited, identical on Electron and Android WebView). `golang.org/x/crypto` in Go.
+- A shared set of **cross-language test vectors** in `testdata/crypto/` must pass in both (`internal/e2ee`, `plugin/src/core/e2ee`). The Go tests generate them, including published known answers for the primitives and ciphertexts that must be refused.
+- With E2EE, the server cannot merge, search, or render content. It does none of these anyway (§4).
 
 ### 9.4 Escrow for plaintext backups
 
-A vault with `escrow = true` also wraps each epoch key to a deployment-wide **escrow public key**. The escrow private key exists only in the export job's Secret, which is never mounted into the internet-facing server. A compromise of the API server, PostgreSQL, or S3 therefore exposes only ciphertext. The export job decrypts and writes plaintext for tape archival. Escrow is chosen at vault creation and shown clearly in the UI. The server publishes its escrow public key (`VAULT_SYNC_ESCROW_RECIPIENT`, an age hybrid recipient), the key's id (`sha256:` and the hex SHA-256 of the 1216-byte key, the `recipient_id` of escrow slots) and its escrow default (`VAULT_SYNC_ESCROW_DEFAULT`, on unless configured otherwise) in `GetServerInfo`; the plugin's escrow toggle starts at that default, and the owner can turn it off. A client refuses a published key whose id does not name it. The plugin pins the current escrow bundle per server the first time it sees it, after checking the published chain. Afterwards it accepts a different current bundle only when rotation statements, each signed by the key it replaces, chain it to the pinned one, and then moves the pin. It also pins the length and head hash of the chain it verified, and a published chain that does not extend that prefix is a hard stop for escrow. The **escrow fingerprint** is SHA-256("vault-sync/v1/escrow-fingerprint" || escrow_bundle), shown like a member's key fingerprint (`docs/design/crypto.md`); the operator prints it with `vault-sync-server escrow fingerprint`, which needs no database, network or private key, and publishes it out of band (`docs/encryption.md`). The plugin shows the pinned bundle's fingerprint next to the escrow toggle when a vault is created. In an escrowed vault's fingerprints it shows the bundle that the vault's verified log names, and also the pinned bundle's fingerprint when the two differ. Every device verifies a vault's membership log with the published chain, so a log that an owner moved to a chained key verifies (§9.3, `RotateEpoch`). Any other change, for example after an unsigned reset point in the chain, is an **escrow reset**: the plugin wraps no key to the new bundle until the user accepts it in a prompt that shows the old and the new **escrow fingerprint** (SHA-256 over the encoded bundle, shown like a member's key fingerprint) and needs the new fingerprint's last group typed. Declining keeps the vaults the user owns escrowed to the previous key. An accepted reset reaches each escrowed vault only through an owner-signed *escrow reset* log entry sent with a rotation. Until then, the vault's new epochs stay escrowed to the bundle its log names, and the server accepts that slot. A device that never saw the reset point can still be moved by a malicious server that holds a stolen escrow signing key. Only the fingerprint comparison protects it, and this risk is accepted (`docs/design/encryption.md`, *Escrow fingerprint and escrow reset*). `vault-sync-server escrow fingerprint` prints the fingerprint for the admin to publish. The escrow key comes with an Ed25519 escrow signing key (`VAULT_SYNC_ESCROW_SIGNING_KEY`); together they are the deployment's escrow bundle. The escrow chain, the root bundle and the escrow rotation statements after it, each signed by the previous bundle's signing key, is stored in PostgreSQL (`escrow_chain`), and `GetServerInfo` publishes it (`docs/design/encryption.md`, *Escrow key*). On the first start with an escrow key the configured bundle becomes the root. At every start the chain must link in order from the root (each point a signed rotation or a reset point naming the previous bundle, no bundle twice) and its head must be the configured bundle, or the server stops. During an escrow key rotation the export job writes through the job-only `EscrowJobService`, authenticated only by a static bearer token (`VAULT_SYNC_ESCROW_JOB_TOKEN_FILE`, compared in constant time; user tokens are refused, and without a token the service refuses every call): it appends the next rotation statement and replaces escrow slots conditionally (§5). Optionally, the escrow private key may be split with Shamir secret sharing for offline disaster recovery; this is not used by the automated path.
+What escrow is:
+
+- A vault with `escrow = true` also wraps each epoch key to a deployment-wide **escrow public key**.
+- The escrow private key exists only in the Secret of the export job, which is never mounted into the internet-facing server. So a compromise of the API server, PostgreSQL or S3 exposes only ciphertext.
+- The export job decrypts and writes plaintext for tape archival.
+- Escrow is chosen at vault creation and shown clearly in the UI.
+- Optionally, the escrow private key can be split with Shamir secret sharing for offline disaster recovery. The automated path does not use this.
+
+The escrow bundle and chain:
+
+- The escrow key comes with an Ed25519 escrow signing key (`VAULT_SYNC_ESCROW_SIGNING_KEY`). Together they are the escrow bundle of the deployment.
+- The escrow chain is the root bundle and the escrow rotation statements after it, each signed by the signing key of the previous bundle. It is stored in PostgreSQL (`escrow_chain`), and `GetServerInfo` publishes it (`docs/design/encryption.md`, *Escrow key*).
+- On the first start with an escrow key, the configured bundle becomes the root.
+- At every start, the chain must link in order from the root, and its head must be the configured bundle. Each point is a signed rotation or a reset point that names the previous bundle, and no bundle occurs twice. Otherwise the server stops.
+
+What the server publishes:
+
+- `GetServerInfo` publishes the escrow public key (`VAULT_SYNC_ESCROW_RECIPIENT`, an age hybrid recipient), the id of the key and the escrow default (`VAULT_SYNC_ESCROW_DEFAULT`, on unless configured otherwise).
+- The key id is `sha256:` and the hex SHA-256 of the 1216-byte key. It is the `recipient_id` of escrow slots.
+- A client refuses a published key whose id does not name it.
+- The escrow toggle of the plugin starts at the default, and the owner can turn it off.
+
+Pinning on the client:
+
+- The plugin pins the current escrow bundle per server the first time it sees it, after it checks the published chain.
+- Afterwards, it accepts a different current bundle only when rotation statements, each signed by the key that it replaces, chain it to the pinned one. It then moves the pin.
+- It also pins the length and head hash of the chain that it verified. A published chain that does not extend that prefix is a hard stop for escrow.
+- Every device verifies the membership log of a vault with the published chain. So a log that an owner moved to a chained key verifies (§9.3, `RotateEpoch`).
+
+The escrow fingerprint:
+
+- The **escrow fingerprint** is SHA-256("vault-sync/v1/escrow-fingerprint" || escrow_bundle), over the encoded bundle. It is shown like the key fingerprint of a member (`docs/design/crypto.md`).
+- The operator prints it with `vault-sync-server escrow fingerprint`, which needs no database, network or private key, and publishes it out of band (`docs/encryption.md`).
+- The plugin shows the fingerprint of the pinned bundle next to the escrow toggle when a vault is created.
+- In the fingerprints of an escrowed vault, it shows the bundle that the verified log of the vault names. It also shows the fingerprint of the pinned bundle when the two differ.
+
+Escrow reset:
+
+- Any other change of the bundle, for example after an unsigned reset point in the chain, is an **escrow reset**.
+- The plugin wraps no key to the new bundle until the user accepts it in a prompt. The prompt shows the old and the new escrow fingerprint and needs the last group of the new fingerprint typed.
+- Declining keeps the vaults that the user owns escrowed to the previous key.
+- An accepted reset reaches each escrowed vault only through an owner-signed *escrow reset* log entry sent with a rotation. Until then, the new epochs of the vault stay escrowed to the bundle that its log names, and the server accepts that slot.
+- A malicious server that holds a stolen escrow signing key can still move a device that never saw the reset point. Only the fingerprint comparison protects it. This risk is accepted (`docs/design/encryption.md`, *Escrow fingerprint and escrow reset*).
+
+Escrow key rotation:
+
+- During an escrow key rotation, the export job writes through the job-only `EscrowJobService`. It appends the next rotation statement and replaces escrow slots conditionally (§5).
+- `EscrowJobService` is authenticated only by a static bearer token (`VAULT_SYNC_ESCROW_JOB_TOKEN_FILE`, compared in constant time). User tokens are refused. Without a token configured, the service refuses every call.
 
 ## 10. Live collaborative editing (Phase 5)
 
