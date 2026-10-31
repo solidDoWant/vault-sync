@@ -14,12 +14,7 @@ echo "== links"
 lychee --offline --include-fragments --no-progress --root-dir "$PWD" "${pages[@]}" || status=1
 
 echo "== agent prose"
-# SPEC.md is left out until its plain-English rewrite reaches every section.
-tells=()
-for page in "${pages[@]}"; do
-	[[ "$page" == SPEC.md ]] || tells+=("$page")
-done
-if grep -n -H -E -e '—' -e '\(decision, #' -e '\*\*Why:\*\*' -- "${tells[@]}"; then
+if grep -n -H -E -e '—' -e '\(decision, #' -e '\*\*Why:\*\*' -- "${pages[@]}"; then
 	echo "agent prose in a human-facing page (em-dash, '(decision, #' or '**Why:**'): rewrite these lines" >&2
 	status=1
 fi
