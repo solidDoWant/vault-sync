@@ -311,10 +311,10 @@ Client rules:
 | JSON Canvas (`.canvas`) | Merged three-way. Nodes and edges are matched by `id`. The result is validated: ids are unique and edge endpoints are present. |
 | Other JSON (`.json`) | Merged three-way per key. An array is one value. |
 | Plain-text types (`txt`, `csv`, `tsv`, common source and markup files, `yaml`/`yml`/`toml`), valid UTF-8 up to 1 MiB | Merged three-way line by line with diff3 semantics. Overlapping changes refuse the merge. A YAML or TOML result must still parse. |
-| Every other file (`BLOB`) | The newest wins, and the other is kept as a conflict copy. |
+| Every other `BLOB` file (no merge) | The newest wins, and the other is kept as a conflict copy. |
 
 - The merged types other than Markdown are picked by extension. Their kind stays `BLOB`.
-- If a merge has a conflict, a side does not parse or validate, or the merged result is invalid, the whole file falls back to the `BLOB` rule. Conflict markers are never written.
+- If the merge of one of the extension-picked types has a conflict, a side does not parse or validate, or the merged result is invalid, the whole file falls back to the `BLOB` rule. Markdown never falls back: see the last bullet. Conflict markers are never written.
 - If the merge equals one side, the bytes of that side are kept as they are.
 - If Markdown edits overlap, the version of the server stays at the path. The local version is saved as a conflict copy, named `<name> (Conflicted copy <user> <device> <YYYYMMDDHHMM>).<ext>` after the local user and device.
 
@@ -465,7 +465,7 @@ GitHub milestones and parent issues track the work. A phase is done when its acc
 1. **Foundations:** protocol schema, server core (store, blobs, revisions, auth, authz), simulation harness skeleton, CI.
 2. **Single-user file sync:** a new plugin engine (`docs/design/engine.md`) plus the adapter for desktop and Android, conflicts, history and restore, Markdown import, and the Helm chart. It is done as `docs/acceptance/phase-2.md` defines: the checklist passes on `master`, a security review and a narrow bug hunt ran and their critical and high findings are fixed, and `0.2.0` is released.
 3. **Vault sharing:** membership management, invitations, roles in the UI.
-4. **End-to-end encryption:** key hierarchy, escrow, export decryption, crypto vectors, independent crypto review. Until then, the server refuses to create an E2EE vault (§9.3).
+4. **End-to-end encryption:** key hierarchy, escrow, export decryption, crypto vectors, independent crypto review. Until then, creating an E2EE vault is rejected (§9.3).
 5. **Live collaborative editing:** Yjs documents, conversion, editor binding, awareness, compaction.
 
 ## 16. Open questions
