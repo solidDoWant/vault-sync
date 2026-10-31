@@ -1,4 +1,4 @@
-# vault-sync — Specification
+# vault-sync specification
 
 For: developers and agents. This is the authoritative technical reference for vault-sync. It holds the principles, the contracts between components, the invariants and their reasons. It does not repeat what the code, the proto files or the tests already state: where a rule is pinned elsewhere, this document names the rule in one line and points to the file. Update it in the same change that alters any behaviour it describes. The decisions that still bind, with their reasons, are in [`docs/dev/decisions.md`](docs/dev/decisions.md), under the number of the section that holds the rule.
 
@@ -17,7 +17,7 @@ It exists because the available self-hosted option (obsidian-livesync) needs Cou
 
 These are non-negotiable. When a trade-off comes up, resolve it in favor of the principle, not convenience. Call out any change that touches one.
 
-1. **No acknowledged write is ever lost.** Once the server has acknowledged a revision, that content is recoverable — as the current head, in revision history, or as a conflict copy — until an explicit, retention-governed purge. Neither the client nor the server ever silently discards a user edit. Deletion is a tombstone, never an erase.
+1. **No acknowledged write is ever lost.** Once the server has acknowledged a revision, that content is recoverable (as the current head, in revision history, or as a conflict copy) until an explicit, retention-governed purge. Neither the client nor the server ever silently discards a user edit. Deletion is a tombstone, never an erase.
 2. **One source of truth per concern.** The server's revision log is the source of truth for vault history. The local vault on disk is the source of truth for un-pushed local edits. The client keeps exactly one durable journal bridging the two. No additional replicated databases or chunk layers.
 3. **Done means the owner's acceptance checklist passes.** Each phase has an owner-approved checklist of user-visible scenarios (`docs/acceptance/`), each tested automatically. Tests guard behaviour and catch regressions. They never raise the bar beyond the checklist and principle 1.
 4. **Small, defensible attack surface.** The server is exposed to the internet. Keep the API small, typed, and authenticated by default; every endpoint enforces vault-level authorization; resource usage is bounded (request sizes, decompression, pagination).
@@ -1134,7 +1134,7 @@ internal/                server packages (api, store, blobstore, auth, realtime,
 proto/vaultsync/v1/      protobuf API definitions (source of truth for the protocol)
 gen/                     generated Go code (committed)
 plugin/                  Obsidian plugin (npm project; nested empty go.mod fences it out of ./...)
-  src/core/              pure sync engine — no `obsidian` imports
+  src/core/              pure sync engine, no `obsidian` imports
   src/obsidian/          Obsidian adapter + UI
   src/gen/               generated TS protocol code (committed)
   test/e2e/              e2e suite in real Obsidian (wdio specs, test-only harness plugin, fixture vaults)

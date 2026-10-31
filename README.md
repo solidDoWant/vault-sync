@@ -1,22 +1,18 @@
 # vault-sync
 
-Self-hosted synchronization for [Obsidian](https://obsidian.md) vaults: an Obsidian plugin plus a Go sync server backed by PostgreSQL and S3-compatible object storage.
+vault-sync is a self-hosted replacement for Obsidian Sync. It has two parts: a plugin for [Obsidian](https://obsidian.md), and a sync server that you run yourself and that stores its data in PostgreSQL and S3.
 
-> **Status: early development.** Nothing here is usable yet. Do not point it at a vault you care about.
+## Status
 
-Goals:
+You can install released versions of vault-sync. Each release and its changes are listed in [`CHANGELOG.md`](CHANGELOG.md). Sync for one user, shared vaults and end-to-end encryption work today. Live editing of one note by several people at the same time is not ready yet. The project is young, so keep a backup of any vault that you care about.
 
-- No acknowledged edit is ever lost — revision history, tombstones, and conflict copies instead of silent overwrites.
-- Desktop (Windows, macOS, Linux) and Android; iOS best-effort.
-- Multiple users with shared vaults, OIDC login.
-- Optional end-to-end encryption, with an opt-in escrow key so an internal backup job can still produce plaintext backups (see [How encryption works](docs/encryption.md)).
-- Live collaborative editing (CRDT) on top of the same protocol.
+## Where to start
 
-See [`SPEC.md`](SPEC.md) for the design and [`CLAUDE.md`](CLAUDE.md) for how work in this repository is done.
+- [Use it](docs/user/getting-started.md): install the plugin and sync your notes.
+- [Run a server](docs/admin/requirements.md): install and run the sync server.
+- [Work on the code](docs/dev/README.md): build, test and change vault-sync.
 
-## Development
-
-To build, test and change the code, start with [`docs/dev/`](docs/dev/README.md). The dev shell and the `make` targets are in [`docs/dev/building.md`](docs/dev/building.md).
+[`docs/README.md`](docs/README.md) lists every page.
 
 ## License
 
