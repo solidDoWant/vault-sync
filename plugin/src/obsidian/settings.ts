@@ -9,6 +9,7 @@ import { connectProblem } from "./controller";
 import { type ConnectedVault, type PluginData } from "./data";
 import { deviceNameOf, deviceNameProblem } from "./device-name";
 import { DeviceListLoads, DeviceRemovals, type DeviceRow } from "./devices";
+import { obsidianSyncEnabled } from "./obsidian-sync";
 import { quotedVaultLabel, vaultLabel } from "./display-text";
 import { conversionConfirmable, conversionMemberText, deleteConfirmed, escrowKeyFingerprint, memberKeyText, membershipErrorMessage, newVaultEscrowText, vaultExit, parseInvitationDays, vaultKeysText, roleDescription, roleName, roles, type CreatedInvitation, type MemberRow, type Sharing } from "./sharing";
 import type { EncryptionState } from "./encryption";
@@ -155,6 +156,14 @@ export class VaultSyncSettingTab extends PluginSettingTab {
     this.statusSetting = new Setting(containerEl).setName("Sync status");
     this.statusSetting.settingEl.addClass("vault-sync-settings-status");
     this.showStatus();
+    if (obsidianSyncEnabled(this.app)) {
+      new Setting(containerEl)
+        .setName("Obsidian Sync is also on")
+        .setDesc(
+          "This vault also syncs with Obsidian Sync. With two sync services, every change is uploaded twice, and you can get extra conflict copies. Use only one. To turn off Obsidian Sync, open Settings → Core plugins and turn off Sync.",
+        )
+        .settingEl.addClass("vault-sync-obsidian-sync-warning");
+    }
     if (host.syncStatus.state === "device-removed") {
       new Setting(containerEl)
         .setName("Register this device again")

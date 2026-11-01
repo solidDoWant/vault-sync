@@ -72,6 +72,10 @@ In an encrypted vault, the server sent key or member data that the plugin cannot
 
 `N conflicts` after the status means that conflict copies wait for you. Run **Vault Sync: Show conflicts** (see [Conflicts and history](conflicts-and-history.md#resolve-a-conflict-copy)).
 
+## "Obsidian Sync is also on"
+
+The Sync core plugin of Obsidian is on in this vault, so two services sync it. Every change is uploaded twice, and you can get extra conflict copies. Use only one of them. To turn off Obsidian Sync, open **Settings → Core plugins** and turn off **Sync** on every device (see [Getting started](getting-started.md#install-the-plugin)).
+
 ## A file is missing on one device
 
 The file is too large for this device, or its name does not work on this device. Run **Vault Sync: Show conflicts** and look under **files not on this device** (see [Syncing](syncing.md#files-that-are-not-on-this-device)).

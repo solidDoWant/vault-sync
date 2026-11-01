@@ -34,6 +34,10 @@ input.vault-sync-field-invalid {
   border-color: var(--text-error);
 }
 
+.vault-sync-obsidian-sync-warning .setting-item-description {
+  color: var(--text-warning);
+}
+
 .vault-sync-connect-warning {
   color: var(--text-warning);
 }
