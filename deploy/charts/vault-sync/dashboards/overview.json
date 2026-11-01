@@ -354,7 +354,7 @@
     {
       "type": "stat",
       "title": "RPC error ratio (5m)",
-      "description": "Share of RPCs not answered with ok, across all replicas.",
+      "description": "Share of RPCs that ended with internal, unavailable or unknown, across all replicas: the errors that VaultSyncRPCErrorRatioHigh counts. Client errors such as not_found or permission_denied are not counted. The Server dashboard shows every code.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -365,7 +365,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(vault_sync_rpc_requests_total{namespace=\"$namespace\", job=\"$job\", code!=\"ok\"}[5m])) / sum(rate(vault_sync_rpc_requests_total{namespace=\"$namespace\", job=\"$job\"}[5m]))",
+          "expr": "sum(rate(vault_sync_rpc_requests_total{namespace=\"$namespace\", job=\"$job\", code=~\"internal|unavailable|unknown\"}[5m])) / sum(rate(vault_sync_rpc_requests_total{namespace=\"$namespace\", job=\"$job\"}[5m]))",
           "legendFormat": "",
           "refId": "A"
         }

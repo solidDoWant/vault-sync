@@ -240,7 +240,7 @@
     {
       "type": "timeseries",
       "title": "Query errors",
-      "description": "",
+      "description": "Failed PostgreSQL queries and statements, including ones the server expects and handles, such as a commit that loses a race or a query canceled with its request. A sustained rise is the signal, not single errors.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"

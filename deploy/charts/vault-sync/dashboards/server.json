@@ -180,7 +180,7 @@
     {
       "type": "timeseries",
       "title": "RPC errors by code",
-      "description": "",
+      "description": "Every code except ok. Client errors such as not_found, permission_denied and failed_precondition are part of normal use: for example, GetUserKeyParams answers not_found for an account without end-to-end encryption. Only internal, unavailable and unknown count towards VaultSyncRPCErrorRatioHigh.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
