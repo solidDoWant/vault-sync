@@ -176,6 +176,39 @@ input.vault-sync-field-invalid {
   font-size: var(--font-ui-smaller);
 }
 
+/*
+ * Another person's name: a box shows where it starts and ends, in place of
+ * the quotes, which stay in the text. This device: an accent badge with an
+ * icon, which no name can look like.
+ */
+.vault-sync-name {
+  padding: 0 var(--size-2-2);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background-color: var(--background-secondary);
+  color: var(--text-normal);
+}
+
+.vault-sync-name-quote {
+  display: none;
+}
+
+.vault-sync-this-device {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--size-2-1);
+  color: var(--text-accent);
+}
+
+.vault-sync-this-device-icon {
+  display: flex;
+}
+
+.vault-sync-this-device-icon svg {
+  width: var(--icon-xs);
+  height: var(--icon-xs);
+}
+
 /* Joins who and what in the row's text, which shows them on lines of their own. */
 .vault-sync-history-entry-separator {
   display: none;

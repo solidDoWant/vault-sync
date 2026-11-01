@@ -4,7 +4,7 @@ import { RestoreError, type HistoryDocument, type HistoryEntry } from "../core/s
 import { shownPath, type Shown } from "./display-text";
 import { diffCounts, foldUnchanged, isFold, lineDiff, matchingDocuments, revertChange, sideBySide, withWordChanges, type DiffLine, type Segment, type SideRow } from "./history-diff";
 import { documentTree, foldersOf, type TreeNode } from "./history-tree";
-import { entryParts, historyTitle, maxPreviewBytes, otherPathValue, previewOf, restoreFailureText, sizeLabel, type Preview } from "./history-view";
+import { entryParts, exactTime, historyTitle, maxPreviewBytes, otherPathValue, previewOf, relativeTime, restoreFailureText, sizeLabel, whoParts, type Preview, type WhoPart } from "./history-view";
 import { renderShown, shownFragment } from "./shown-dom";
 import type { VaultHistory } from "./session";
 import { errorMessage } from "./status";
@@ -20,6 +20,46 @@ const maxListedFiles = 500;
 const viewOptions = { changes: false, sideBySide: false };
 
 const strictDecoder = new TextDecoder("utf-8", { fatal: true });
+
+/** The class of the times refreshRelativeTimes keeps current. */
+const relativeTimeClass = "vault-sync-relative-time";
+
+/** `date` as how long ago it was, like GitHub shows it, with the exact date and time, its time zone named, on hover. */
+function renderRelativeTime(parent: HTMLElement, date: Date): void {
+  parent.createEl("time", { cls: relativeTimeClass, text: relativeTime(date, new Date()), attr: { datetime: date.toISOString(), title: exactTime(date) } });
+}
+
+/** Brings every relative time under `root` up to date. */
+function refreshRelativeTimes(root: HTMLElement): void {
+  const now = new Date();
+  for (const time of Array.from(root.querySelectorAll<HTMLTimeElement>(`time.${relativeTimeClass}`))) {
+    const date = new Date(time.dateTime);
+    if (!Number.isNaN(date.getTime())) time.setText(relativeTime(date, now));
+  }
+}
+
+/**
+ * Who made a version: each other person's name in a box, which shows where
+ * the name starts and ends, and this device as a badge with an icon, which
+ * no name can look like. The quotes around a name stay in the text, hidden,
+ * so the row's text reads as userLabel and deviceLabel give it (whoText).
+ */
+function renderWho(parent: HTMLElement, parts: readonly WhoPart[]): void {
+  for (const part of parts) {
+    if ("name" in part) {
+      const name = parent.createSpan({ cls: "vault-sync-name" });
+      name.createSpan({ text: "“", cls: "vault-sync-name-quote" });
+      name.appendText(part.name);
+      name.createSpan({ text: "”", cls: "vault-sync-name-quote" });
+    } else if ("thisDevice" in part) {
+      const badge = parent.createSpan({ cls: "vault-sync-this-device" });
+      setIcon(badge.createSpan({ cls: "vault-sync-this-device-icon" }), "monitor-smartphone");
+      badge.appendText("this device");
+    } else {
+      parent.appendText(part.text);
+    }
+  }
+}
 
 /** A line of a comparison, with the parts a change touched marked when it is one of a changed pair (withWordChanges). */
 function renderLineText(parent: HTMLElement, text: string, segments: Segment[] | undefined): void {
@@ -53,6 +93,8 @@ export class HistoryModal extends Modal {
   private readonly previews = new Map<string, Uint8Array>();
   /** The folders open in the file tree. While a search is typed, every folder shows open. */
   private readonly openFolders = new Set<string>();
+  /** Keeps the relative times of the versions current while the view is open. */
+  private timeRefresh: number | undefined;
   /** Whether folded unchanged lines are shown, for the selected version. */
   private unfolded = false;
   /** Counts the documents opened, so a late answer for an earlier one is dropped. */
@@ -100,6 +142,9 @@ export class HistoryModal extends Modal {
     this.previewEl = contentPane.createDiv({ cls: "vault-sync-history-preview" });
     this.actionsEl = contentPane.createDiv({ cls: "vault-sync-history-actions" });
     this.canRestore = this.readCanRestore();
+    this.timeRefresh = window.setInterval(() => {
+      refreshRelativeTimes(this.contentEl);
+    }, 30_000);
     void this.loadDocuments();
     if (this.document === undefined) {
       this.listEl.createEl("p", { text: "Choose a file to see its versions.", cls: "vault-sync-history-hint" });
@@ -111,6 +156,7 @@ export class HistoryModal extends Modal {
   }
 
   override onClose(): void {
+    window.clearInterval(this.timeRefresh);
     this.contentEl.empty();
   }
 
@@ -247,9 +293,11 @@ export class HistoryModal extends Modal {
       // what with a hidden " · " between them, so the row's text reads as
       // one line when copied.
       const parts = entryParts(entry, this.entries[index + 1], formatTime);
-      const time = row.createDiv({ cls: "vault-sync-history-entry-time", text: parts.when });
+      const time = row.createDiv({ cls: "vault-sync-history-entry-time" });
+      if (entry.createdAt === undefined) time.setText(parts.when);
+      else renderRelativeTime(time, entry.createdAt);
       if (index === 0) time.createSpan({ text: " (current)", cls: "vault-sync-history-current" });
-      row.createDiv({ cls: "vault-sync-history-entry-who", text: parts.who });
+      renderWho(row.createDiv({ cls: "vault-sync-history-entry-who" }), whoParts(entry));
       row.createSpan({ cls: "vault-sync-history-entry-separator", text: " · " });
       renderShown(row.createDiv({ cls: "vault-sync-history-entry-change" }), parts.change);
       row.dataset.revisionId = entry.revisionId;

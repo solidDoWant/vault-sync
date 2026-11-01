@@ -1,5 +1,5 @@
 import type { HistoryEntry, RestoreError } from "../core/sync/history";
-import { quotedName, shownName, shownPath, type Shown } from "./display-text";
+import { isolated, quotedName, shownName, shownPath, type Shown } from "./display-text";
 
 // What the history views show for a revision (SPEC.md §11). No Obsidian
 // import, so it is unit-tested; history-modal.ts renders it.
@@ -95,12 +95,82 @@ export function otherPathValue(failure: Pick<RestoreError, "reason" | "path">, t
   return alternativePath(failure.path, taken);
 }
 
+/** The steps of relativeTime: each unit is used up to the limit, in seconds, where the next one takes over. */
+const relativeSteps: { unit: Intl.RelativeTimeFormatUnit; seconds: number; until: number }[] = [
+  { unit: "second", seconds: 1, until: 45 },
+  { unit: "minute", seconds: 60, until: 45 * 60 },
+  { unit: "hour", seconds: 60 * 60, until: 22 * 60 * 60 },
+  { unit: "day", seconds: 24 * 60 * 60, until: 26 * 24 * 60 * 60 },
+  { unit: "month", seconds: 30.44 * 24 * 60 * 60, until: 320 * 24 * 60 * 60 },
+  { unit: "year", seconds: 365.25 * 24 * 60 * 60, until: Infinity },
+];
+
+/**
+ * How long before `now` the time `date` was, for people, the way GitHub
+ * shows it: "now", "30 seconds ago", "5 minutes ago", "yesterday", "3 days
+ * ago", "last month", "2 years ago", in `locale` (the user's by default).
+ * A time a little in the future, from a clock that runs ahead, reads "now".
+ */
+export function relativeTime(date: Date, now: Date, locale?: string): string {
+  const format = new Intl.RelativeTimeFormat(locale, { numeric: "auto" });
+  const seconds = Math.max(0, (now.getTime() - date.getTime()) / 1000);
+  if (seconds < 10) return format.format(0, "second");
+  const step = relativeSteps.find((candidate) => seconds < candidate.until) ?? relativeSteps[relativeSteps.length - 1];
+  if (step === undefined) return format.format(0, "second");
+  return format.format(-Math.round(seconds / step.seconds), step.unit);
+}
+
+/** The exact date and time of `date` in the device's time zone, named, for the tooltip of a relative time. */
+export function exactTime(date: Date, locale?: string, timeZone?: string): string {
+  return new Intl.DateTimeFormat(locale, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+    timeZoneName: "short",
+    ...(timeZone === undefined ? {} : { timeZone }),
+  }).format(date);
+}
+
 /** A byte count for people. */
 export function sizeLabel(size: bigint | number): string {
   const bytes = Number(size);
   if (bytes < 1024) return `${String(bytes)} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+}
+
+/**
+ * Who committed a revision, in parts to render: plain text, another
+ * person's name (`name`, shown and isolated as quotedName shows it), or
+ * this device. Joined with each name in quotes, the parts read exactly as
+ * `${userLabel}, ${deviceLabel}`; the history shows the names styled
+ * instead of quoted, and this device as a mark another person's name cannot
+ * look like.
+ */
+export type WhoPart = { text: string } | { name: string } | { thisDevice: true };
+
+export function whoParts(entry: Pick<HistoryEntry, "userId" | "userName" | "deviceId" | "deviceName" | "thisDevice">): WhoPart[] {
+  const parts: WhoPart[] = [];
+  const userName = shownName(entry.userName ?? "");
+  if (userName !== "") parts.push({ name: isolated(userName) });
+  else parts.push({ text: entry.userId === "" ? "an unknown user" : `user ${entry.userId.slice(0, 8)}` });
+  parts.push({ text: ", " });
+  if (entry.thisDevice) {
+    parts.push({ thisDevice: true });
+    return parts;
+  }
+  const deviceName = shownName(entry.deviceName ?? "");
+  if (deviceName !== "") parts.push({ text: "device " }, { name: isolated(deviceName) });
+  else parts.push({ text: entry.deviceId === "" ? "an unknown device" : `device ${entry.deviceId.slice(0, 8)}` });
+  return parts;
+}
+
+/** `parts` as text, each name in quotes: the same text as userLabel and deviceLabel give. */
+export function whoText(parts: readonly WhoPart[]): string {
+  return parts.map((part) => ("name" in part ? `“${part.name}”` : "thisDevice" in part ? "this device" : part.text)).join("");
 }
 
 /** A revision in the history list, in parts: when, by which user and device, and what happened. */
@@ -133,10 +203,10 @@ export function changeLabel(entry: HistoryEntry, previous: HistoryEntry | undefi
   const path = shownPath(entry.path);
   if (entry.deleted) return ["deleted ", path];
   // The document's first revision, or the oldest that retention kept.
-  if (previous === undefined) return ["earliest kept version of ", path, ` (${sizeLabel(entry.size)})`];
-  if (previous.deleted) return ["restored ", path, ` (${sizeLabel(entry.size)})`];
-  if (previous.path !== entry.path) return previous.contentHash === entry.contentHash ? ["moved to ", path] : ["moved to ", path, ` and edited (${sizeLabel(entry.size)})`];
-  return [`edited (${sizeLabel(entry.size)})`];
+  if (previous === undefined) return ["earliest kept version of ", path];
+  if (previous.deleted) return ["restored ", path];
+  if (previous.path !== entry.path) return previous.contentHash === entry.contentHash ? ["moved to ", path] : ["moved to ", path, " and edited"];
+  return ["edited"];
 }
 
 /** The history view's title for the document at `path`. */

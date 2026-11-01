@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { RestoreError, restorePathProblem, type HistoryEntry } from "../core/sync/history";
 import { posixPathRules } from "../core/vaultpath/platform";
 import { shownText } from "./display-text";
-import { alternativePath, changeLabel, deviceLabel, entryLabel, historyTitle, maxPreviewBytes, otherPathValue, previewOf, restoreFailureText, sizeLabel, userLabel } from "./history-view";
+import { alternativePath, changeLabel, deviceLabel, entryLabel, historyTitle, maxPreviewBytes, otherPathValue, previewOf, restoreFailureText, sizeLabel, userLabel, exactTime, relativeTime, whoParts, whoText } from "./history-view";
 
 const encoder = new TextEncoder();
 
@@ -88,26 +88,26 @@ describe("history view", () => {
 
     it("says what each revision changed", () => {
       const base = entry({ contentHash: "aa" });
-      expect(shownText(changeLabel(base, undefined))).toBe("earliest kept version of plan.md (12 B)");
-      expect(shownText(changeLabel(entry({ contentHash: "bb" }), base))).toBe("edited (12 B)");
+      expect(shownText(changeLabel(base, undefined))).toBe("earliest kept version of plan.md");
+      expect(shownText(changeLabel(entry({ contentHash: "bb" }), base))).toBe("edited");
       expect(shownText(changeLabel(entry({ path: "moved.md" }), base))).toBe("moved to moved.md");
-      expect(shownText(changeLabel(entry({ path: "moved.md", contentHash: "bb" }), base))).toBe("moved to moved.md and edited (12 B)");
+      expect(shownText(changeLabel(entry({ path: "moved.md", contentHash: "bb" }), base))).toBe("moved to moved.md and edited");
       expect(shownText(changeLabel(entry({ deleted: true }), base))).toBe("deleted plan.md");
-      expect(shownText(changeLabel(base, entry({ deleted: true })))).toBe("restored plan.md (12 B)");
+      expect(shownText(changeLabel(base, entry({ deleted: true })))).toBe("restored plan.md");
     });
 
     it("names each version's user and device", () => {
       const alice = entry({ userName: "Alice Example", deviceName: "Laptop" });
       const bob = entry({ userId: "0190a5c4-7e1f-7000-8000-0000000000bb", userName: "bob", deviceName: "Phone", contentHash: "bb" });
-      expect(shownText(entryLabel(bob, alice, () => "then"))).toBe(`then · “${iso("bob")}”, device “${iso("Phone")}” · edited (12 B)`);
-      expect(shownText(entryLabel(alice, undefined, () => "then"))).toBe(`then · “${iso("Alice Example")}”, device “${iso("Laptop")}” · earliest kept version of plan.md (12 B)`);
+      expect(shownText(entryLabel(bob, alice, () => "then"))).toBe(`then · “${iso("bob")}”, device “${iso("Phone")}” · edited`);
+      expect(shownText(entryLabel(alice, undefined, () => "then"))).toBe(`then · “${iso("Alice Example")}”, device “${iso("Laptop")}” · earliest kept version of plan.md`);
       expect(userLabel(entry({ userName: "\u202e\u200b" }))).toBe("user 0190a5c4");
       expect(userLabel(entry({ userId: "" }))).toBe("an unknown user");
     });
 
     it("puts time, user, device and change on one line", () => {
       const formatTime = (date: Date) => date.toISOString();
-      expect(shownText(entryLabel(entry({ thisDevice: true }), undefined, formatTime))).toBe("2026-01-02T03:04:00.000Z · user 0190a5c4, this device · earliest kept version of plan.md (12 B)");
+      expect(shownText(entryLabel(entry({ thisDevice: true }), undefined, formatTime))).toBe("2026-01-02T03:04:00.000Z · user 0190a5c4, this device · earliest kept version of plan.md");
       expect(shownText(entryLabel(entry({ createdAt: undefined }), undefined, formatTime))).toMatch(/^unknown time · /);
     });
 
@@ -132,7 +132,7 @@ describe("history view", () => {
     });
 
     it("isolates another device's name, so right-to-left letters cannot reorder the label and a trailing mark stays inside (#557)", () => {
-      expect(shownText(entryLabel(entry({ deviceName: "حاسوب 2" }), undefined, () => "then"))).toBe(`then · user 0190a5c4, device “${iso("حاسوب 2")}” · earliest kept version of plan.md (12 B)`);
+      expect(shownText(entryLabel(entry({ deviceName: "حاسوب 2" }), undefined, () => "then"))).toBe(`then · user 0190a5c4, device “${iso("حاسوب 2")}” · earliest kept version of plan.md`);
       expect(deviceLabel(entry({ deviceName: "Phone\u0301" }))).toBe(`device “${iso("Phone\u0301")}”`);
     });
 
@@ -148,16 +148,16 @@ describe("history view", () => {
     ])("shows %s in another member's path visibly (#555)", (_, path, shown) => {
       const base = entry({ contentHash: "aa" });
       expect(shownText(changeLabel(entry({ path }), base))).toBe(`moved to ${shown}`);
-      expect(shownText(changeLabel(entry({ path, contentHash: "bb" }), base))).toBe(`moved to ${shown} and edited (12 B)`);
+      expect(shownText(changeLabel(entry({ path, contentHash: "bb" }), base))).toBe(`moved to ${shown} and edited`);
       expect(shownText(changeLabel(entry({ path, deleted: true }), base))).toBe(`deleted ${shown}`);
-      expect(shownText(changeLabel(entry({ path }), entry({ deleted: true })))).toBe(`restored ${shown} (12 B)`);
-      expect(shownText(changeLabel(entry({ path }), undefined))).toBe(`earliest kept version of ${shown} (12 B)`);
+      expect(shownText(changeLabel(entry({ path }), entry({ deleted: true })))).toBe(`restored ${shown}`);
+      expect(shownText(changeLabel(entry({ path }), undefined))).toBe(`earliest kept version of ${shown}`);
     });
 
     it("keeps each path of a label apart, for the view to lay it out on its own (#605)", () => {
       const path = "ملاحظات/خطة.md";
       const base = entry({ contentHash: "aa" });
-      expect(changeLabel(entry({ path, contentHash: "bb" }), base)).toEqual(["moved to ", { path }, " and edited (12 B)"]);
+      expect(changeLabel(entry({ path, contentHash: "bb" }), base)).toEqual(["moved to ", { path }, " and edited"]);
       expect(changeLabel(entry({ path, deleted: true }), base)).toEqual(["deleted ", { path }]);
       expect(entryLabel(entry({ path, deleted: true }), base, () => "then")).toEqual(["then · user 0190a5c4, device 0190a5c4 · ", "deleted ", { path }]);
       expect(historyTitle(path)).toEqual(["History of ", { path }]);
@@ -236,5 +236,70 @@ describe("history view", () => {
     it("says a purged version is gone", () => {
       expect(restoreFailureText(new RestoreError("unavailable", "a\u202e.md", "this version is no longer stored on the server"))).toEqual(["this version is no longer stored on the server"]);
     });
+  });
+});
+
+describe("whoParts", () => {
+  it.each([
+    ["a named user on a named device", { userName: "Alice", deviceName: "Phone" }, [{ name: iso("Alice") }, { text: ", " }, { text: "device " }, { name: iso("Phone") }]],
+    ["a named user on this device", { userName: "Alice", thisDevice: true }, [{ name: iso("Alice") }, { text: ", " }, { thisDevice: true }]],
+    ["an unnamed user on an unnamed device", {}, [{ text: "user 0190a5c4" }, { text: ", " }, { text: "device 0190a5c4" }]],
+    ["no ids at all", { userId: "", deviceId: "" }, [{ text: "an unknown user" }, { text: ", " }, { text: "an unknown device" }]],
+  ])("splits who made the revision for %s", (_, overrides, expected) => {
+    expect(whoParts(entry(overrides))).toEqual(expected);
+  });
+
+  it.each([
+    { userName: "Alice", deviceName: "Phone" },
+    { userName: "Alice", thisDevice: true },
+    { userName: "this device", deviceName: "this device" },
+    {},
+    { userId: "", deviceId: "" },
+    { userName: "\u202Eevil\u200B", deviceName: "  \u2066x  " },
+  ])("reads as userLabel and deviceLabel do when the names are quoted (%o)", (overrides) => {
+    const revision = entry(overrides);
+    expect(whoText(whoParts(revision))).toBe(`${userLabel(revision)}, ${deviceLabel(revision)}`);
+  });
+
+  it("never marks another device as this device, whatever its name", () => {
+    expect(whoParts(entry({ deviceName: "this device" }))).not.toContainEqual({ thisDevice: true });
+  });
+});
+
+describe("relativeTime", () => {
+  const now = new Date(Date.UTC(2026, 10, 1, 12, 0, 0));
+  const ago = (seconds: number) => relativeTime(new Date(now.getTime() - seconds * 1000), now, "en");
+
+  it.each([
+    [0, "now"],
+    [5, "now"],
+    [30, "30 seconds ago"],
+    [50, "1 minute ago"],
+    [5 * 60, "5 minutes ago"],
+    [50 * 60, "1 hour ago"],
+    [3 * 60 * 60, "3 hours ago"],
+    [23 * 60 * 60, "yesterday"],
+    [3 * 24 * 60 * 60, "3 days ago"],
+    [40 * 24 * 60 * 60, "last month"],
+    [100 * 24 * 60 * 60, "3 months ago"],
+    [400 * 24 * 60 * 60, "last year"],
+    [3 * 366 * 24 * 60 * 60, "3 years ago"],
+  ])("reads %i seconds before now as %s", (seconds, expected) => {
+    expect(ago(seconds)).toBe(expected);
+  });
+
+  it("reads a time a little in the future, from a clock that runs ahead, as now", () => {
+    expect(ago(-30)).toBe("now");
+  });
+});
+
+describe("exactTime", () => {
+  it("gives the date and time to the second, with the time zone named", () => {
+    const date = new Date(Date.UTC(2026, 6, 1, 22, 31, 35));
+    // Newer ICU versions put a narrow no-break space before "PM".
+    expect(exactTime(date, "en-US", "America/Los_Angeles").replace("\u202F", " ")).toBe("Jul 1, 2026, 3:31:35 PM PDT");
+    expect(exactTime(date, "en-GB", "UTC")).toBe("1 Jul 2026, 22:31:35 UTC");
+    // In winter, the same zone is named for standard time.
+    expect(exactTime(new Date(Date.UTC(2026, 10, 1, 22, 31, 35)), "en-US", "America/Los_Angeles").replace("\u202F", " ")).toBe("Nov 1, 2026, 2:31:35 PM PST");
   });
 });
