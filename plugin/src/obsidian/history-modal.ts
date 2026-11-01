@@ -5,7 +5,7 @@ import { shownPath, type Shown } from "./display-text";
 import { diffCounts, foldUnchanged, isFold, lineDiff, matchingDocuments, revertChange, sideBySide, withWordChanges, type DiffLine, type Segment, type SideRow } from "./history-diff";
 import { documentTree, foldersOf, type TreeNode } from "./history-tree";
 import { entryParts, exactTime, historyTitle, maxPreviewBytes, otherPathValue, previewOf, relativeTime, restoreFailureText, sizeLabel, whoParts, type Preview, type WhoPart } from "./history-view";
-import { renderShown, shownFragment } from "./shown-dom";
+import { pathClass, renderShown, shownFragment } from "./shown-dom";
 import type { VaultHistory } from "./session";
 import { errorMessage } from "./status";
 
@@ -174,8 +174,27 @@ export class HistoryModal extends Modal {
 
   private showTitle(): void {
     this.titleEl.empty();
-    if (this.document === undefined) this.titleEl.setText("Sync history");
-    else renderShown(this.titleEl, historyTitle(this.document.path));
+    if (this.document === undefined) {
+      this.titleEl.setText("Sync history");
+      return;
+    }
+    // "History of" as a label, then the path in a box: its folders muted and the file's name in bold.
+    for (const part of historyTitle(this.document.path)) {
+      if (typeof part === "string") {
+        this.titleEl.createSpan({ text: part, cls: "vault-sync-history-title-label" });
+        continue;
+      }
+      renderShown(this.titleEl, [part]);
+    }
+    const pathEl = this.titleEl.querySelector<HTMLElement>(`.${pathClass}`);
+    if (pathEl === null) return;
+    // The path element stays as renderShown made it, isolated, with the whole path as its text.
+    const text = pathEl.textContent;
+    const slash = text.lastIndexOf("/");
+    pathEl.empty();
+    pathEl.addClass("vault-sync-history-title-path");
+    if (slash !== -1) pathEl.createSpan({ text: text.slice(0, slash + 1), cls: "vault-sync-history-title-folder" });
+    pathEl.createSpan({ text: text.slice(slash + 1), cls: "vault-sync-history-title-file" });
   }
 
   /** The synced files to search (VaultHistory.documents); without it, only the file the view opened with. */

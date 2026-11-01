@@ -57,6 +57,32 @@ input.vault-sync-field-invalid {
  * synced files, the chosen file's versions and the chosen version side by
  * side. Narrow windows and phones stack the three panes.
  */
+/* The title: "History of" as a label, then the file's path in a box, its folders muted and its name in bold. */
+.vault-sync-history-title-label {
+  color: var(--text-muted);
+  font-weight: var(--font-normal);
+}
+
+.vault-sync-history-title-path {
+  padding: var(--size-2-1) var(--size-4-2);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background-color: var(--background-secondary);
+  font-family: var(--font-monospace);
+  font-size: 0.85em;
+  overflow-wrap: anywhere;
+}
+
+.vault-sync-history-title-folder {
+  color: var(--text-muted);
+  font-weight: var(--font-normal);
+}
+
+.vault-sync-history-title-file {
+  color: var(--text-normal);
+  font-weight: var(--font-semibold);
+}
+
 .modal.vault-sync-history {
   width: min(1280px, 95vw);
   max-width: 95vw;
