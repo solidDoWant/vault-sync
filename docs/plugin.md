@@ -27,7 +27,7 @@ The settings live in the plugin's `data.json` under `.obsidian/plugins/vault-syn
 
 ## Signing in
 
-Click **Sign in** in the settings, or run the **Vault Sync: Sign in** command. The plugin signs in with the OAuth 2.0 Device Authorization Grant (RFC 8628), which works the same on desktop and Android and needs no redirect back into Obsidian. While signed in, **Sign in** is refused: sign out first. A sign-in goes like this:
+Click **Sign in** in the settings, or run the **Vault Sync: Sign in** command. The plugin signs in with the OAuth 2.0 Device Authorization Grant (RFC 8628), which works the same on desktop and Android and needs no redirect back into Obsidian. The command palette offers only the command that applies: **Vault Sync: Sign out** while signed in, and **Vault Sync: Sign in** otherwise, as the settings show only **Sign out** or **Sign in**. While signed in, a sign-in is refused: sign out first. A sign-in goes like this:
 
 1. The plugin calls the server's `GetServerInfo`, which needs no sign-in, to check that the server speaks a compatible protocol and to learn the issuer and client ID to sign in with (unless the settings override them). If neither the server nor the settings name one of them, the dialog says which one to enter in the settings.
 2. It discovers the identity provider's endpoints from `<issuer>/.well-known/openid-configuration` and asks for a device code with the scopes `openid profile offline_access`.
