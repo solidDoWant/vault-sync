@@ -10,7 +10,7 @@ import { type ConnectedVault, type PluginData } from "./data";
 import { deviceNameOf, deviceNameProblem } from "./device-name";
 import { DeviceListLoads, DeviceRemovals, type DeviceRow } from "./devices";
 import { quotedVaultLabel, vaultLabel } from "./display-text";
-import { conversionConfirmable, conversionMemberText, deleteConfirmed, escrowKeyFingerprint, memberKeyText, membershipErrorMessage, newVaultEscrowText, parseInvitationDays, vaultKeysText, roleDescription, roleName, roles, type CreatedInvitation, type MemberRow, type Sharing } from "./sharing";
+import { conversionConfirmable, conversionMemberText, deleteConfirmed, escrowKeyFingerprint, memberKeyText, membershipErrorMessage, newVaultEscrowText, vaultExit, parseInvitationDays, vaultKeysText, roleDescription, roleName, roles, type CreatedInvitation, type MemberRow, type Sharing } from "./sharing";
 import type { EncryptionState } from "./encryption";
 import { ESCROW_CHANGE_STATUS, EscrowResetModal } from "./escrow-reset-modal";
 import { PassphraseModal, type PassphraseMode } from "./passphrase-modal";
@@ -693,6 +693,38 @@ export class VaultSyncSettingTab extends PluginSettingTab {
             }),
         );
     }
+    const vaultName = host.connectedVault?.name ?? "";
+    // Delete needs the vault's name to confirm; without it the last owner sees Leave, which the server refuses with its reason.
+    if (vaultExit(sharing) === "delete" && vaultName !== "") {
+      new Setting(section)
+        .setName("Delete vault")
+        .setDesc(
+          "You are the only owner, so you cannot leave this vault. To leave, make another member an owner first. Delete removes the vault for all members: their devices stop syncing and keep their files. Only the server operator can restore it, within 30 days.",
+        )
+        .addButton((button) => {
+          button.setButtonText("Delete vault").onClick(() => {
+            new ConfirmModal(this.app, {
+              title: "Delete this vault?",
+              text: `Every member loses access and every device stops syncing; the files on the devices stay. Type the vault's name, ${vaultName}, to confirm.`,
+              confirm: "Delete vault",
+              warning: true,
+              typeToConfirm: vaultName,
+              onConfirm: () => {
+                host.deleteVault().then(
+                  () => {
+                    this.render();
+                  },
+                  (error: unknown) => {
+                    new Notice(`Vault Sync: could not delete the vault: ${membershipErrorMessage(error)}`);
+                  },
+                );
+              },
+            }).open();
+          });
+          button.buttonEl.addClass("mod-warning");
+        });
+      return;
+    }
     new Setting(section)
       .setName("Leave vault")
       .setDesc("Leave this vault and stop syncing it. Your files stay here. To rejoin, you need a new invitation.")
@@ -717,34 +749,6 @@ export class VaultSyncSettingTab extends PluginSettingTab {
         });
         button.buttonEl.addClass("mod-warning");
       });
-    const vaultName = host.connectedVault?.name ?? "";
-    if (sharing.kind === "owner" && vaultName !== "") {
-      new Setting(section)
-        .setName("Delete vault")
-        .setDesc("Delete this vault for all members. Their devices stop syncing and keep their files. Only the server operator can restore it, within 30 days.")
-        .addButton((button) => {
-          button.setButtonText("Delete vault").onClick(() => {
-            new ConfirmModal(this.app, {
-              title: "Delete this vault?",
-              text: `Every member loses access and every device stops syncing; the files on the devices stay. Type the vault's name, ${vaultName}, to confirm.`,
-              confirm: "Delete vault",
-              warning: true,
-              typeToConfirm: vaultName,
-              onConfirm: () => {
-                host.deleteVault().then(
-                  () => {
-                    this.render();
-                  },
-                  (error: unknown) => {
-                    new Notice(`Vault Sync: could not delete the vault: ${membershipErrorMessage(error)}`);
-                  },
-                );
-              },
-            }).open();
-          });
-          button.buttonEl.addClass("mod-warning");
-        });
-    }
   }
 
   private renderVault(containerEl: HTMLElement, encryption: Promise<EncryptionState>): void {
