@@ -238,8 +238,10 @@ export class VaultSyncSettingTab extends PluginSettingTab {
     // The connected vault's owner actions in the Advanced group, filled in once the Sharing section loads.
     const vaultActions = createDiv({ cls: "vault-sync-vault-actions" });
     if (host.authState === "signed-in") {
-      this.renderEncryption(containerEl);
-      this.renderVault(containerEl);
+      // One request for both sections that show it.
+      const encryption = host.encryptionState();
+      this.renderEncryption(containerEl, encryption);
+      this.renderVault(containerEl, encryption);
       if (host.connectedVault !== undefined) this.renderSharing(containerEl, vaultActions);
       this.renderDevices(containerEl);
     }
@@ -396,7 +398,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
   }
 
   /** End-to-end encryption for the account (docs/plugin.md): enable it here, or unlock it on this device. */
-  private renderEncryption(containerEl: HTMLElement): void {
+  private renderEncryption(containerEl: HTMLElement, encryption: Promise<EncryptionState>): void {
     const { host } = this;
     new Setting(containerEl).setName("End-to-end encryption").setHeading();
     const setting = new Setting(containerEl).setName("Encryption key").setDesc("Checking…");
@@ -416,7 +418,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
         if (setting.settingEl.isConnected) this.render();
       }).open();
     };
-    host.encryptionState().then(
+    encryption.then(
       (state) => {
         if (state === "unlocked") {
           setting.setDesc("On, and unlocked on this device. Your key stays on this device and is never synced.");
@@ -745,7 +747,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
     }
   }
 
-  private renderVault(containerEl: HTMLElement): void {
+  private renderVault(containerEl: HTMLElement, encryption: Promise<EncryptionState>): void {
     const { host } = this;
     new Setting(containerEl).setName("Remote vault").setHeading();
     const connected = host.connectedVault;
@@ -863,7 +865,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
           updateEscrowToggle();
         });
     });
-    void host.encryptionState().then(
+    void encryption.then(
       (state) => {
         if (state === "unlocked") {
           encryptionToggle?.setDisabled(false);
