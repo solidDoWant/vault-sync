@@ -27,7 +27,7 @@ const requestTimeout = 2 * time.Minute
 // profile asks for the user's name, which the imported revisions are
 // attributed to, and offline_access asks for a refresh token, so a long
 // import keeps a valid access token.
-var signInScopes = []string{oidc.ScopeOpenID, "profile", oidc.ScopeOfflineAccess}
+var signInScopes = []string{oidc.ScopeOpenID, oidc.ScopeProfile, oidc.ScopeOfflineAccess}
 
 // apiClient calls the server's API as the signed-in user.
 type apiClient struct {
