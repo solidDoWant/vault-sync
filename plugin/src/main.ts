@@ -143,8 +143,25 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
     }
     this.settingTab = new VaultSyncSettingTab(this.app, this);
     this.addSettingTab(this.settingTab);
-    this.addCommand({ id: "sign-in", name: "Sign in", callback: () => void this.signIn() });
-    this.addCommand({ id: "sign-out", name: "Sign out", callback: () => void this.signOut() });
+    // Only the command that applies is offered, as in the settings' Account section: Sign out while signed in, Sign in otherwise.
+    this.addCommand({
+      id: "sign-in",
+      name: "Sign in",
+      checkCallback: (checking) => {
+        if (this.authState === "signed-in") return false;
+        if (!checking) void this.signIn();
+        return true;
+      },
+    });
+    this.addCommand({
+      id: "sign-out",
+      name: "Sign out",
+      checkCallback: (checking) => {
+        if (this.authState !== "signed-in") return false;
+        if (!checking) void this.signOut();
+        return true;
+      },
+    });
     this.addCommand({ id: "sync-now", name: "Sync now", callback: () => void this.controller?.syncNow() });
     this.registerView(conflictViewType, (leaf) => new ConflictView(leaf, { problems: () => this.controller?.session ?? this.session }));
     this.addCommand({ id: "show-conflicts", name: "Show conflicts", callback: () => void this.showConflicts() });

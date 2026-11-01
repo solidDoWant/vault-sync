@@ -36,6 +36,14 @@ const refreshTokenKey = "vault-sync-refresh-token";
  * refresh token, and the identity provider in data.json. data.json must
  * never hold a refresh token.
  */
+/** Which of the Sign in and Sign out commands the command palette offers now, asked without running either. */
+function accountCommands() {
+  return browser.executeObsidian(({ app }, id) => {
+    const commands = (app as unknown as { commands: { commands: Record<string, { checkCallback?: (checking: boolean) => boolean } | undefined> } }).commands.commands;
+    return ["sign-in", "sign-out"].filter((command) => commands[`${id}:${command}`]?.checkCallback?.(true) === true);
+  }, pluginId);
+}
+
 async function pluginStatus() {
   const status = await browser.executeObsidian(
     async ({ app }, id, key) => {
@@ -154,6 +162,7 @@ describe("signing in with the device flow", function () {
   it("starts signed out, and the server refuses the plugin's calls", async function () {
     expect(await pluginStatus()).toEqual({ authState: "signed-out", storedRefreshToken: false, storedIdentityProvider: null });
     expect(await listVaults()).toMatchObject({ ok: false, code: unauthenticated });
+    expect(await accountCommands()).toEqual(["sign-in"]);
   });
 
   it("lays out the settings in setup order, the sync status first and the identity provider in a closed Advanced group", async function () {
@@ -188,6 +197,7 @@ describe("signing in with the device flow", function () {
     await browser.waitUntil(async () => !(await isDialogOpen()), { timeoutMsg: "the sign-in dialog stayed open" });
     expect(await pluginStatus()).toEqual({ authState: "signed-in", storedRefreshToken: true, storedIdentityProvider: issuer() });
     expect(await listVaults()).toEqual({ ok: true, vaults: 0 });
+    expect(await accountCommands()).toEqual(["sign-out"]);
   });
 
   it("stays signed in across a plugin reload, refreshing the access token with the stored refresh token", async function () {
@@ -283,5 +293,6 @@ describe("signing in with the device flow", function () {
 
     expect(await pluginStatus()).toEqual({ authState: "signed-out", storedRefreshToken: false, storedIdentityProvider: null });
     expect(await listVaults()).toMatchObject({ ok: false, code: unauthenticated });
+    expect(await accountCommands()).toEqual(["sign-in"]);
   });
 });
