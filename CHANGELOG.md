@@ -2,6 +2,18 @@
 
 All notable changes to vault-sync are listed here, newest release first.
 
+## 0.4.9
+
+vault-sync is a self-hosted replacement for Obsidian Sync. It has two parts: an Obsidian plugin, and a sync server that stores its data in PostgreSQL and S3. This release changes only the plugin, and only the name of one item in a file's menu. Install the plugin with BRAT from the GitHub releases of this repository. The server image `ghcr.io/soliddowant/vault-sync:0.4.9` and the Helm chart `oci://ghcr.io/soliddowant/charts/vault-sync` (version 0.4.9) have no changes from 0.4.8, so you do not have to upgrade the server.
+
+### Plugin
+
+- In a file's menu, the item that opens the history of vault-sync is now **Show Vault Sync history**. Before, it was **Show sync history**, next to the item **Open version history** of Obsidian Sync, with the same icon. That item of Obsidian Sync shows "Unable to retrieve version history" in a vault that does not use Obsidian Sync. The troubleshooting page of the user guide explains this message. ([#1486](https://github.com/solidDoWant/vault-sync/pull/1486))
+
+### Known issues
+
+- The screenshots of the settings in the user guide still show the text from 0.4.4.
+
 ## 0.4.8
 
 vault-sync is a self-hosted replacement for Obsidian Sync. It has two parts: an Obsidian plugin, and a sync server that stores its data in PostgreSQL and S3. This release changes only the plugin. It makes the history window easier to read, and it fixes a warning about Obsidian Sync that showed in every vault. Install the plugin with BRAT from the GitHub releases of this repository. The server image `ghcr.io/soliddowant/vault-sync:0.4.8` and the Helm chart `oci://ghcr.io/soliddowant/charts/vault-sync` (version 0.4.8) have no changes from 0.4.7, so you do not have to upgrade the server.
