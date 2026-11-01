@@ -62,7 +62,7 @@ function renderWho(parent: HTMLElement, parts: readonly WhoPart[]): void {
       deviceIcon(box);
       box.appendText("this device");
     } else if (part.textOnly === true) {
-      parent.createSpan({ text: part.text, cls: "vault-sync-text-only" });
+      parent.createSpan({ text: part.text, cls: part.text === ", " ? "vault-sync-text-only vault-sync-who-via" : "vault-sync-text-only" });
     } else {
       parent.appendText(part.text);
     }

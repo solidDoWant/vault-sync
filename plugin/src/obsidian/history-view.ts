@@ -162,7 +162,8 @@ export function whoParts(entry: Pick<HistoryEntry, "userId" | "userName" | "devi
   const userName = shownName(entry.userName ?? "");
   if (userName !== "") parts.push({ name: isolated(userName) });
   else parts.push({ text: entry.userId === "" ? "an unknown user" : `user ${entry.userId.slice(0, 8)}` });
-  parts.push({ text: ", " });
+  // Shown as " via " (styles.css); the text keeps the comma of deviceLabel's label.
+  parts.push({ text: ", ", textOnly: true });
   if (entry.thisDevice) {
     parts.push({ thisDevice: true });
     return parts;

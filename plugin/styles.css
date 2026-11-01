@@ -156,6 +156,11 @@ input.vault-sync-field-invalid {
   overflow-wrap: anywhere;
 }
 
+/* "yesterday" and "now" come lower case from Intl.RelativeTimeFormat. */
+.vault-sync-history-entry-time::first-letter {
+  text-transform: uppercase;
+}
+
 .vault-sync-history-entry-time {
   order: 1;
   font-weight: var(--font-semibold);
@@ -214,6 +219,18 @@ input.vault-sync-field-invalid {
 
 .vault-sync-text-only {
   display: none;
+}
+
+/* Between the user and the device: " via ", drawn here so that the row's text keeps its comma. */
+.vault-sync-history-entry-who .vault-sync-who-via {
+  display: inline;
+  font-size: 0;
+}
+
+.vault-sync-history-entry-who .vault-sync-who-via::before {
+  content: " via ";
+  font-size: var(--font-ui-smaller);
+  white-space: pre;
 }
 
 /* Joins who and what in the row's text, which shows them on lines of their own. */
