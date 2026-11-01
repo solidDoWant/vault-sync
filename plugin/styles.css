@@ -22,6 +22,18 @@
   color: var(--text-error);
 }
 
+.vault-sync-field-error {
+  color: var(--text-error);
+}
+
+.vault-sync-field-error:empty {
+  display: none;
+}
+
+input.vault-sync-field-invalid {
+  border-color: var(--text-error);
+}
+
 .vault-sync-connect-warning {
   color: var(--text-warning);
 }

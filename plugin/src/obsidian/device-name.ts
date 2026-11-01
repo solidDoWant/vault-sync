@@ -28,6 +28,17 @@ export function deviceNameOf(setting: string, defaultName: string): string {
   return name === "" ? defaultName : name;
 }
 
+/**
+ * Why the server would refuse `setting` as typed in the Device name field,
+ * or undefined when it is fine. An empty field is fine: the device then uses
+ * its platform's name. Surrounding spaces are fine: they are trimmed.
+ */
+export function deviceNameProblem(setting: string): string | undefined {
+  if (withoutInvisibleCharacters(setting) !== setting) return "This name has hidden characters, such as a line break or a combined emoji. Remove them.";
+  if (encoder.encode(setting.trim()).length > maxDeviceNameBytes) return "This name is too long. Use a shorter name.";
+  return undefined;
+}
+
 /** The longest start of `text`, whole code points only, whose UTF-8 encoding fits in `limit` bytes. */
 function withinBytes(text: string, limit: number): string {
   let bytes = 0;

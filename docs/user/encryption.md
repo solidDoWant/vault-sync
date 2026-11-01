@@ -53,7 +53,7 @@ The server now has a different key for your account than this device has, for ex
 
 ## Create an encrypted vault
 
-When you create a vault (see [Getting started](getting-started.md#connect-a-vault)), turn on **End-to-end encryption**. Your key must be unlocked on this device. You choose this once, when you create the vault. You can also convert a plaintext vault later (see below).
+When you create a vault (see [Getting started](getting-started.md#connect-a-vault)), turn on **End-to-end encryption**. You can turn it on only when your key is unlocked on this device. Until then, the setting is greyed out and tells you what to do first. You choose this once, when you create the vault. You can also convert a plaintext vault later (see below).
 
 ## Escrow
 
@@ -64,7 +64,7 @@ Escrow gives your admin's backup a way to read the vault. With escrow, your admi
 
 Without escrow, only the members can read the vault, and former members what they saw while members. Nothing can recover it if every member loses their passphrase and every device.
 
-**Escrow** is on by default unless your admin changed the default. You can turn it off when you create a vault. It is not offered when the server has no escrow key. The settings show whether a vault has escrow.
+**Escrow** is on by default unless your admin changed the default. You can turn it off when you create a vault. The **Escrow** setting shows only after you turn on **End-to-end encryption** for the new vault. It is not offered when the server has no escrow key. The settings show whether a vault has escrow.
 
 If an owner turns escrow off later, new changes are no longer readable by the backup. Older versions stay readable by it until the owner re-encrypts the history.
 

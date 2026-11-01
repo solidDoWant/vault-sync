@@ -7,6 +7,7 @@ import type { EscrowChange, EscrowOffer } from "../core/keys/encrypted-vault";
 import type { RekeyResult } from "../core/sync/rekey";
 import { connectProblem } from "./controller";
 import { type ConnectedVault, type PluginData } from "./data";
+import { deviceNameOf, deviceNameProblem } from "./device-name";
 import { DeviceListLoads, DeviceRemovals, type DeviceRow } from "./devices";
 import { quotedVaultLabel, vaultLabel } from "./display-text";
 import { conversionConfirmable, conversionMemberText, deleteConfirmed, escrowKeyFingerprint, memberKeyText, membershipErrorMessage, newVaultEscrowText, parseInvitationDays, vaultKeysText, roleDescription, roleName, roles, type CreatedInvitation, type MemberRow, type Sharing } from "./sharing";
@@ -45,6 +46,8 @@ export interface SettingsHost extends Plugin {
   removeDevice(deviceId: string): Promise<void>;
   /** The Device name setting was edited (and saved); `before` is its value before the edit. Renames this device once the edits settle. */
   deviceNameChanged(before: string): void;
+  /** The name this device uses when the Device name setting is empty: the platform's name. */
+  readonly defaultDeviceName: string;
   /** Registers this installation again after its device was removed, and starts sync. */
   registerAgain(): Promise<void>;
   /** The connected vault's Sharing section (#34). */
@@ -81,7 +84,7 @@ export interface SettingsHost extends Plugin {
 const accountDescriptions: Record<AuthState, string> = {
   "signed-out": "Not signed in.",
   "signed-in": "Signed in.",
-  "sign-in-required": "Your session ended. Sync is paused until you sign in again; local changes are kept and pushed afterwards.",
+  "sign-in-required": "Your session ended. Sign in again to resume syncing. Your changes are kept.",
 };
 
 /**
@@ -94,6 +97,7 @@ const accountDescriptions: Record<AuthState, string> = {
 export class VaultSyncSettingTab extends PluginSettingTab {
   private statusSetting: Setting | undefined;
   private deviceNameText: TextComponent | undefined;
+  private showDeviceNameProblem: ((problem: string | undefined) => void) | undefined;
   /** The new escrow key whose prompt this tab opened by itself, so that two sections showing the change open it once. */
   private promptedEscrowKey: string | undefined;
   /** Kept across renders, so a list rebuilt while a removal runs cannot send it again. */
@@ -154,7 +158,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
     if (host.syncStatus.state === "device-removed") {
       new Setting(containerEl)
         .setName("Register this device again")
-        .setDesc("This device was removed from your account on another device. Registering it again adds it back to your devices and pushes the changes made on it meanwhile.")
+        .setDesc("Another device removed this one from your account. Register it again to resume syncing. Changes made here are kept and synced.")
         .addButton((button) =>
           button
             .setButtonText("Register again")
@@ -172,7 +176,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
     new Setting(containerEl).setName("Server").setHeading();
     const serverUrl = new Setting(containerEl)
       .setName("Server URL")
-      .setDesc("The vault-sync server, e.g. https://sync.example.com.")
+      .setDesc("The address of your vault-sync server, for example https://sync.example.com.")
       .addText((text) =>
         text
           .setPlaceholder("https://sync.example.com")
@@ -206,18 +210,30 @@ export class VaultSyncSettingTab extends PluginSettingTab {
           }),
       );
     }
-    new Setting(containerEl)
-      .setName("Device name")
-      .setDesc("How this device is named on the server and in conflict copies. Empty uses the platform's name. Invisible characters are left out and the name is cut at 256 bytes. While signed in, a change renames this device on the server once you stop typing.")
-      .addText((text) => {
-        this.deviceNameText = text;
-        text.setValue(host.data.deviceName).onChange(async (value) => {
+    const deviceName = new Setting(containerEl).setName("Device name").setDesc("The name of this device in your device list, in history and in conflict copies.");
+    const deviceNameError = deviceName.descEl.createDiv({ cls: "vault-sync-field-error" });
+    deviceName.addText((text) => {
+      this.deviceNameText = text;
+      // An invalid name is not saved: the error stays under the field until it is fixed.
+      const showProblem = (problem: string | undefined) => {
+        deviceNameError.setText(problem ?? "");
+        text.inputEl.toggleClass("vault-sync-field-invalid", problem !== undefined);
+        text.inputEl.setAttribute("aria-invalid", String(problem !== undefined));
+      };
+      this.showDeviceNameProblem = showProblem;
+      text
+        .setPlaceholder(host.defaultDeviceName)
+        .setValue(this.shownDeviceName())
+        .onChange(async (value) => {
+          const problem = deviceNameProblem(value);
+          showProblem(problem);
+          if (problem !== undefined) return;
           const before = host.data.deviceName;
           host.data.deviceName = value;
           await host.saveSettings();
           host.deviceNameChanged(before);
         });
-      });
+    });
 
     // The connected vault's owner actions in the Advanced group, filled in once the Sharing section loads.
     const vaultActions = createDiv({ cls: "vault-sync-vault-actions" });
@@ -256,7 +272,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
     new Setting(advanced).setName("Identity provider").setHeading();
     new Setting(advanced)
       .setName("OIDC issuer URL")
-      .setDesc("Optional. Leave empty to use the issuer the server advertises; needed only for servers that advertise none.")
+      .setDesc("Leave empty to use the server's identity provider. Set it only if the server does not provide one.")
       .addText((text) =>
         text
           .setPlaceholder(provider?.issuer ?? "From the server")
@@ -270,7 +286,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
       .settingEl.addClass("vault-sync-oidc-issuer");
     new Setting(advanced)
       .setName("OIDC client ID")
-      .setDesc("Optional. Leave empty to use the client the server advertises, or enter the public OAuth client (with the device code grant enabled) to sign in as instead.")
+      .setDesc("Leave empty to use the server's client. To use a different client, enter a public client ID that allows the device code grant.")
       .addText((text) =>
         text
           .setPlaceholder(provider?.clientId ?? "From the server")
@@ -317,7 +333,13 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 
   /** Shows the Device name setting as it is now, e.g. after a refused rename put it back. */
   showDeviceName(): void {
-    this.deviceNameText?.setValue(this.host.data.deviceName);
+    this.deviceNameText?.setValue(this.shownDeviceName());
+    this.showDeviceNameProblem?.(undefined);
+  }
+
+  /** The name this device goes by, so the field is never blank: the setting, or the platform's name when it is empty. */
+  private shownDeviceName(): string {
+    return deviceNameOf(this.host.data.deviceName, this.host.defaultDeviceName);
   }
 
   /** Lists the devices again, if the list is shown: after this device was renamed. */
@@ -337,7 +359,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
         list.empty();
         removeButtons.clear();
         intro.setDesc(
-          "The devices registered to your account. Remove one you no longer use: it stops syncing, and its changes not synced yet stay on it until it is registered again. Each device's history stays. Remove this device from another device.",
+          "The devices on your account. A removed device stops syncing and keeps its files. To remove this device, use another device.",
         );
         for (const device of devices) {
           const row = new Setting(list).setName(device.label).setDesc(device.description);
@@ -397,7 +419,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
     host.encryptionState().then(
       (state) => {
         if (state === "unlocked") {
-          setting.setDesc("Enabled for your account and unlocked on this device. The key is kept only in this device's Vault Sync data, which never syncs.");
+          setting.setDesc("On, and unlocked on this device. Your key stays on this device and is never synced.");
           setting.addButton((button) =>
             button.setButtonText("Change passphrase").onClick(() => {
               open("change");
@@ -406,8 +428,8 @@ export class VaultSyncSettingTab extends PluginSettingTab {
         } else if (state === "locked" || state === "key-changed") {
           setting.setDesc(
             state === "locked"
-              ? "Enabled for your account on another device. Unlock it on this device with your recovery passphrase."
-              : "Locked: your account's encryption key on the server is not the one this device unlocked, so this device no longer uses its copy. Unlock the server's key with its recovery passphrase.",
+              ? "On for your account. Enter your recovery passphrase to unlock it on this device."
+              : "Locked. Your account's key changed on the server. Enter its recovery passphrase to unlock it.",
           );
           setting.addButton((button) =>
             button
@@ -418,7 +440,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
               }),
           );
         } else {
-          setting.setDesc("Not enabled. Enabling creates your encryption key on this device, protected by a recovery passphrase, for end-to-end encrypted vaults.");
+          setting.setDesc("Off. Turn it on to use encrypted vaults. A recovery passphrase protects your key.");
           setting.addButton((button) =>
             button.setButtonText("Enable").onClick(() => {
               open("enable");
@@ -486,8 +508,8 @@ export class VaultSyncSettingTab extends PluginSettingTab {
     if (sharing.kind === "not-member") {
       intro.setDesc(
         host.syncStatus.state === "vault-deleted"
-          ? "An owner deleted this vault, so it cannot sync. Disconnect it above; the files stay in this vault."
-          : "You are no longer a member of this vault, so it cannot sync. Disconnect it above; the files stay in this vault.",
+          ? "An owner deleted this vault, so it cannot sync. Disconnect it above. Your files stay here."
+          : "You are no longer a member of this vault, so it cannot sync. Disconnect it above. Your files stay here.",
       );
       return;
     }
@@ -549,7 +571,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
         new Setting(vaultActions).setName(`Vault ${quotedVaultLabel(connected)}`).setHeading();
         new Setting(vaultActions)
           .setName("Rotate key")
-          .setDesc("Starts a new vault key for every current member and pending invitation. New changes are encrypted with it, and the other devices pick it up on their next sync. Removing a member rotates the key automatically.")
+          .setDesc("Give all members a new vault key for new changes. Removing a member does this automatically.")
           .addButton((button) => {
             button.setButtonText("Rotate key").onClick(() => {
               new ConfirmModal(this.app, {
@@ -574,7 +596,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
           });
         const reencrypt = new Setting(vaultActions)
           .setName("Re-encrypt history")
-          .setDesc("Re-encrypts every earlier version of every note that still uses an older vault key under the current one, then retires the older keys. Run it after removing a member or turning escrow off. Syncing continues meanwhile, and an interrupted run continues where it stopped.")
+          .setDesc("Encrypt old versions of notes with the current key and retire older keys. Run it after you remove a member or turn off escrow. Sync keeps running.")
           .addButton((button) => {
             button.setButtonText("Re-encrypt history").onClick(() => {
               button.setDisabled(true);
@@ -597,7 +619,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
       if (!sharing.encrypted) {
         new Setting(section)
           .setName("Convert to end-to-end encryption")
-          .setDesc("Encrypts this vault on the devices, keeping its members, notes and history. Every member must have set up end-to-end encryption, and pending invitations must be revoked first. You compare every member's key fingerprint before converting.")
+          .setDesc("Encrypt this vault and keep its members, notes and history. First, every member must turn on encryption, and you must revoke pending invitations.")
           .addButton((button) => {
             button.setButtonText("Convert…").onClick(() => {
               new ConvertVaultModal(this.app, host, () => {
@@ -632,7 +654,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
       let days = "";
       new Setting(section.createDiv({ cls: "vault-sync-invite" }))
         .setName("Invite someone")
-        .setDesc("Creates a single-use invite code for the role you choose. Anyone with the code can join until it is used, revoked or expires. Leave the days empty for 7 days; at most 30.")
+        .setDesc("Create a one-time invite code for the chosen role. Anyone with the code can join. It expires after 7 days, or after the days you set (30 at most).")
         .addDropdown((dropdown) => {
           for (const option of roles) dropdown.addOption(String(option), roleName(option));
           dropdown.setValue(String(inviteRole)).onChange((value) => {
@@ -671,7 +693,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
     }
     new Setting(section)
       .setName("Leave vault")
-      .setDesc("Ends your membership of this vault: sync stops and the files stay here. To join again you need a new invitation.")
+      .setDesc("Leave this vault and stop syncing it. Your files stay here. To rejoin, you need a new invitation.")
       .addButton((button) => {
         button.setButtonText("Leave vault").onClick(() => {
           new ConfirmModal(this.app, {
@@ -697,7 +719,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
     if (sharing.kind === "owner" && vaultName !== "") {
       new Setting(section)
         .setName("Delete vault")
-        .setDesc("Deletes this vault on the server for every member: all their devices stop syncing and keep their files. The server keeps the data for 30 days, during which only the server's operator can restore it.")
+        .setDesc("Delete this vault for all members. Their devices stop syncing and keep their files. Only the server operator can restore it, within 30 days.")
         .addButton((button) => {
           button.setButtonText("Delete vault").onClick(() => {
             new ConfirmModal(this.app, {
@@ -772,7 +794,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
     let code = "";
     const join = new Setting(containerEl.createDiv({ cls: "vault-sync-join" }))
       .setName("Join with an invite code")
-      .setDesc("Paste the code a vault's owner gave you to join their vault and sync this vault with it. To keep the shared vault apart from your notes, open or create another Obsidian vault and join from there.")
+      .setDesc("Paste an invite code to sync this vault with a shared vault. To keep your own notes separate, join from a new Obsidian vault.")
       .addText((text) => {
         text.setPlaceholder("Invite code").onChange((value) => {
           code = value;
@@ -804,10 +826,9 @@ export class VaultSyncSettingTab extends PluginSettingTab {
     // created, so that escrow is never left off by mistake.
     let escrowLoaded = false;
     let escrowToggle: ToggleComponent | undefined;
-    const updateEscrowToggle = () => escrowToggle?.setDisabled(!encrypted || !escrowAvailable);
     new Setting(containerEl)
       .setName("Create a vault")
-      .setDesc("Create a vault on the server and sync this vault with it.")
+      .setDesc("Create a vault on the server with this name, and sync this Obsidian vault with it. Other members see this name.")
       .addText((text) =>
         text.setValue(name).onChange((value) => {
           name = value;
@@ -829,16 +850,41 @@ export class VaultSyncSettingTab extends PluginSettingTab {
           }
         }),
       );
-    new Setting(containerEl)
-      .setName("End-to-end encryption")
-      .setDesc("Encrypt the new vault's notes and paths on your devices, so the server stores only ciphertext. Chosen once, when the vault is created. Needs encryption enabled and unlocked on this device (Encryption, above).")
-      .addToggle((toggle) =>
-        toggle.setValue(encrypted).onChange((value) => {
+    const encryptionSetting = new Setting(containerEl).setName("End-to-end encryption").setDesc("Encrypt notes and file names so the server cannot read them.");
+    let encryptionToggle: ToggleComponent | undefined;
+    encryptionSetting.addToggle((toggle) => {
+      encryptionToggle = toggle;
+      // Off until this device's encryption key is known to be unlocked: an encrypted vault needs it.
+      toggle
+        .setValue(encrypted)
+        .setDisabled(true)
+        .onChange((value) => {
           encrypted = value;
           updateEscrowToggle();
-        }),
-      );
+        });
+    });
+    void host.encryptionState().then(
+      (state) => {
+        if (state === "unlocked") {
+          encryptionToggle?.setDisabled(false);
+          return;
+        }
+        encryptionSetting.setDesc(
+          state === "not-enabled"
+            ? "Encrypt notes and file names so the server cannot read them. To use it, turn on encryption for your account first (End-to-end encryption, above)."
+            : "Encrypt notes and file names so the server cannot read them. To use it, unlock your encryption key first (End-to-end encryption, above).",
+        );
+      },
+      (error: unknown) => {
+        encryptionSetting.setDesc(`Could not check encryption: ${errorMessage(error)}`);
+      },
+    );
     const escrowSetting = new Setting(containerEl).setName("Escrow").setDesc("Loading the server's escrow setting…");
+    // Escrow only applies to an encrypted vault, so it shows only while End-to-end encryption is on.
+    const updateEscrowToggle = () => {
+      escrowToggle?.setDisabled(!escrowAvailable);
+      escrowSetting.settingEl.toggle(encrypted);
+    };
     escrowSetting.addToggle((toggle) => {
       escrowToggle = toggle;
       toggle.onChange((value) => {
@@ -861,8 +907,8 @@ export class VaultSyncSettingTab extends PluginSettingTab {
         updateEscrowToggle();
         escrowSetting.setDesc(
           offer.recipient !== undefined
-            ? `For an encrypted vault: also wrap its keys to the server's escrow key, so the operator's backups hold your notes in plaintext and can restore the vault if you lose your passphrase. Turn it off to keep the operator out; without escrow, a lost passphrase loses the server's copy. ${newVaultEscrowText(offer.recipient.bundle)}`
-            : "This server has no escrow key, so encrypted vaults are created without escrow.",
+            ? `Let the server operator read and restore encrypted vaults, for example if you lose your passphrase. If it is off and you lose your passphrase, the server's copy is lost. ${newVaultEscrowText(offer.recipient.bundle)}`
+            : "This server does not offer escrow.",
         );
       },
       (error: unknown) => {
