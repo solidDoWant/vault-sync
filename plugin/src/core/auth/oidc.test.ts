@@ -115,7 +115,7 @@ describe("device authorization", () => {
     });
     const form = new URLSearchParams(idp.requests.at(-1)?.body);
     expect(form.get("client_id")).toBe("vault-sync");
-    expect(form.get("scope")).toBe("openid offline_access");
+    expect(form.get("scope")).toBe("openid profile offline_access");
   });
 
   it("defaults the polling interval to five seconds", async () => {

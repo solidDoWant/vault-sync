@@ -489,7 +489,7 @@ Client: transport and identity provider:
 
 Client: sign-in:
 
-- The device flow requests `openid offline_access`.
+- The device flow requests `openid profile offline_access`.
 - It follows RFC 8628 polling: the interval of the provider, plus 5 s on every `slow_down`. Network failures and 5xx responses are retried until the code expires.
 - It is cancelled when its dialog closes, which leaves the authentication state as it was.
 - The server and identity provider settings are locked while a sign-in runs and while signed in.

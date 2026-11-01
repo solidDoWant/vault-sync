@@ -12,7 +12,7 @@ The provider must offer the following:
 
 - A public client. The plugin cannot keep a client secret.
 - The device authorization grant. The provider's discovery document (`<issuer>/.well-known/openid-configuration`) must name a `device_authorization_endpoint`. If it does not, the plugin reports that the device authorization grant is not supported.
-- A refresh token. The plugin asks for the scopes `openid offline_access`. It refuses a sign-in that returns no refresh token.
+- A refresh token. The plugin asks for the scopes `openid profile offline_access`. It refuses a sign-in that returns no refresh token.
 - Access tokens that are JWTs, signed with RS256, ES256 or EdDSA by a key in the provider's key set. The server refuses `none` and all HMAC algorithms.
 - `https` for the issuer, the discovery document, every endpoint and the key set (`jwks_uri`). Plain `http` works only for a loopback issuer (`localhost`, `127.0.0.1`, `::1`) in local development, and then only to loopback hosts.
 - A discovery document whose `issuer` is exactly the issuer URL that you configure.
@@ -32,7 +32,7 @@ The server accepts an access token only if all of these are true:
 
 The server identifies a user by the issuer and `sub` together. It creates the user at the first request that carries a valid token. So if you change the issuer, every user becomes a new user.
 
-If the token has a `name` claim, or else a `preferred_username` claim, vault-sync uses it as the user's name. The history shows that name, and the plugin puts it in the names of conflict copies. Without either claim, conflict copies use `user`.
+If the access token has a `name` claim, or else a `preferred_username` claim, vault-sync uses it as the user's name. The members list and the history show that name, and the plugin puts it in the names of conflict copies. Most providers add these claims when the client asks for the `profile` scope, and the plugin asks for it. Without either claim, the members list and the history show `user` and the start of the user's ID, and conflict copies use `user`. The server reads the name again from every token, so a change at the provider shows after the plugin gets its next access token. A user who signed in before the plugin asked for `profile` must sign in again, because a refreshed token keeps the scopes of the first sign-in.
 
 ### Where the server gets the signing keys
 
@@ -49,7 +49,7 @@ For more detail on how the server checks tokens, see [Sign-in tokens](security.m
 In Authentik, vault-sync needs a public OAuth2/OpenID provider with the device code flow, and an application for that provider.
 
 1. Turn on the device code flow. Go to *System → Brands*, edit your brand, and set *Default flows → Device code flow*, for example to the default authorization flow. Without it, the provider's OpenID configuration has no `device_authorization_endpoint`.
-2. Create the provider. Go to *Applications → Providers* and create an *OAuth2/OpenID Provider*. Set the client type to *Public*. Among the scopes, select the `offline_access` mapping, so that Authentik issues a refresh token. You do not need redirect URIs, because the device flow does not use them.
+2. Create the provider. Go to *Applications → Providers* and create an *OAuth2/OpenID Provider*. Set the client type to *Public*. Among the scopes, select the `profile` mapping, so that the tokens carry the user's name, and the `offline_access` mapping, so that Authentik issues a refresh token. You do not need redirect URIs, because the device flow does not use them.
 3. Choose the token lifetimes on the provider. Any access-token lifetime works, because the plugin gets a new access token before the old one expires. The refresh-token lifetime decides how long a device that stays offline remains signed in.
 4. Create the application. Go to *Applications → Applications* and create an application for the provider, with the slug `vault-sync`. Bind the users or groups that can sync.
 
