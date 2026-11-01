@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { diffCounts, foldUnchanged, isFold, lineDiff, matchingDocuments, revertChange, sideBySide, type DiffLine } from "./history-diff";
+import { diffCounts, foldUnchanged, isFold, lineDiff, matchingDocuments, revertChange, sideBySide, withWordChanges, wordDiff, type DiffLine } from "./history-diff";
 
 describe("lineDiff", () => {
   it("numbers kept, removed and added lines in each version", () => {
@@ -107,5 +107,80 @@ describe("matchingDocuments", () => {
     expect(matchingDocuments(documents, "zebra").map((document) => document.documentId)).toEqual(["1", "2"]);
     expect(matchingDocuments(documents, "notes ZEB").map((document) => document.documentId)).toEqual(["1"]);
     expect(matchingDocuments(documents, "missing")).toEqual([]);
+  });
+});
+
+describe("wordDiff", () => {
+  it("marks only the text appended to a line, also within its last word", () => {
+    expect(wordDiff("fasfsd", "fasfsdf sadf stgest adfsa")).toEqual({
+      before: [{ text: "fasfsd", changed: false }],
+      after: [
+        { text: "fasfsd", changed: false },
+        { text: "f sadf stgest adfsa", changed: true },
+      ],
+    });
+    expect(wordDiff("the quick fox", "the quick fox jumps over")).toEqual({
+      before: [{ text: "the quick fox", changed: false }],
+      after: [
+        { text: "the quick fox", changed: false },
+        { text: " jumps over", changed: true },
+      ],
+    });
+  });
+
+  it("marks a replaced word on both sides and keeps the rest", () => {
+    expect(wordDiff("the quick brown fox", "the quick red fox")).toEqual({
+      before: [
+        { text: "the quick ", changed: false },
+        { text: "brown", changed: true },
+        { text: " fox", changed: false },
+      ],
+      after: [
+        { text: "the quick ", changed: false },
+        { text: "red", changed: true },
+        { text: " fox", changed: false },
+      ],
+    });
+  });
+
+  it("keeps every character of both lines, including punctuation and other scripts", () => {
+    const before = "Grüße, 世界! a_b=1";
+    const after = "Grüße, 世界? a_b=2 ✓";
+    const words = wordDiff(before, after);
+    expect(words?.before.map((segment) => segment.text).join("")).toBe(before);
+    expect(words?.after.map((segment) => segment.text).join("")).toBe(after);
+  });
+
+  it("does not compare within a very long line", () => {
+    expect(wordDiff("a".repeat(10_001), "b")).toBeUndefined();
+  });
+});
+
+describe("withWordChanges", () => {
+  it("pairs each removed line with the added line that replaced it", () => {
+    const lines = withWordChanges(lineDiff("keep\nold line\n", "keep\nold line, longer\n"));
+    expect(lines.map((line) => line.segments)).toEqual([
+      undefined,
+      [{ text: "old line", changed: false }],
+      [
+        { text: "old line", changed: false },
+        { text: ", longer", changed: true },
+      ],
+    ]);
+  });
+
+  it("leaves lines without a partner whole", () => {
+    const lines = withWordChanges(lineDiff("a\n", "b\nc\n"));
+    expect(lines.map((line) => [line.kind, line.text, line.segments !== undefined])).toEqual([
+      ["removed", "a", true],
+      ["added", "b", true],
+      ["added", "c", false],
+    ]);
+  });
+
+  it("carries the segments into the side-by-side rows", () => {
+    const rows = sideBySide(withWordChanges(lineDiff("the red fox\n", "the blue fox\n")));
+    expect(rows[0]?.left?.segments?.find((segment) => segment.changed)?.text).toBe("red");
+    expect(rows[0]?.right?.segments?.find((segment) => segment.changed)?.text).toBe("blue");
   });
 });

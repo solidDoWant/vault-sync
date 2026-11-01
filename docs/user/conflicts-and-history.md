@@ -47,16 +47,15 @@ Run **Vault Sync: Show file history** for the open file, or choose **Show sync h
 
 The history window has three parts, from left to right:
 
-1. The synced files. Deleted files are marked `(deleted)`.
+1. The synced files, in their folders. Click a folder to open or close it. Deleted files are marked `(deleted)`. While you type in the search field, the list shows only the files that match, with their folders open.
 2. The versions of the chosen file, newest first. **Load older versions** shows more.
 3. The chosen version.
 
-Each version in the list shows:
+Each version in the list shows, on three lines:
 
-- when the server received the version
-- which user made it, by the name from their login, or by the start of their user id
-- which device made it: `this device`, another device's name in quotes, or the start of its id
-- what changed: edited, moved, deleted or restored.
+1. When the server received the version. The newest version is marked `(current)`.
+2. What changed: edited, moved, deleted or restored.
+3. Which user made it, by the name from their login or by the start of their user id, and which device: `this device`, another device's name in quotes, or the start of its id.
 
 Every member of a vault sees the names of the devices that changed its files.
 
@@ -64,7 +63,7 @@ Another member can choose any name. So that one name cannot pass for another, th
 
 ### Compare a version with the one before
 
-Turn on **Show changes** to see what the chosen version changed. Removed lines are red, and added lines are green. Long runs of unchanged lines are folded. Click a fold to show all lines. Turn on **Side by side** to see the version before on the left and the chosen version on the right. The window keeps both choices until you close Obsidian.
+Turn on **Show changes** to see what the chosen version changed. Removed lines are red, and added lines are green. When a line was changed, not added or removed, the text that changed in it has a darker color, so you can see, for example, that words were added at its end. Long runs of unchanged lines are folded. Click a fold to show all lines. Turn on **Side by side** to see the version before on the left and the chosen version on the right. The window keeps both choices until you close Obsidian.
 
 Changes show only for text. A very large file shows only its start, and its changes do not show.
 

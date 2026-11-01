@@ -15,6 +15,77 @@ export interface DiffLine {
   before: number | undefined;
   /** Its number in the newer version; undefined for a removed line. */
   after: number | undefined;
+  /**
+   * For a changed line (a removed line and the added line that replaced it,
+   * paired by withWordChanges): the line in parts, the parts the change
+   * touched marked, so a reader sees which words changed.
+   */
+  segments?: Segment[];
+}
+
+/** A part of a changed line: words the change touched, or words both versions share. */
+export interface Segment {
+  text: string;
+  changed: boolean;
+}
+
+/** Lines longer than this are not compared within the line: such a comparison could take long, and shows little. */
+const maxComparedLineLength = 10_000;
+
+/**
+ * Compares two versions of one line within the line: each side in parts,
+ * with the text that one removed and the other added marked. A character
+ * comparison, grouped into readable runs (diff-match-patch's semantic
+ * cleanup), so an appended word shows as added and a replaced word as
+ * replaced. Undefined for a line too long to compare.
+ */
+export function wordDiff(before: string, after: string): { before: Segment[]; after: Segment[] } | undefined {
+  if (before.length > maxComparedLineLength || after.length > maxComparedLineLength) return undefined;
+  const differ = new DiffMatchPatch();
+  const diffs = differ.diff_main(before, after);
+  differ.diff_cleanupSemantic(diffs);
+  const result = { before: [] as Segment[], after: [] as Segment[] };
+  const append = (side: Segment[], text: string, changed: boolean) => {
+    const last = side[side.length - 1];
+    if (last !== undefined && last.changed === changed) last.text += text;
+    else side.push({ text, changed });
+  };
+  for (const [operation, text] of diffs) {
+    if (operation !== DiffMatchPatch.DIFF_INSERT) append(result.before, text, operation === DiffMatchPatch.DIFF_DELETE);
+    if (operation !== DiffMatchPatch.DIFF_DELETE) append(result.after, text, operation === DiffMatchPatch.DIFF_INSERT);
+  }
+  return result;
+}
+
+/**
+ * `lines` with word-level changes: each run of removed lines and the run of
+ * added lines after it are paired line by line, as sideBySide pairs them,
+ * and each pair gets the segments of wordDiff. Lines without a partner stay
+ * as they are: the whole line changed.
+ */
+export function withWordChanges(lines: readonly DiffLine[]): DiffLine[] {
+  const result = lines.map((line) => ({ ...line }));
+  let index = 0;
+  while (index < result.length) {
+    if (result[index]?.kind !== "removed") {
+      index++;
+      continue;
+    }
+    const removedStart = index;
+    while (result[index]?.kind === "removed") index++;
+    const addedStart = index;
+    while (result[index]?.kind === "added") index++;
+    const pairs = Math.min(addedStart - removedStart, index - addedStart);
+    for (let pair = 0; pair < pairs; pair++) {
+      const removed = result[removedStart + pair] as DiffLine;
+      const added = result[addedStart + pair] as DiffLine;
+      const words = wordDiff(removed.text, added.text);
+      if (words === undefined) continue;
+      removed.segments = words.before;
+      added.segments = words.after;
+    }
+  }
+  return result;
 }
 
 /** The lines of `text` without their endings; a final line ending starts no extra line. */
@@ -60,6 +131,8 @@ export interface SideCell {
   kind: DiffLine["kind"];
   text: string;
   number: number;
+  /** The line's word-level changes, if it is one of a changed pair (withWordChanges). */
+  segments?: Segment[];
 }
 
 /** One row of a side-by-side comparison: the older version on the left, the newer on the right. */
@@ -88,13 +161,10 @@ export function sideBySide(lines: readonly DiffLine[]): SideRow[] {
     const added: DiffLine[] = [];
     while (lines[index]?.kind === "removed") removed.push(lines[index++] as DiffLine);
     while (lines[index]?.kind === "added") added.push(lines[index++] as DiffLine);
+    const cell = (line: DiffLine | undefined, kind: "removed" | "added"): SideCell | undefined =>
+      line === undefined ? undefined : { kind, text: line.text, number: (kind === "removed" ? line.before : line.after) ?? 0, ...(line.segments === undefined ? {} : { segments: line.segments }) };
     for (let row = 0; row < Math.max(removed.length, added.length); row++) {
-      const left = removed[row];
-      const right = added[row];
-      rows.push({
-        left: left === undefined ? undefined : { kind: "removed", text: left.text, number: left.before ?? 0 },
-        right: right === undefined ? undefined : { kind: "added", text: right.text, number: right.after ?? 0 },
-      });
+      rows.push({ left: cell(removed[row], "removed"), right: cell(added[row], "added") });
     }
   }
   return rows;
