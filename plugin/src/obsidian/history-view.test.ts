@@ -241,7 +241,7 @@ describe("history view", () => {
 
 describe("whoParts", () => {
   it.each([
-    ["a named user on a named device", { userName: "Alice", deviceName: "Phone" }, [{ name: iso("Alice") }, { text: ", " }, { text: "device " }, { name: iso("Phone") }]],
+    ["a named user on a named device", { userName: "Alice", deviceName: "Phone" }, [{ name: iso("Alice") }, { text: ", " }, { text: "device ", textOnly: true }, { name: iso("Phone"), device: true }]],
     ["a named user on this device", { userName: "Alice", thisDevice: true }, [{ name: iso("Alice") }, { text: ", " }, { thisDevice: true }]],
     ["an unnamed user on an unnamed device", {}, [{ text: "user 0190a5c4" }, { text: ", " }, { text: "device 0190a5c4" }]],
     ["no ids at all", { userId: "", deviceId: "" }, [{ text: "an unknown user" }, { text: ", " }, { text: "an unknown device" }]],

@@ -150,7 +150,12 @@ export function sizeLabel(size: bigint | number): string {
  * instead of quoted, and this device as a mark another person's name cannot
  * look like.
  */
-export type WhoPart = { text: string } | { name: string } | { thisDevice: true };
+export type WhoPart =
+  /** Text; `textOnly` text reads in the row's text but is not shown, as the device icon says it. */
+  | { text: string; textOnly?: true }
+  /** Another person's name; `device` for a device's. */
+  | { name: string; device?: true }
+  | { thisDevice: true };
 
 export function whoParts(entry: Pick<HistoryEntry, "userId" | "userName" | "deviceId" | "deviceName" | "thisDevice">): WhoPart[] {
   const parts: WhoPart[] = [];
@@ -163,7 +168,7 @@ export function whoParts(entry: Pick<HistoryEntry, "userId" | "userName" | "devi
     return parts;
   }
   const deviceName = shownName(entry.deviceName ?? "");
-  if (deviceName !== "") parts.push({ text: "device " }, { name: isolated(deviceName) });
+  if (deviceName !== "") parts.push({ text: "device ", textOnly: true }, { name: isolated(deviceName), device: true });
   else parts.push({ text: entry.deviceId === "" ? "an unknown device" : `device ${entry.deviceId.slice(0, 8)}` });
   return parts;
 }

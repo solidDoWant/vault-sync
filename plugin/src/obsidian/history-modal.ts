@@ -39,22 +39,30 @@ function refreshRelativeTimes(root: HTMLElement): void {
 }
 
 /**
- * Who made a version: each other person's name in a box, which shows where
- * the name starts and ends, and this device as a badge with an icon, which
- * no name can look like. The quotes around a name stay in the text, hidden,
+ * Who made a version. A user's name shows in a box. A device shows in the
+ * same box with a device icon: another device by its name, and this device
+ * as "this device", tinted in the accent colour, which no name another
+ * person chooses can have. Each box shows where the name starts and ends.
+ * The quotes around names and the word "device" stay in the text, hidden,
  * so the row's text reads as userLabel and deviceLabel give it (whoText).
  */
 function renderWho(parent: HTMLElement, parts: readonly WhoPart[]): void {
+  const deviceIcon = (box: HTMLElement) => {
+    setIcon(box.createSpan({ cls: "vault-sync-name-icon" }), "monitor-smartphone");
+  };
   for (const part of parts) {
     if ("name" in part) {
-      const name = parent.createSpan({ cls: "vault-sync-name" });
-      name.createSpan({ text: "“", cls: "vault-sync-name-quote" });
-      name.appendText(part.name);
-      name.createSpan({ text: "”", cls: "vault-sync-name-quote" });
+      const box = parent.createSpan({ cls: part.device === true ? "vault-sync-name is-device" : "vault-sync-name" });
+      if (part.device === true) deviceIcon(box);
+      box.createSpan({ text: "“", cls: "vault-sync-text-only" });
+      box.appendText(part.name);
+      box.createSpan({ text: "”", cls: "vault-sync-text-only" });
     } else if ("thisDevice" in part) {
-      const badge = parent.createSpan({ cls: "vault-sync-this-device" });
-      setIcon(badge.createSpan({ cls: "vault-sync-this-device-icon" }), "monitor-smartphone");
-      badge.appendText("this device");
+      const box = parent.createSpan({ cls: "vault-sync-name is-device is-this-device", attr: { title: "This device" } });
+      deviceIcon(box);
+      box.appendText("this device");
+    } else if (part.textOnly === true) {
+      parent.createSpan({ text: part.text, cls: "vault-sync-text-only" });
     } else {
       parent.appendText(part.text);
     }

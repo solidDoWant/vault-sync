@@ -55,7 +55,7 @@ Each version in the list shows, on three lines:
 
 1. How long ago the server received the version, for example `5 minutes ago` or `3 days ago`. To see the exact date and time, with your time zone, hold the pointer over it. The newest version is marked `(current)`.
 2. What changed: edited, moved, deleted or restored.
-3. Which user made it, by the name from their login or by the start of their user id, and which device: your own device as **this device** with a device icon, another device by its name, or by the start of its id. Each name that another person chose is in a box, so you can see where it starts and ends. No name can look like the **this device** mark.
+3. Which user made it, by the name from their login or by the start of their user id, and which device: another device by its name, your own device as **this device**, or a device by the start of its id. Each name is in a box, so you can see where it starts and ends, and a device has a device icon. The box of your own device has the accent color, so a device that another person named "this device" does not look like yours.
 
 Every member of a vault sees the names of the devices that changed its files.
 

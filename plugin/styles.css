@@ -177,11 +177,15 @@ input.vault-sync-field-invalid {
 }
 
 /*
- * Another person's name: a box shows where it starts and ends, in place of
- * the quotes, which stay in the text. This device: an accent badge with an
- * icon, which no name can look like.
+ * Who made a version: a user's name in a box, a device in the same box with
+ * a device icon. This device's box is tinted in the accent colour, which a
+ * name another person chooses cannot have. The quotes and the word "device"
+ * stay in the text, hidden.
  */
 .vault-sync-name {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--size-2-1);
   padding: 0 var(--size-2-2);
   border: 1px solid var(--background-modifier-border);
   border-radius: var(--radius-s);
@@ -189,24 +193,27 @@ input.vault-sync-field-invalid {
   color: var(--text-normal);
 }
 
-.vault-sync-name-quote {
-  display: none;
+.vault-sync-name-icon {
+  display: flex;
+  color: var(--text-muted);
 }
 
-.vault-sync-this-device {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--size-2-1);
+.vault-sync-name-icon svg {
+  width: var(--icon-xs);
+  height: var(--icon-xs);
+}
+
+.vault-sync-name.is-this-device {
+  border-color: hsla(var(--interactive-accent-hsl), 0.5);
+  background-color: hsla(var(--interactive-accent-hsl), 0.12);
+}
+
+.vault-sync-name.is-this-device .vault-sync-name-icon {
   color: var(--text-accent);
 }
 
-.vault-sync-this-device-icon {
-  display: flex;
-}
-
-.vault-sync-this-device-icon svg {
-  width: var(--icon-xs);
-  height: var(--icon-xs);
+.vault-sync-text-only {
+  display: none;
 }
 
 /* Joins who and what in the row's text, which shows them on lines of their own. */
