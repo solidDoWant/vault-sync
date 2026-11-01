@@ -4,7 +4,7 @@ All notable changes to vault-sync are listed here, newest release first.
 
 ## 0.4.5
 
-vault-sync is a self-hosted replacement for Obsidian Sync. It has two parts: an Obsidian plugin, and a sync server that stores its data in PostgreSQL and S3. This release changes only the plugin, and only its settings tab. The settings are shorter and easier to read, and the plugin now tells you about a problem when you make a choice, not after it. Install the plugin with BRAT from the GitHub releases of this repository. The server image `ghcr.io/soliddowant/vault-sync:0.4.5` and the Helm chart `oci://ghcr.io/soliddowant/charts/vault-sync` (version 0.4.5) have no changes from 0.4.4, so you do not have to upgrade the server.
+vault-sync is a self-hosted replacement for Obsidian Sync. It has two parts: an Obsidian plugin, and a sync server that stores its data in PostgreSQL and S3. This release changes the settings tab of the plugin, and the runbook links of the Helm chart. The settings are shorter and easier to read, and the plugin now tells you about a problem when you make a choice, not after it. Install the plugin with BRAT from the GitHub releases of this repository. The server image `ghcr.io/soliddowant/vault-sync:0.4.5` has no changes from 0.4.4. The Helm chart `oci://ghcr.io/soliddowant/charts/vault-sync` (version 0.4.5) changes only the links in its alerts. It has no database migration and no new setting, so you can upgrade a 0.4.4 server one replica at a time.
 
 ### Plugin
 
@@ -13,6 +13,10 @@ vault-sync is a self-hosted replacement for Obsidian Sync. It has two parts: an 
 - If you type a device name that the server does not accept, an error shows under the setting, and the plugin keeps the previous name until you fix it. A name is not accepted if it has hidden characters, such as a line break or a combined emoji, or if it is longer than 256 bytes. Before, the plugin removed these characters or cut the name without telling you. ([#1469](https://github.com/solidDoWant/vault-sync/pull/1469))
 - When you create a vault, you can turn on **End-to-end encryption** only when your encryption key is unlocked on this device. Until then, the setting is greyed out and tells you what to do first. Before, the vault was not created, and a notice showed the error. ([#1469](https://github.com/solidDoWant/vault-sync/pull/1469))
 - When you create a vault, the **Escrow** setting shows only after you turn on **End-to-end encryption**, because escrow applies only to encrypted vaults. ([#1469](https://github.com/solidDoWant/vault-sync/pull/1469))
+
+### Server and deployment
+
+- The `runbook_url` of each alert now links to the runbook of the release that you run, not to the newest runbook on `master`. The default of `config.alerts.runbookUrlBase` now contains `{{ .Chart.AppVersion }}`, and the chart replaces it with its app version, for example `0.4.5`. A value that you set yourself can use it too. A value without it works as before. ([#1471](https://github.com/solidDoWant/vault-sync/pull/1471))
 
 ### Known issues
 

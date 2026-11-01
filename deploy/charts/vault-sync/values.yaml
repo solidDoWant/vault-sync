@@ -515,9 +515,12 @@ config:
         # @section -- Alerts
         job: null
     # -- Each alert's `runbook_url` annotation is this followed by `#` and the
-    # alert's name in lower case. Empty leaves `runbook_url` out.
+    # alert's name in lower case. Empty leaves `runbook_url` out. The value is
+    # rendered as a template, so `{{ .Chart.AppVersion }}` is replaced with the
+    # chart's app version. The default links to the runbooks of the release
+    # that you run, not to the newest ones.
     # @section -- Alerts
-    runbookUrlBase: https://github.com/solidDoWant/vault-sync/blob/master/docs/admin/alerts.md
+    runbookUrlBase: "https://github.com/solidDoWant/vault-sync/blob/{{ .Chart.AppVersion }}/docs/admin/alerts.md"
     # -- Per-alert overrides keyed by alert name, each with `enabled`, `for` (a
     # Prometheus duration), `severity` (`critical` or `warning`) and
     # `threshold` (for alerts that have one, see  [Alerts](alerts.md)). A

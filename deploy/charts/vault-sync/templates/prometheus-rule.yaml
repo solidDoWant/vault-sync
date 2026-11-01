@@ -52,7 +52,7 @@
   {{- $matchers = printf "%sjob=%q, " $matchers $job -}}
 {{- end -}}
 
-{{- $runbookBase := $alerts.runbookUrlBase | default "" -}}
+{{- $runbookBase := tpl ($alerts.runbookUrlBase | default "") $ -}}
 {{- $groups := list -}}
 {{- range $group := $file.groups -}}
   {{- $rules := list -}}
