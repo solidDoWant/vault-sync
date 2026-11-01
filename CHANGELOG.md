@@ -2,6 +2,22 @@
 
 All notable changes to vault-sync are listed here, newest release first.
 
+## 0.4.7
+
+vault-sync is a self-hosted replacement for Obsidian Sync. It has two parts: an Obsidian plugin, and a sync server that stores its data in PostgreSQL and S3. This release changes only the plugin. It has a new history window, where you can search the synced files, see the changes of each version, and copy, restore or revert a version. Install the plugin with BRAT from the GitHub releases of this repository. The server image `ghcr.io/soliddowant/vault-sync:0.4.7` and the Helm chart `oci://ghcr.io/soliddowant/charts/vault-sync` (version 0.4.7) have no changes from 0.4.6, so you do not have to upgrade the server.
+
+### Plugin
+
+- The history window is new, and it looks like the **File recovery** window of Obsidian. It shows the synced files with a search, the versions of the chosen file, and the chosen version. Deleted files are in the list too, so you can restore them. The new command **Vault Sync: Browse sync history** opens the window with no file chosen. ([#1479](https://github.com/solidDoWant/vault-sync/pull/1479))
+- **Show changes** shows what a version changed from the version before it. Added lines are green, and removed lines are red. **Side by side** shows the two versions next to each other. Long runs of unchanged lines are folded. ([#1479](https://github.com/solidDoWant/vault-sync/pull/1479))
+- **Copy** copies the text of a version. **Revert this change** undoes only the changes of one version, and keeps the changes made after it. If a later change touches the same lines, the plugin does not revert, and a notice says why. **Restore this version** works as before. Viewers can copy, but they cannot restore or revert. ([#1479](https://github.com/solidDoWant/vault-sync/pull/1479))
+- The command palette shows **Vault Sync: Sign in** only while you are signed out, and **Vault Sync: Sign out** only while you are signed in. ([#1478](https://github.com/solidDoWant/vault-sync/pull/1478))
+- If the **Sync** core plugin of Obsidian is also on in the vault, the **Sync** section of the settings shows a warning. Two sync services on one vault upload every change twice and can make extra conflict copies. The warning says how to turn off Obsidian Sync. ([#1477](https://github.com/solidDoWant/vault-sync/pull/1477))
+
+### Known issues
+
+- The screenshots of the settings in the user guide still show the text from 0.4.4.
+
 ## 0.4.6
 
 vault-sync is a self-hosted replacement for Obsidian Sync. It has two parts: an Obsidian plugin, and a sync server that stores its data in PostgreSQL and S3. This release shows each user's name instead of `user` and the start of their user ID, when the identity provider sends the name. It also makes the plugin's **Sharing** section offer either **Leave vault** or **Delete vault**, and fixes a dashboard panel that counted normal client errors as failures. Install the plugin with BRAT from the GitHub releases of this repository. To install the server, use the server image `ghcr.io/soliddowant/vault-sync:0.4.6` or the Helm chart `oci://ghcr.io/soliddowant/charts/vault-sync` (version 0.4.6). It has no database migration and no new setting, so you can upgrade a 0.4.5 server one replica at a time.
