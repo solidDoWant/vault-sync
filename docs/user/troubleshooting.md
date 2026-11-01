@@ -74,7 +74,7 @@ In an encrypted vault, the server sent key or member data that the plugin cannot
 
 ## "Obsidian Sync is also on"
 
-The Sync core plugin of Obsidian is on in this vault, so two services sync it. Every change is uploaded twice, and you can get extra conflict copies. Use only one of them. To turn off Obsidian Sync, open **Settings → Core plugins** and turn off **Sync** on every device (see [Getting started](getting-started.md#install-the-plugin)).
+Obsidian Sync is set up for this vault, so two services sync it. Every change is uploaded twice, and you can get extra conflict copies. Use only one of them. To stop Obsidian Sync, do one of these on every device: open **Settings → Sync** and disconnect from the remote vault, or open **Settings → Core plugins** and turn off **Sync** (see [Getting started](getting-started.md#install-the-plugin)).
 
 ## A file is missing on one device
 

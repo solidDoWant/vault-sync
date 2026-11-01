@@ -14,7 +14,7 @@ vault-sync is not in Obsidian's list of community plugins yet. Install it with B
 
 Do these steps on each device that you want to sync.
 
-Do not use Obsidian Sync and vault-sync on the same vault. With two sync services, every change is uploaded twice, and you can get extra conflict copies. If the vault used Obsidian Sync before, turn it off on every device first: open **Settings → Sync** and disconnect from the remote vault, then open **Settings → Core plugins** and turn off **Sync**. While the Sync core plugin is on, the **Sync** section of the plugin's settings shows a warning.
+Do not use Obsidian Sync and vault-sync on the same vault. With two sync services, every change is uploaded twice, and you can get extra conflict copies. If the vault used Obsidian Sync before, turn it off on every device first: open **Settings → Sync** and disconnect from the remote vault, then open **Settings → Core plugins** and turn off **Sync**. While Obsidian Sync syncs the vault, the **Sync** section of the plugin's settings shows a warning. The **Sync** core plugin is on by default in every vault. If you never set up Obsidian Sync, it does not sync anything, and no warning shows.
 
 ## Enter the server address
 
