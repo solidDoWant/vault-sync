@@ -39,12 +39,11 @@ function refreshRelativeTimes(root: HTMLElement): void {
 }
 
 /**
- * Who made a version. A user's name shows in a box. A device shows in the
- * same box with a device icon: another device by its name, and this device
- * as "this device", tinted in the accent colour, which no name another
- * person chooses can have. Each box shows where the name starts and ends.
- * The quotes around names and the word "device" stay in the text, hidden,
- * so the row's text reads as userLabel and deviceLabel give it (whoText).
+ * Who made a version: "user via device". A user's name shows in a box, and
+ * a device in the same box with a device icon: another device by its name,
+ * and this device as "this device", tinted in the accent colour, which no
+ * name another person chooses can have. Each box shows where the name
+ * starts and ends (#548, #557).
  */
 function renderWho(parent: HTMLElement, parts: readonly WhoPart[]): void {
   const deviceIcon = (box: HTMLElement) => {
@@ -54,15 +53,11 @@ function renderWho(parent: HTMLElement, parts: readonly WhoPart[]): void {
     if ("name" in part) {
       const box = parent.createSpan({ cls: part.device === true ? "vault-sync-name is-device" : "vault-sync-name" });
       if (part.device === true) deviceIcon(box);
-      box.createSpan({ text: "“", cls: "vault-sync-text-only" });
       box.appendText(part.name);
-      box.createSpan({ text: "”", cls: "vault-sync-text-only" });
     } else if ("thisDevice" in part) {
       const box = parent.createSpan({ cls: "vault-sync-name is-device is-this-device", attr: { title: "This device" } });
       deviceIcon(box);
       box.appendText("this device");
-    } else if (part.textOnly === true) {
-      parent.createSpan({ text: part.text, cls: part.text === ", " ? "vault-sync-text-only vault-sync-who-via" : "vault-sync-text-only" });
     } else {
       parent.appendText(part.text);
     }
@@ -297,16 +292,13 @@ export class HistoryModal extends Modal {
     this.listEl.empty();
     this.entries.forEach((entry, index) => {
       const row = this.listEl.createDiv({ cls: "vault-sync-history-entry" });
-      // Three lines: when, what changed, and who. In the DOM, who comes before
-      // what with a hidden " · " between them, so the row's text reads as
-      // one line when copied.
+      // Three lines: when, what changed, and who (styles.css orders them).
       const parts = entryParts(entry, this.entries[index + 1], formatTime);
       const time = row.createDiv({ cls: "vault-sync-history-entry-time" });
       if (entry.createdAt === undefined) time.setText(parts.when);
       else renderRelativeTime(time, entry.createdAt);
       if (index === 0) time.createSpan({ text: " (current)", cls: "vault-sync-history-current" });
       renderWho(row.createDiv({ cls: "vault-sync-history-entry-who" }), whoParts(entry));
-      row.createSpan({ cls: "vault-sync-history-entry-separator", text: " · " });
       renderShown(row.createDiv({ cls: "vault-sync-history-entry-change" }), parts.change);
       row.dataset.revisionId = entry.revisionId;
       row.setAttribute("role", "button");

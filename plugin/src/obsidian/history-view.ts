@@ -144,39 +144,27 @@ export function sizeLabel(size: bigint | number): string {
 
 /**
  * Who committed a revision, in parts to render: plain text, another
- * person's name (`name`, shown and isolated as quotedName shows it), or
- * this device. Joined with each name in quotes, the parts read exactly as
- * `${userLabel}, ${deviceLabel}`; the history shows the names styled
- * instead of quoted, and this device as a mark another person's name cannot
- * look like.
+ * person's name (`name`, shown and isolated as quotedName shows it, `device`
+ * for a device's), or this device. The history shows each name in a box,
+ * which marks where it starts and ends, and this device as a box another
+ * person's name cannot get.
  */
-export type WhoPart =
-  /** Text; `textOnly` text reads in the row's text but is not shown, as the device icon says it. */
-  | { text: string; textOnly?: true }
-  /** Another person's name; `device` for a device's. */
-  | { name: string; device?: true }
-  | { thisDevice: true };
+export type WhoPart = { text: string } | { name: string; device?: true } | { thisDevice: true };
 
 export function whoParts(entry: Pick<HistoryEntry, "userId" | "userName" | "deviceId" | "deviceName" | "thisDevice">): WhoPart[] {
   const parts: WhoPart[] = [];
   const userName = shownName(entry.userName ?? "");
   if (userName !== "") parts.push({ name: isolated(userName) });
   else parts.push({ text: entry.userId === "" ? "an unknown user" : `user ${entry.userId.slice(0, 8)}` });
-  // Shown as " via " (styles.css); the text keeps the comma of deviceLabel's label.
-  parts.push({ text: ", ", textOnly: true });
+  parts.push({ text: " via " });
   if (entry.thisDevice) {
     parts.push({ thisDevice: true });
     return parts;
   }
   const deviceName = shownName(entry.deviceName ?? "");
-  if (deviceName !== "") parts.push({ text: "device ", textOnly: true }, { name: isolated(deviceName), device: true });
+  if (deviceName !== "") parts.push({ name: isolated(deviceName), device: true });
   else parts.push({ text: entry.deviceId === "" ? "an unknown device" : `device ${entry.deviceId.slice(0, 8)}` });
   return parts;
-}
-
-/** `parts` as text, each name in quotes: the same text as userLabel and deviceLabel give. */
-export function whoText(parts: readonly WhoPart[]): string {
-  return parts.map((part) => ("name" in part ? `“${part.name}”` : "thisDevice" in part ? "this device" : part.text)).join("");
 }
 
 /** A revision in the history list, in parts: when, by which user and device, and what happened. */

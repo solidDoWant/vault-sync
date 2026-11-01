@@ -156,22 +156,39 @@ function closeSettings() {
   });
 }
 
-/** The rows of the history view of `path` on the current device, without the characters that isolate names. */
-async function historyRows(path: string): Promise<string[]> {
+/** Who made a version, as a history row shows it: the user's name, the device's name, and whether that device is this one. */
+interface HistoryWho {
+  user: string;
+  device: string;
+  thisDevice: boolean;
+}
+
+/** Who made each version in the history view of `path` on the current device, read from the row's name boxes, without the characters that isolate names. */
+async function historyRows(path: string): Promise<HistoryWho[]> {
   await browser.executeObsidian(async ({ app }, id, filePath) => {
     await (app as unknown as Plugins).plugins.plugins[id]?.showHistory(filePath);
   }, pluginId, path);
-  let rows: string[] = [];
+  let rows: HistoryWho[] = [];
   await browser.waitUntil(
     async () => {
-      rows = await browser.executeObsidian(() => [...document.querySelectorAll<HTMLElement>(".vault-sync-history-entry")].map((row) => row.textContent));
+      rows = await browser.executeObsidian(() =>
+        [...document.querySelectorAll<HTMLElement>(".vault-sync-history-entry")].map((row) => {
+          const device = row.querySelector<HTMLElement>(".vault-sync-name.is-device");
+          return {
+            user: row.querySelector<HTMLElement>(".vault-sync-name:not(.is-device)")?.textContent ?? "",
+            device: device?.textContent ?? "",
+            thisDevice: device?.classList.contains("is-this-device") ?? false,
+          };
+        }),
+      );
       return rows.length > 0;
     },
     { timeoutMsg: `the history view of ${path} listed no revision` },
   );
   await browser.keys("Escape");
   await browser.waitUntil(async () => browser.executeObsidian(() => document.querySelector(".vault-sync-history") === null), { timeoutMsg: "the history view stayed open" });
-  return rows.map((row) => row.replace(/[⁦-⁩]/gu, ""));
+  const plain = (text: string) => text.replace(/[⁦-⁩]/gu, "");
+  return rows.map((row) => ({ ...row, user: plain(row.user), device: plain(row.device) }));
 }
 
 /** Opens the note at `path` in the current device's workspace. */
@@ -432,17 +449,20 @@ describe("a vault shared by two users", function () {
   it("[P3-02] history shows which user, and which of their devices, made each change", async function () {
     await use(a);
     const onOwner = await historyRows("Shared.md");
-    expect(onOwner).toHaveLength(3);
-    expect(onOwner[0]).toContain(`“${ownerName}”, this device · `);
-    expect(onOwner[1]).toContain(`“${memberName}”, device “${memberDevice}” · `);
-    expect(onOwner[2]).toContain(`“${ownerName}”, this device · `);
+    // Each version names its user and their device: this device, or another one by its name.
+    expect(onOwner).toEqual([
+      { user: ownerName, device: "this device", thisDevice: true },
+      { user: memberName, device: memberDevice, thisDevice: false },
+      { user: ownerName, device: "this device", thisDevice: true },
+    ]);
 
     await use(b);
     const onMember = await historyRows("Shared.md");
-    expect(onMember).toHaveLength(3);
-    expect(onMember[0]).toContain(`“${ownerName}”, device “${ownerDevice}” · `);
-    expect(onMember[1]).toContain(`“${memberName}”, this device · `);
-    expect(onMember[2]).toContain(`“${ownerName}”, device “${ownerDevice}” · `);
+    expect(onMember).toEqual([
+      { user: ownerName, device: ownerDevice, thisDevice: false },
+      { user: memberName, device: "this device", thisDevice: true },
+      { user: ownerName, device: ownerDevice, thisDevice: false },
+    ]);
   });
 
   it("[P3-03] two users edit the same lines: there is exactly one conflict copy, named after the user and device", async function () {
@@ -719,6 +739,6 @@ describe("a vault shared by two users", function () {
     await waitForIdle(b);
     expect((await syncStatus())?.state).toBe("idle");
     const history = await historyRows("Shared.md");
-    expect(history[history.length - 1]).toContain(`“${memberName}”, this device · `);
+    expect(history[history.length - 1]).toEqual({ user: memberName, device: "this device", thisDevice: true });
   });
 });

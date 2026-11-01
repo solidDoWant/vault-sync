@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { RestoreError, restorePathProblem, type HistoryEntry } from "../core/sync/history";
 import { posixPathRules } from "../core/vaultpath/platform";
 import { shownText } from "./display-text";
-import { alternativePath, changeLabel, deviceLabel, entryLabel, historyTitle, maxPreviewBytes, otherPathValue, previewOf, restoreFailureText, sizeLabel, userLabel, exactTime, relativeTime, whoParts, whoText } from "./history-view";
+import { alternativePath, changeLabel, deviceLabel, entryLabel, historyTitle, maxPreviewBytes, otherPathValue, previewOf, restoreFailureText, sizeLabel, userLabel, exactTime, relativeTime, whoParts } from "./history-view";
 
 const encoder = new TextEncoder();
 
@@ -240,28 +240,20 @@ describe("history view", () => {
 
 describe("whoParts", () => {
   it.each([
-    ["a named user on a named device", { userName: "Alice", deviceName: "Phone" }, [{ name: iso("Alice") }, { text: ", ", textOnly: true }, { text: "device ", textOnly: true }, { name: iso("Phone"), device: true }]],
-    ["a named user on this device", { userName: "Alice", thisDevice: true }, [{ name: iso("Alice") }, { text: ", ", textOnly: true }, { thisDevice: true }]],
-    ["an unnamed user on an unnamed device", {}, [{ text: "user 0190a5c4" }, { text: ", ", textOnly: true }, { text: "device 0190a5c4" }]],
-    ["no ids at all", { userId: "", deviceId: "" }, [{ text: "an unknown user" }, { text: ", ", textOnly: true }, { text: "an unknown device" }]],
+    ["a named user on a named device", { userName: "Alice", deviceName: "Phone" }, [{ name: iso("Alice") }, { text: " via " }, { name: iso("Phone"), device: true }]],
+    ["a named user on this device", { userName: "Alice", thisDevice: true }, [{ name: iso("Alice") }, { text: " via " }, { thisDevice: true }]],
+    ["an unnamed user on an unnamed device", {}, [{ text: "user 0190a5c4" }, { text: " via " }, { text: "device 0190a5c4" }]],
+    ["no ids at all", { userId: "", deviceId: "" }, [{ text: "an unknown user" }, { text: " via " }, { text: "an unknown device" }]],
   ])("splits who made the revision for %s", (_, overrides, expected) => {
     expect(whoParts(entry(overrides))).toEqual(expected);
   });
 
-  it.each([
-    { userName: "Alice", deviceName: "Phone" },
-    { userName: "Alice", thisDevice: true },
-    { userName: "this device", deviceName: "this device" },
-    {},
-    { userId: "", deviceId: "" },
-    { userName: "\u202Eevil\u200B", deviceName: "  \u2066x  " },
-  ])("reads as userLabel and deviceLabel do when the names are quoted (%o)", (overrides) => {
-    const revision = entry(overrides);
-    expect(whoText(whoParts(revision))).toBe(`${userLabel(revision)}, ${deviceLabel(revision)}`);
+  it("shows another person's names as shownName shows them, isolated", () => {
+    expect(whoParts(entry({ userName: "\u202Eevil\u200B", deviceName: "  Pho\u200Bne  " }))).toEqual([{ name: iso("evil") }, { text: " via " }, { name: iso("Phone"), device: true }]);
   });
 
   it("never marks another device as this device, whatever its name", () => {
-    expect(whoParts(entry({ deviceName: "this device" }))).not.toContainEqual({ thisDevice: true });
+    expect(whoParts(entry({ deviceName: "this device" }))).toEqual([{ text: "user 0190a5c4" }, { text: " via " }, { name: iso("this device"), device: true }]);
   });
 });
 

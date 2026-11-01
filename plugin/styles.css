@@ -184,8 +184,7 @@ input.vault-sync-field-invalid {
 /*
  * Who made a version: a user's name in a box, a device in the same box with
  * a device icon. This device's box is tinted in the accent colour, which a
- * name another person chooses cannot have. The quotes and the word "device"
- * stay in the text, hidden.
+ * name another person chooses cannot have.
  */
 .vault-sync-name {
   display: inline-flex;
@@ -217,26 +216,6 @@ input.vault-sync-field-invalid {
   color: var(--text-accent);
 }
 
-.vault-sync-text-only {
-  display: none;
-}
-
-/* Between the user and the device: " via ", drawn here so that the row's text keeps its comma. */
-.vault-sync-history-entry-who .vault-sync-who-via {
-  display: inline;
-  font-size: 0;
-}
-
-.vault-sync-history-entry-who .vault-sync-who-via::before {
-  content: " via ";
-  font-size: var(--font-ui-smaller);
-  white-space: pre;
-}
-
-/* Joins who and what in the row's text, which shows them on lines of their own. */
-.vault-sync-history-entry-separator {
-  display: none;
-}
 
 .vault-sync-history-current {
   font-weight: var(--font-normal);
