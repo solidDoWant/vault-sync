@@ -407,7 +407,7 @@ export class HistoryModal extends Modal {
     }
   }
 
-  /** The version before `entry`, loading older versions if it is not listed yet; undefined for the earliest kept version. */
+  /** The version before `entry`, loading older versions if it is not listed yet; undefined for the oldest kept version. */
   private async previousOf(entry: HistoryEntry): Promise<HistoryEntry | undefined> {
     for (;;) {
       const index = this.entries.indexOf(entry);
@@ -437,7 +437,7 @@ export class HistoryModal extends Modal {
     if (this.selected?.entry !== entry || !viewOptions.changes || after === undefined) return;
     previewEl.empty();
     if (previous === undefined || before === undefined) {
-      previewEl.createEl("p", { text: "This is the earliest kept version, so there is nothing to compare it with.", cls: "vault-sync-history-hint" });
+      previewEl.createEl("p", { text: "This is the oldest kept version, so there is nothing to compare it with.", cls: "vault-sync-history-hint" });
       this.renderVersion(after, Number(entry.size));
       return;
     }

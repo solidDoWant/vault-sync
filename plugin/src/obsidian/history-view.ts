@@ -202,16 +202,19 @@ export function entryLabel(entry: HistoryEntry, previous: HistoryEntry | undefin
 
 /**
  * What a revision changed relative to the one before it (`previous`, the next
- * older entry). Paths are another member's text: shown as visiblePath shows
- * them (#555), each laid out on its own (Shown, #605).
+ * older entry). The view's title and the list show where the document is,
+ * so a label names a path only for a move: where the document was before.
+ * Paths are another member's text: shown as visiblePath shows them (#555),
+ * each laid out on its own (Shown, #605).
  */
 export function changeLabel(entry: HistoryEntry, previous: HistoryEntry | undefined): Shown {
-  const path = shownPath(entry.path);
-  if (entry.deleted) return ["deleted ", path];
-  // The document's first revision, or the oldest that retention kept.
-  if (previous === undefined) return ["earliest kept version of ", path];
-  if (previous.deleted) return ["restored ", path];
-  if (previous.path !== entry.path) return previous.contentHash === entry.contentHash ? ["moved to ", path] : ["moved to ", path, " and edited"];
+  if (entry.deleted) return ["deleted"];
+  // The document's first revision, or the oldest that retention kept: the
+  // server does not say which (an empty parent_rev_id means either).
+  if (previous === undefined) return ["oldest kept version"];
+  const from = shownPath(previous.path);
+  if (previous.deleted) return previous.path === entry.path ? ["restored"] : ["restored and moved from ", from];
+  if (previous.path !== entry.path) return previous.contentHash === entry.contentHash ? ["moved from ", from] : ["moved from ", from, " and edited"];
   return ["edited"];
 }
 

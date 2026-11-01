@@ -54,7 +54,7 @@ The history window has three parts, from left to right:
 Each version in the list shows, on three lines:
 
 1. How long ago the server received the version, for example `5 minutes ago` or `3 days ago`. To see the exact date and time, with your time zone, hold the pointer over it. The newest version is marked `(current)`.
-2. What changed: edited, moved, deleted or restored.
+2. What changed: edited, moved (with the place that the file was moved from), deleted or restored. The oldest version in the list is marked **Oldest kept version**. It is the version that created the file, unless the server already removed older versions (see [History](#history)).
 3. Which user made it, by the name from their login or by the start of their user id, and which device: another device by its name, your own device as **this device**, or a device by the start of its id. Each name is in a box, so you can see where it starts and ends, and a device has a device icon. The box of your own device has the accent color, so a device that another person named "this device" does not look like yours.
 
 Every member of a vault sees the names of the devices that changed its files.

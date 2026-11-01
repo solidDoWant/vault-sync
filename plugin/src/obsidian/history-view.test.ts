@@ -88,26 +88,28 @@ describe("history view", () => {
 
     it("says what each revision changed", () => {
       const base = entry({ contentHash: "aa" });
-      expect(shownText(changeLabel(base, undefined))).toBe("earliest kept version of plan.md");
+      expect(shownText(changeLabel(base, undefined))).toBe("oldest kept version");
       expect(shownText(changeLabel(entry({ contentHash: "bb" }), base))).toBe("edited");
-      expect(shownText(changeLabel(entry({ path: "moved.md" }), base))).toBe("moved to moved.md");
-      expect(shownText(changeLabel(entry({ path: "moved.md", contentHash: "bb" }), base))).toBe("moved to moved.md and edited");
-      expect(shownText(changeLabel(entry({ deleted: true }), base))).toBe("deleted plan.md");
-      expect(shownText(changeLabel(base, entry({ deleted: true })))).toBe("restored plan.md");
+      // A move names where the document was: where it is shows in the title and the newer versions.
+      expect(shownText(changeLabel(entry({ path: "moved.md" }), base))).toBe("moved from plan.md");
+      expect(shownText(changeLabel(entry({ path: "moved.md", contentHash: "bb" }), base))).toBe("moved from plan.md and edited");
+      expect(shownText(changeLabel(entry({ deleted: true }), base))).toBe("deleted");
+      expect(shownText(changeLabel(base, entry({ deleted: true })))).toBe("restored");
+      expect(shownText(changeLabel(entry({ path: "elsewhere.md" }), entry({ deleted: true })))).toBe("restored and moved from plan.md");
     });
 
     it("names each version's user and device", () => {
       const alice = entry({ userName: "Alice Example", deviceName: "Laptop" });
       const bob = entry({ userId: "0190a5c4-7e1f-7000-8000-0000000000bb", userName: "bob", deviceName: "Phone", contentHash: "bb" });
       expect(shownText(entryLabel(bob, alice, () => "then"))).toBe(`then · “${iso("bob")}”, device “${iso("Phone")}” · edited`);
-      expect(shownText(entryLabel(alice, undefined, () => "then"))).toBe(`then · “${iso("Alice Example")}”, device “${iso("Laptop")}” · earliest kept version of plan.md`);
+      expect(shownText(entryLabel(alice, undefined, () => "then"))).toBe(`then · “${iso("Alice Example")}”, device “${iso("Laptop")}” · oldest kept version`);
       expect(userLabel(entry({ userName: "\u202e\u200b" }))).toBe("user 0190a5c4");
       expect(userLabel(entry({ userId: "" }))).toBe("an unknown user");
     });
 
     it("puts time, user, device and change on one line", () => {
       const formatTime = (date: Date) => date.toISOString();
-      expect(shownText(entryLabel(entry({ thisDevice: true }), undefined, formatTime))).toBe("2026-01-02T03:04:00.000Z · user 0190a5c4, this device · earliest kept version of plan.md");
+      expect(shownText(entryLabel(entry({ thisDevice: true }), undefined, formatTime))).toBe("2026-01-02T03:04:00.000Z · user 0190a5c4, this device · oldest kept version");
       expect(shownText(entryLabel(entry({ createdAt: undefined }), undefined, formatTime))).toMatch(/^unknown time · /);
     });
 
@@ -132,7 +134,7 @@ describe("history view", () => {
     });
 
     it("isolates another device's name, so right-to-left letters cannot reorder the label and a trailing mark stays inside (#557)", () => {
-      expect(shownText(entryLabel(entry({ deviceName: "حاسوب 2" }), undefined, () => "then"))).toBe(`then · user 0190a5c4, device “${iso("حاسوب 2")}” · earliest kept version of plan.md`);
+      expect(shownText(entryLabel(entry({ deviceName: "حاسوب 2" }), undefined, () => "then"))).toBe(`then · user 0190a5c4, device “${iso("حاسوب 2")}” · oldest kept version`);
       expect(deviceLabel(entry({ deviceName: "Phone\u0301" }))).toBe(`device “${iso("Phone\u0301")}”`);
     });
 
@@ -146,20 +148,17 @@ describe("history view", () => {
       ["zero-width characters", "pay\u200bpal\u200d.md", "pay\\u200Bpal\\u200D.md"],
       ["bidi isolates", "a\u2066b\u2069.md", "a\\u2066b\\u2069.md"],
     ])("shows %s in another member's path visibly (#555)", (_, path, shown) => {
-      const base = entry({ contentHash: "aa" });
-      expect(shownText(changeLabel(entry({ path }), base))).toBe(`moved to ${shown}`);
-      expect(shownText(changeLabel(entry({ path, contentHash: "bb" }), base))).toBe(`moved to ${shown} and edited`);
-      expect(shownText(changeLabel(entry({ path, deleted: true }), base))).toBe(`deleted ${shown}`);
-      expect(shownText(changeLabel(entry({ path }), entry({ deleted: true })))).toBe(`restored ${shown}`);
-      expect(shownText(changeLabel(entry({ path }), undefined))).toBe(`earliest kept version of ${shown}`);
+      const before = entry({ path, contentHash: "aa" });
+      expect(shownText(changeLabel(entry({ path: "new.md" }), before))).toBe(`moved from ${shown}`);
+      expect(shownText(changeLabel(entry({ path: "new.md", contentHash: "bb" }), before))).toBe(`moved from ${shown} and edited`);
+      expect(shownText(changeLabel(entry({ path: "new.md" }), entry({ path, deleted: true })))).toBe(`restored and moved from ${shown}`);
     });
 
     it("keeps each path of a label apart, for the view to lay it out on its own (#605)", () => {
       const path = "ملاحظات/خطة.md";
-      const base = entry({ contentHash: "aa" });
-      expect(changeLabel(entry({ path, contentHash: "bb" }), base)).toEqual(["moved to ", { path }, " and edited"]);
-      expect(changeLabel(entry({ path, deleted: true }), base)).toEqual(["deleted ", { path }]);
-      expect(entryLabel(entry({ path, deleted: true }), base, () => "then")).toEqual(["then · user 0190a5c4, device 0190a5c4 · ", "deleted ", { path }]);
+      const before = entry({ path, contentHash: "aa" });
+      expect(changeLabel(entry({ contentHash: "bb" }), before)).toEqual(["moved from ", { path }, " and edited"]);
+      expect(entryLabel(entry({}), before, () => "then")).toEqual(["then · user 0190a5c4, device 0190a5c4 · ", "moved from ", { path }]);
       expect(historyTitle(path)).toEqual(["History of ", { path }]);
       expect(historyTitle("a\u202e.md")).toEqual(["History of ", { path: "a\\u202E.md" }]);
     });
