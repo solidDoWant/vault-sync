@@ -160,7 +160,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
       new Setting(containerEl)
         .setName("Obsidian Sync is also on")
         .setDesc(
-          "This vault also syncs with Obsidian Sync. With two sync services, every change is uploaded twice, and you can get extra conflict copies. Use only one. To turn off Obsidian Sync, open Settings → Core plugins and turn off Sync.",
+          "This vault also syncs with Obsidian Sync. With two sync services, every change is uploaded twice, and you can get extra conflict copies. Use only one. To stop it, open Settings → Sync and disconnect from the remote vault, or turn off Sync in Settings → Core plugins.",
         )
         .settingEl.addClass("vault-sync-obsidian-sync-warning");
     }
