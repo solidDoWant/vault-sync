@@ -4,15 +4,15 @@ All notable changes to vault-sync are listed here, newest release first.
 
 ## 0.4.4
 
-vault-sync is a self-hosted replacement for Obsidian Sync. It has two parts: an Obsidian plugin, and a sync server that stores its data in PostgreSQL and S3. This release changes only the server. It fixes a start-up failure when S3 sits behind a proxy or gateway that supports HTTP/2. To install it, use the server image `ghcr.io/soliddowant/vault-sync:0.4.4` or the Helm chart `oci://ghcr.io/soliddowant/charts/vault-sync` (version 0.4.4). You can upgrade a 0.4.3 server one replica at a time. The plugin has no changes.
+vault-sync is a self-hosted replacement for Obsidian Sync. It has two parts: an Obsidian plugin, and a sync server that stores its data in PostgreSQL and S3. This release changes only the server, and only how it connects to S3. It fixes a server that cannot reach S3 when a proxy or gateway that offers HTTP/2 sits in front of the S3 endpoint. To install it, use the server image `ghcr.io/soliddowant/vault-sync:0.4.4` or the Helm chart `oci://ghcr.io/soliddowant/charts/vault-sync` (version 0.4.4). It has no database migration and no new setting, so you can upgrade a 0.4.3 server one replica at a time. The plugin has no changes.
 
 ### Fixes
 
-- The server no longer fails its S3 check with `HeadBucket ... EOF` when the S3 endpoint is behind an HTTP/2 gateway, for example Envoy or Istio in front of Ceph RGW. The server speaks only HTTP/1.1 to S3, so that each connection carries one request and the idle timeout works. But the TLS handshake still offered HTTP/2, so a gateway that supports it chose HTTP/2, got HTTP/1.1 text, and closed the connection. The handshake now offers only HTTP/1.1, with and without a custom CA file. ([#1467](https://github.com/solidDoWant/vault-sync/pull/1467))
+- The server no longer fails its S3 requests when a proxy or gateway in front of S3 offers HTTP/2, for example an Envoy or Istio gateway. Before, the server's start-up check failed with `HeadBucket ... EOF`, and the server restarted in a loop. The server talks to S3 only over HTTP/1.1, but its TLS handshake still offered HTTP/2. A proxy that supports HTTP/2 chose it, got an HTTP/1.1 request, and closed the connection. The handshake now offers only HTTP/1.1, both with and without `VAULT_SYNC_S3_TLS_CA_FILE`. An S3 endpoint that does not offer HTTP/2 was not affected. The problem started in 0.3.0. ([#1467](https://github.com/solidDoWant/vault-sync/pull/1467))
 
 ### Known issues
 
-- None known. No bug is open, and no item of this release was deferred.
+- None known.
 
 ## 0.4.3
 
