@@ -2,6 +2,27 @@
 
 All notable changes to vault-sync are listed here, newest release first.
 
+## 0.4.6
+
+vault-sync is a self-hosted replacement for Obsidian Sync. It has two parts: an Obsidian plugin, and a sync server that stores its data in PostgreSQL and S3. This release shows each user's name instead of `user` and the start of their user ID, when the identity provider sends the name. It also makes the plugin's **Sharing** section offer either **Leave vault** or **Delete vault**, and fixes a dashboard panel that counted normal client errors as failures. Install the plugin with BRAT from the GitHub releases of this repository. To install the server, use the server image `ghcr.io/soliddowant/vault-sync:0.4.6` or the Helm chart `oci://ghcr.io/soliddowant/charts/vault-sync` (version 0.4.6). It has no database migration and no new setting, so you can upgrade a 0.4.5 server one replica at a time.
+
+### Upgrade notes for admins
+
+- The plugin and the `import` subcommand now ask the identity provider for the `profile` scope. Most providers then add the user's name to the access token, and the members list, the history and the names of conflict copies show it. In Authentik, select the `profile` mapping among the scopes of the vault-sync provider. A user who signed in before this release must sign out and sign in again in the plugin to get their name, because a refreshed token keeps the scopes of the first sign-in. ([#1475](https://github.com/solidDoWant/vault-sync/pull/1475))
+
+### Plugin
+
+- The **Sharing** section shows either **Leave vault** or **Delete vault**, never both. The last owner of a vault cannot leave it, so they see **Delete vault**, with a note that says why. Everyone else sees **Leave vault**, also an owner who shares ownership. To delete a vault that has more than one owner, the other owners must first leave, or you must change their role. ([#1474](https://github.com/solidDoWant/vault-sync/pull/1474))
+- The settings tab asks the server for the state of your encryption key once each time it opens, not twice. ([#1473](https://github.com/solidDoWant/vault-sync/pull/1473))
+
+### Server and deployment
+
+- The **RPC error ratio (5m)** panel on the **vault-sync / Overview** dashboard counts only server errors (`internal`, `unavailable` and `unknown`), the same errors as the `VaultSyncRPCErrorRatioHigh` alert. Before, it also counted client errors that are part of normal use, for example the `not_found` that `GetUserKeyParams` answers for a user without end-to-end encryption. The **RPC errors by code** and **Query errors** panels now say which errors are expected. ([#1472](https://github.com/solidDoWant/vault-sync/pull/1472))
+
+### Known issues
+
+- The screenshots of the settings in the user guide still show the text from 0.4.4.
+
 ## 0.4.5
 
 vault-sync is a self-hosted replacement for Obsidian Sync. It has two parts: an Obsidian plugin, and a sync server that stores its data in PostgreSQL and S3. This release changes the settings tab of the plugin, and the runbook links of the Helm chart. The settings are shorter and easier to read, and the plugin now tells you about a problem when you make a choice, not after it. Install the plugin with BRAT from the GitHub releases of this repository. The server image `ghcr.io/soliddowant/vault-sync:0.4.5` has no changes from 0.4.4. The Helm chart `oci://ghcr.io/soliddowant/charts/vault-sync` (version 0.4.5) changes only the links in its alerts. It has no database migration and no new setting, so you can upgrade a 0.4.4 server one replica at a time.
