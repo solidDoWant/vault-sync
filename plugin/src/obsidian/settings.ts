@@ -828,7 +828,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
     let escrowToggle: ToggleComponent | undefined;
     new Setting(containerEl)
       .setName("Create a vault")
-      .setDesc("Create a vault on the server and sync this vault with it.")
+      .setDesc("Create a vault on the server with this name, and sync this Obsidian vault with it. Other members see this name.")
       .addText((text) =>
         text.setValue(name).onChange((value) => {
           name = value;
@@ -850,15 +850,35 @@ export class VaultSyncSettingTab extends PluginSettingTab {
           }
         }),
       );
-    new Setting(containerEl)
-      .setName("End-to-end encryption")
-      .setDesc("Encrypt notes and file names so the server cannot read them. Needs encryption turned on and unlocked above.")
-      .addToggle((toggle) =>
-        toggle.setValue(encrypted).onChange((value) => {
+    const encryptionSetting = new Setting(containerEl).setName("End-to-end encryption").setDesc("Encrypt notes and file names so the server cannot read them.");
+    let encryptionToggle: ToggleComponent | undefined;
+    encryptionSetting.addToggle((toggle) => {
+      encryptionToggle = toggle;
+      // Off until this device's encryption key is known to be unlocked: an encrypted vault needs it.
+      toggle
+        .setValue(encrypted)
+        .setDisabled(true)
+        .onChange((value) => {
           encrypted = value;
           updateEscrowToggle();
-        }),
-      );
+        });
+    });
+    void host.encryptionState().then(
+      (state) => {
+        if (state === "unlocked") {
+          encryptionToggle?.setDisabled(false);
+          return;
+        }
+        encryptionSetting.setDesc(
+          state === "not-enabled"
+            ? "Encrypt notes and file names so the server cannot read them. To use it, turn on encryption for your account first (End-to-end encryption, above)."
+            : "Encrypt notes and file names so the server cannot read them. To use it, unlock your encryption key first (End-to-end encryption, above).",
+        );
+      },
+      (error: unknown) => {
+        encryptionSetting.setDesc(`Could not check encryption: ${errorMessage(error)}`);
+      },
+    );
     const escrowSetting = new Setting(containerEl).setName("Escrow").setDesc("Loading the server's escrow setting…");
     // Escrow only applies to an encrypted vault, so it shows only while End-to-end encryption is on.
     const updateEscrowToggle = () => {

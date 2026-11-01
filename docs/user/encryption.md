@@ -53,7 +53,7 @@ The server now has a different key for your account than this device has, for ex
 
 ## Create an encrypted vault
 
-When you create a vault (see [Getting started](getting-started.md#connect-a-vault)), turn on **End-to-end encryption**. Your key must be unlocked on this device. You choose this once, when you create the vault. You can also convert a plaintext vault later (see below).
+When you create a vault (see [Getting started](getting-started.md#connect-a-vault)), turn on **End-to-end encryption**. You can turn it on only when your key is unlocked on this device. Until then, the setting is greyed out and tells you what to do first. You choose this once, when you create the vault. You can also convert a plaintext vault later (see below).
 
 ## Escrow
 
