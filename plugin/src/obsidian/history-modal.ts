@@ -4,8 +4,8 @@ import { RestoreError, type HistoryDocument, type HistoryEntry } from "../core/s
 import { shownPath, type Shown } from "./display-text";
 import { diffCounts, foldUnchanged, isFold, lineDiff, matchingDocuments, revertChange, sideBySide, withWordChanges, type DiffLine, type Segment, type SideRow } from "./history-diff";
 import { documentTree, foldersOf, type TreeNode } from "./history-tree";
-import { entryParts, historyTitle, maxPreviewBytes, otherPathValue, previewOf, restoreFailureText, sizeLabel, type Preview } from "./history-view";
-import { renderShown, shownFragment } from "./shown-dom";
+import { entryParts, exactTime, historyTitle, maxPreviewBytes, otherPathValue, previewOf, relativeTime, restoreFailureText, sizeLabel, whoParts, type Preview, type WhoPart } from "./history-view";
+import { pathClass, renderShown, shownFragment } from "./shown-dom";
 import type { VaultHistory } from "./session";
 import { errorMessage } from "./status";
 
@@ -20,6 +20,49 @@ const maxListedFiles = 500;
 const viewOptions = { changes: false, sideBySide: false };
 
 const strictDecoder = new TextDecoder("utf-8", { fatal: true });
+
+/** The class of the times refreshRelativeTimes keeps current. */
+const relativeTimeClass = "vault-sync-relative-time";
+
+/** `date` as how long ago it was, like GitHub shows it, with the exact date and time, its time zone named, on hover. */
+function renderRelativeTime(parent: HTMLElement, date: Date): void {
+  parent.createEl("time", { cls: relativeTimeClass, text: relativeTime(date, new Date()), attr: { datetime: date.toISOString(), title: exactTime(date) } });
+}
+
+/** Brings every relative time under `root` up to date. */
+function refreshRelativeTimes(root: HTMLElement): void {
+  const now = new Date();
+  for (const time of Array.from(root.querySelectorAll<HTMLTimeElement>(`time.${relativeTimeClass}`))) {
+    const date = new Date(time.dateTime);
+    if (!Number.isNaN(date.getTime())) time.setText(relativeTime(date, now));
+  }
+}
+
+/**
+ * Who made a version: "user via device". A user's name shows in a box, and
+ * a device in the same box with a device icon: another device by its name,
+ * and this device as "this device", tinted in the accent colour, which no
+ * name another person chooses can have. Each box shows where the name
+ * starts and ends (#548, #557).
+ */
+function renderWho(parent: HTMLElement, parts: readonly WhoPart[]): void {
+  const deviceIcon = (box: HTMLElement) => {
+    setIcon(box.createSpan({ cls: "vault-sync-name-icon" }), "monitor-smartphone");
+  };
+  for (const part of parts) {
+    if ("name" in part) {
+      const box = parent.createSpan({ cls: part.device === true ? "vault-sync-name is-device" : "vault-sync-name" });
+      if (part.device === true) deviceIcon(box);
+      box.appendText(part.name);
+    } else if ("thisDevice" in part) {
+      const box = parent.createSpan({ cls: "vault-sync-name is-device is-this-device", attr: { title: "This device" } });
+      deviceIcon(box);
+      box.appendText("this device");
+    } else {
+      parent.appendText(part.text);
+    }
+  }
+}
 
 /** A line of a comparison, with the parts a change touched marked when it is one of a changed pair (withWordChanges). */
 function renderLineText(parent: HTMLElement, text: string, segments: Segment[] | undefined): void {
@@ -53,6 +96,8 @@ export class HistoryModal extends Modal {
   private readonly previews = new Map<string, Uint8Array>();
   /** The folders open in the file tree. While a search is typed, every folder shows open. */
   private readonly openFolders = new Set<string>();
+  /** Keeps the relative times of the versions current while the view is open. */
+  private timeRefresh: number | undefined;
   /** Whether folded unchanged lines are shown, for the selected version. */
   private unfolded = false;
   /** Counts the documents opened, so a late answer for an earlier one is dropped. */
@@ -100,6 +145,9 @@ export class HistoryModal extends Modal {
     this.previewEl = contentPane.createDiv({ cls: "vault-sync-history-preview" });
     this.actionsEl = contentPane.createDiv({ cls: "vault-sync-history-actions" });
     this.canRestore = this.readCanRestore();
+    this.timeRefresh = window.setInterval(() => {
+      refreshRelativeTimes(this.contentEl);
+    }, 30_000);
     void this.loadDocuments();
     if (this.document === undefined) {
       this.listEl.createEl("p", { text: "Choose a file to see its versions.", cls: "vault-sync-history-hint" });
@@ -111,6 +159,7 @@ export class HistoryModal extends Modal {
   }
 
   override onClose(): void {
+    window.clearInterval(this.timeRefresh);
     this.contentEl.empty();
   }
 
@@ -125,8 +174,27 @@ export class HistoryModal extends Modal {
 
   private showTitle(): void {
     this.titleEl.empty();
-    if (this.document === undefined) this.titleEl.setText("Sync history");
-    else renderShown(this.titleEl, historyTitle(this.document.path));
+    if (this.document === undefined) {
+      this.titleEl.setText("Sync history");
+      return;
+    }
+    // "History of" as a label, then the path in a box: its folders muted and the file's name in bold.
+    for (const part of historyTitle(this.document.path)) {
+      if (typeof part === "string") {
+        this.titleEl.createSpan({ text: part, cls: "vault-sync-history-title-label" });
+        continue;
+      }
+      renderShown(this.titleEl, [part]);
+    }
+    const pathEl = this.titleEl.querySelector<HTMLElement>(`.${pathClass}`);
+    if (pathEl === null) return;
+    // The path element stays as renderShown made it, isolated, with the whole path as its text.
+    const text = pathEl.textContent;
+    const slash = text.lastIndexOf("/");
+    pathEl.empty();
+    pathEl.addClass("vault-sync-history-title-path");
+    if (slash !== -1) pathEl.createSpan({ text: text.slice(0, slash + 1), cls: "vault-sync-history-title-folder" });
+    pathEl.createSpan({ text: text.slice(slash + 1), cls: "vault-sync-history-title-file" });
   }
 
   /** The synced files to search (VaultHistory.documents); without it, only the file the view opened with. */
@@ -243,14 +311,13 @@ export class HistoryModal extends Modal {
     this.listEl.empty();
     this.entries.forEach((entry, index) => {
       const row = this.listEl.createDiv({ cls: "vault-sync-history-entry" });
-      // Three lines: when, what changed, and who. In the DOM, who comes before
-      // what with a hidden " · " between them, so the row's text reads as
-      // one line when copied.
+      // Three lines: when, what changed, and who (styles.css orders them).
       const parts = entryParts(entry, this.entries[index + 1], formatTime);
-      const time = row.createDiv({ cls: "vault-sync-history-entry-time", text: parts.when });
+      const time = row.createDiv({ cls: "vault-sync-history-entry-time" });
+      if (entry.createdAt === undefined) time.setText(parts.when);
+      else renderRelativeTime(time, entry.createdAt);
       if (index === 0) time.createSpan({ text: " (current)", cls: "vault-sync-history-current" });
-      row.createDiv({ cls: "vault-sync-history-entry-who", text: parts.who });
-      row.createSpan({ cls: "vault-sync-history-entry-separator", text: " · " });
+      renderWho(row.createDiv({ cls: "vault-sync-history-entry-who" }), whoParts(entry));
       renderShown(row.createDiv({ cls: "vault-sync-history-entry-change" }), parts.change);
       row.dataset.revisionId = entry.revisionId;
       row.setAttribute("role", "button");
@@ -351,7 +418,7 @@ export class HistoryModal extends Modal {
     }
   }
 
-  /** The version before `entry`, loading older versions if it is not listed yet; undefined for the earliest kept version. */
+  /** The version before `entry`, loading older versions if it is not listed yet; undefined for the oldest kept version. */
   private async previousOf(entry: HistoryEntry): Promise<HistoryEntry | undefined> {
     for (;;) {
       const index = this.entries.indexOf(entry);
@@ -381,7 +448,7 @@ export class HistoryModal extends Modal {
     if (this.selected?.entry !== entry || !viewOptions.changes || after === undefined) return;
     previewEl.empty();
     if (previous === undefined || before === undefined) {
-      previewEl.createEl("p", { text: "This is the earliest kept version, so there is nothing to compare it with.", cls: "vault-sync-history-hint" });
+      previewEl.createEl("p", { text: "This is the oldest kept version, so there is nothing to compare it with.", cls: "vault-sync-history-hint" });
       this.renderVersion(after, Number(entry.size));
       return;
     }

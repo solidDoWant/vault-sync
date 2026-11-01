@@ -57,6 +57,32 @@ input.vault-sync-field-invalid {
  * synced files, the chosen file's versions and the chosen version side by
  * side. Narrow windows and phones stack the three panes.
  */
+/* The title: "History of" as a label, then the file's path in a box, its folders muted and its name in bold. */
+.vault-sync-history-title-label {
+  color: var(--text-muted);
+  font-weight: var(--font-normal);
+}
+
+.vault-sync-history-title-path {
+  padding: var(--size-2-1) var(--size-4-2);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background-color: var(--background-secondary);
+  font-family: var(--font-monospace);
+  font-size: 0.85em;
+  overflow-wrap: anywhere;
+}
+
+.vault-sync-history-title-folder {
+  color: var(--text-muted);
+  font-weight: var(--font-normal);
+}
+
+.vault-sync-history-title-file {
+  color: var(--text-normal);
+  font-weight: var(--font-semibold);
+}
+
 .modal.vault-sync-history {
   width: min(1280px, 95vw);
   max-width: 95vw;
@@ -156,6 +182,11 @@ input.vault-sync-field-invalid {
   overflow-wrap: anywhere;
 }
 
+/* "yesterday" and "now" come lower case from Intl.RelativeTimeFormat. */
+.vault-sync-history-entry-time::first-letter {
+  text-transform: uppercase;
+}
+
 .vault-sync-history-entry-time {
   order: 1;
   font-weight: var(--font-semibold);
@@ -172,14 +203,50 @@ input.vault-sync-field-invalid {
 
 .vault-sync-history-entry-who {
   order: 3;
+  /* Centred in a row: a box with an icon has the icon's baseline, which would put it off the line of the text. */
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--size-2-2);
   color: var(--text-muted);
   font-size: var(--font-ui-smaller);
 }
 
-/* Joins who and what in the row's text, which shows them on lines of their own. */
-.vault-sync-history-entry-separator {
-  display: none;
+/*
+ * Who made a version: a user's name in a box, a device in the same box with
+ * a device icon. This device's box is tinted in the accent colour, which a
+ * name another person chooses cannot have.
+ */
+.vault-sync-name {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--size-2-1);
+  padding: 0 var(--size-2-2);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background-color: var(--background-secondary);
+  color: var(--text-normal);
 }
+
+.vault-sync-name-icon {
+  display: flex;
+  color: var(--text-muted);
+}
+
+.vault-sync-name-icon svg {
+  width: var(--icon-xs);
+  height: var(--icon-xs);
+}
+
+.vault-sync-name.is-this-device {
+  border-color: hsla(var(--interactive-accent-hsl), 0.5);
+  background-color: hsla(var(--interactive-accent-hsl), 0.12);
+}
+
+.vault-sync-name.is-this-device .vault-sync-name-icon {
+  color: var(--text-accent);
+}
+
 
 .vault-sync-history-current {
   font-weight: var(--font-normal);

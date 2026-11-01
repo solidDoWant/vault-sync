@@ -169,7 +169,8 @@ describe("history and restore", function () {
     }, pluginId, note);
     await browser.waitUntil(async () => (await historyRows()).length === 2, { timeoutMsg: "the history view never listed two revisions" });
     const rows = await historyRows();
-    for (const row of rows) expect(row).toContain(", this device · ");
+    // Each version names the device that made it: this one.
+    expect(await browser.executeObsidian(() => [...document.querySelectorAll<HTMLElement>(".vault-sync-history-entry")].map((row) => row.querySelector(".vault-sync-name.is-this-device") !== null))).toEqual([true, true]);
     expect(rows[0]).toContain("(current)");
     // The path in the title is laid out on its own (#605).
     expect(await renderedPaths(".modal-title")).toEqual(isolated(note));
