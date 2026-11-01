@@ -102,8 +102,12 @@ export class IdentityProviderError extends Error {
   }
 }
 
-/** The scopes requested at sign-in: `offline_access` asks for a refresh token. */
-export const defaultScope = "openid offline_access";
+/**
+ * The scopes requested at sign-in: `profile` asks for the user's name (the
+ * `name` and `preferred_username` claims the server shows to other members),
+ * and `offline_access` asks for a refresh token.
+ */
+export const defaultScope = "openid profile offline_access";
 
 /** Responses larger than this are refused before they are parsed. */
 const maxResponseBytes = 64 * 1024;
