@@ -2,6 +2,26 @@
 
 All notable changes to vault-sync are listed here, newest release first.
 
+## 0.4.8
+
+vault-sync is a self-hosted replacement for Obsidian Sync. It has two parts: an Obsidian plugin, and a sync server that stores its data in PostgreSQL and S3. This release changes only the plugin. It makes the history window easier to read, and it fixes a warning about Obsidian Sync that showed in every vault. Install the plugin with BRAT from the GitHub releases of this repository. The server image `ghcr.io/soliddowant/vault-sync:0.4.8` and the Helm chart `oci://ghcr.io/soliddowant/charts/vault-sync` (version 0.4.8) have no changes from 0.4.7, so you do not have to upgrade the server.
+
+### Fixes
+
+- The warning "Obsidian Sync is also on" no longer shows in a vault that does not use Obsidian Sync. The **Sync** core plugin of Obsidian is on by default in every vault, and 0.4.7 showed the warning whenever that core plugin was on. Now the warning shows only when Obsidian Sync is set up for the vault. ([#1481](https://github.com/solidDoWant/vault-sync/pull/1481))
+
+### Plugin
+
+- The title of the history window shows the path of the file as Obsidian shows it above a note. Click a folder in the path to show the folder in the list of files, or click the file's name to show the file. ([#1484](https://github.com/solidDoWant/vault-sync/pull/1484))
+- The list of files is a tree of folders, like the file explorer of Obsidian, and it fills the left side of the window. The folders around the chosen file are open. While you type in the search field, the list shows only the files that match. ([#1482](https://github.com/solidDoWant/vault-sync/pull/1482), [#1484](https://github.com/solidDoWant/vault-sync/pull/1484))
+- Each version in the list shows three lines: how long ago it was made (hold the pointer over it to see the exact date and time), what changed, and who made it on which device, for example `alice via Phone`. Your own device shows as **this device**. A move shows where the file was moved from. The list no longer shows the size of the file. ([#1482](https://github.com/solidDoWant/vault-sync/pull/1482), [#1483](https://github.com/solidDoWant/vault-sync/pull/1483))
+- **Show changes** marks the words that changed inside a changed line, so you can see, for example, that words were added at the end of a line. ([#1482](https://github.com/solidDoWant/vault-sync/pull/1482))
+- The oldest version in the list is named **Oldest kept version**. It is the version that created the file, unless the server already removed older versions. ([#1483](https://github.com/solidDoWant/vault-sync/pull/1483))
+
+### Known issues
+
+- The screenshots of the settings in the user guide still show the text from 0.4.4.
+
 ## 0.4.7
 
 vault-sync is a self-hosted replacement for Obsidian Sync. It has two parts: an Obsidian plugin, and a sync server that stores its data in PostgreSQL and S3. This release changes only the plugin. It has a new history window, where you can search the synced files, see the changes of each version, and copy, restore or revert a version. Install the plugin with BRAT from the GitHub releases of this repository. The server image `ghcr.io/soliddowant/vault-sync:0.4.7` and the Helm chart `oci://ghcr.io/soliddowant/charts/vault-sync` (version 0.4.7) have no changes from 0.4.6, so you do not have to upgrade the server.
