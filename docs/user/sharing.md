@@ -73,7 +73,7 @@ If a file changes anyway (outside Obsidian, for example), the plugin moves your 
 - Sync stops, and the status shows `no longer a member`. Your files stay.
 - The vault stays connected. To join again, you need a new invitation.
 
-The last owner cannot leave. Make another member an owner first, then leave.
+The **Sharing** section shows either **Leave vault** or **Delete vault**, never both. If you are the only owner, you cannot leave, so the section shows **Delete vault** and says why. To leave, make another member an owner first. Then **Leave vault** shows instead.
 
 ## When you lose access
 
@@ -81,7 +81,7 @@ If an owner removed you, you left on another device, or an owner deleted the vau
 
 ## Delete a vault (owners)
 
-**Delete vault** asks you to type the vault's name exactly. Then it deletes the vault on the server for every member. The plugin has no undo. The server keeps the data for 30 days. In that time, only your admin can restore it, so ask your admin. Every member's local files stay.
+**Delete vault** shows only to the last owner of a vault. If the vault has more than one owner, the other owners must leave, or you must change their role, before you can delete it. **Delete vault** asks you to type the vault's name exactly. Then it deletes the vault on the server for every member. The plugin has no undo. The server keeps the data for 30 days. In that time, only your admin can restore it, so ask your admin. Every member's local files stay.
 
 ## Fingerprints in an encrypted vault
 

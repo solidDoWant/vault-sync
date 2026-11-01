@@ -41,6 +41,8 @@ import {
   escrowResetText,
   vaultKeysText,
   newVaultEscrowText,
+  vaultExit,
+  type MemberRow,
   type Sharing,
 } from "./sharing";
 
@@ -601,3 +603,18 @@ function escrowKey(signByte: number) {
 function shownEscrowFingerprint(key: { recipient: EscrowKey }): string {
   return formatFingerprint(escrowFingerprint(key.recipient.bundle));
 }
+
+describe("vaultExit", () => {
+  const member = (userId: string, role: VaultRole): MemberRow => ({ userId, label: userId, role, description: "" });
+  const owned = (...members: MemberRow[]): Sharing => ({ kind: "owner", members, invitations: [], encrypted: false });
+
+  it.each([
+    ["an editor", { kind: "member", role: VaultRole.EDITOR } as const, "leave"],
+    ["a viewer", { kind: "member", role: VaultRole.VIEWER } as const, "leave"],
+    ["the only member, who owns the vault", owned(member("a", VaultRole.OWNER)), "delete"],
+    ["the last owner of a shared vault", owned(member("a", VaultRole.OWNER), member("b", VaultRole.EDITOR), member("c", VaultRole.VIEWER)), "delete"],
+    ["one of two owners", owned(member("a", VaultRole.OWNER), member("b", VaultRole.OWNER)), "leave"],
+  ])("offers %s exactly one way out: %s", (_, sharing, expected) => {
+    expect(vaultExit(sharing as Exclude<Sharing, { kind: "not-member" }>)).toBe(expected);
+  });
+});

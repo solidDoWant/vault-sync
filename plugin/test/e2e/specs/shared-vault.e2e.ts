@@ -200,6 +200,11 @@ function settingsText() {
   return browser.executeObsidian(({ app }) => (app as unknown as SettingsApp).setting.activeTab?.containerEl.textContent ?? "");
 }
 
+/** The labels of the buttons in the settings' Sharing section on the current device. */
+function sharingButtons() {
+  return browser.executeObsidian(({ app }) => [...((app as unknown as SettingsApp).setting.activeTab?.containerEl.querySelectorAll<HTMLButtonElement>(".vault-sync-sharing button") ?? [])].map((button) => button.textContent));
+}
+
 /** Clicks the button labelled `label` in the settings' Sharing section on the current device. */
 function clickSharingButton(label: string) {
   return browser.executeObsidian(({ app }, text) => {
@@ -604,9 +609,10 @@ describe("a vault shared by two users", function () {
     await answerModal("Change this member's role?", "Change role");
     await waitForNotice(`could not change the role: ${lastOwner}`);
     await dismissNotices();
-    await clickSharingButton("Leave vault");
-    await answerModal("Leave this vault?", "Leave vault");
-    await waitForNotice(`could not leave the vault: ${lastOwner}`);
+    // The last owner is offered Delete vault instead of Leave vault, and told why.
+    expect(await sharingButtons()).toContain("Delete vault");
+    expect(await sharingButtons()).not.toContain("Leave vault");
+    expect(await settingsText()).toContain("You are the only owner, so you cannot leave this vault. To leave, make another member an owner first.");
     expect(await members()).toEqual(
       expect.arrayContaining([
         { name: ownerName, role: VaultRole.OWNER },

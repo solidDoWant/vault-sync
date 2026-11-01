@@ -130,6 +130,17 @@ export type Sharing =
   | { kind: "member"; role: VaultRole; keys?: VaultKeys }
   | { kind: "not-member" };
 
+/**
+ * The one way out of a vault that its Sharing section offers. The last owner
+ * cannot leave (the server refuses it), so they are offered Delete vault;
+ * everyone else, including an owner who shares ownership, is offered Leave
+ * vault.
+ */
+export function vaultExit(sharing: Exclude<Sharing, { kind: "not-member" }>): "leave" | "delete" {
+  if (sharing.kind !== "owner") return "leave";
+  return sharing.members.filter((member) => member.role === VaultRole.OWNER).length > 1 ? "leave" : "delete";
+}
+
 /** Formats a time in the user's locale. */
 export type FormatDate = (date: Date) => string;
 
