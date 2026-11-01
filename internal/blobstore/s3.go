@@ -302,6 +302,9 @@ func (rotating *rotatingSigner) SignHTTP(ctx context.Context, credentials aws.Cr
 func rotatingCATLSConfig(caFile, endpointHost string) *tls.Config {
 	return &tls.Config{
 		MinVersion: tls.VersionTLS12,
+		// Only HTTP/1.1, as in boundIdleConnections, which this config
+		// replaces the TLS config of.
+		NextProtos: []string{"http/1.1"},
 		// The standard verification uses a fixed RootCAs pool, so it is
 		// replaced by VerifyConnection, which re-reads the bundle and checks
 		// both the chain and the host name.

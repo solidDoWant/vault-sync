@@ -31,6 +31,17 @@ func boundIdleConnections(transport *http.Transport, timeout time.Duration) {
 	transport.ForceAttemptHTTP2 = false
 	transport.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
 
+	// Clearing TLSNextProto does not stop the TLS handshake from offering h2:
+	// the SDK's default TLS config already lists it. A server that offers
+	// HTTP/2 (an Envoy or Istio gateway in front of the store, for one) would
+	// select it, and then reset the connection on the first HTTP/1.1 request.
+	// Offer only HTTP/1.1.
+	if transport.TLSClientConfig == nil {
+		transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	}
+
+	transport.TLSClientConfig.NextProtos = []string{"http/1.1"}
+
 	// Close pooled connections before their idle deadline would: a request
 	// never picks up a connection that is about to time out.
 	if transport.IdleConnTimeout <= 0 || transport.IdleConnTimeout > timeout/2 {
