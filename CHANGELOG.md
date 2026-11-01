@@ -2,6 +2,22 @@
 
 All notable changes to vault-sync are listed here, newest release first.
 
+## 0.4.5
+
+vault-sync is a self-hosted replacement for Obsidian Sync. It has two parts: an Obsidian plugin, and a sync server that stores its data in PostgreSQL and S3. This release changes only the plugin, and only its settings tab. The settings are shorter and easier to read, and the plugin now tells you about a problem when you make a choice, not after it. Install the plugin with BRAT from the GitHub releases of this repository. The server image `ghcr.io/soliddowant/vault-sync:0.4.5` and the Helm chart `oci://ghcr.io/soliddowant/charts/vault-sync` (version 0.4.5) have no changes from 0.4.4, so you do not have to upgrade the server.
+
+### Plugin
+
+- The text under each setting is shorter and in plain English. The details are in the user guide. ([#1469](https://github.com/solidDoWant/vault-sync/pull/1469))
+- The **Device name** setting shows the name that the device uses. Until you set a name, this is the name of the platform, for example `Mac` or `Android`. Before, the setting was empty. ([#1469](https://github.com/solidDoWant/vault-sync/pull/1469))
+- If you type a device name that the server does not accept, an error shows under the setting, and the plugin keeps the previous name until you fix it. A name is not accepted if it has hidden characters, such as a line break or a combined emoji, or if it is longer than 256 bytes. Before, the plugin removed these characters or cut the name without telling you. ([#1469](https://github.com/solidDoWant/vault-sync/pull/1469))
+- When you create a vault, you can turn on **End-to-end encryption** only when your encryption key is unlocked on this device. Until then, the setting is greyed out and tells you what to do first. Before, the vault was not created, and a notice showed the error. ([#1469](https://github.com/solidDoWant/vault-sync/pull/1469))
+- When you create a vault, the **Escrow** setting shows only after you turn on **End-to-end encryption**, because escrow applies only to encrypted vaults. ([#1469](https://github.com/solidDoWant/vault-sync/pull/1469))
+
+### Known issues
+
+- The screenshots of the settings in the user guide still show the text from 0.4.4.
+
 ## 0.4.4
 
 vault-sync is a self-hosted replacement for Obsidian Sync. It has two parts: an Obsidian plugin, and a sync server that stores its data in PostgreSQL and S3. This release changes only the server, and only how it connects to S3. It fixes a server that cannot reach S3 when a proxy or gateway that offers HTTP/2 sits in front of the S3 endpoint. To install it, use the server image `ghcr.io/soliddowant/vault-sync:0.4.4` or the Helm chart `oci://ghcr.io/soliddowant/charts/vault-sync` (version 0.4.4). It has no database migration and no new setting, so you can upgrade a 0.4.3 server one replica at a time. The plugin has no changes.
