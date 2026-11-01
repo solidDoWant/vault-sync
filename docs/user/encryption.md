@@ -64,7 +64,7 @@ Escrow gives your admin's backup a way to read the vault. With escrow, your admi
 
 Without escrow, only the members can read the vault, and former members what they saw while members. Nothing can recover it if every member loses their passphrase and every device.
 
-**Escrow** is on by default unless your admin changed the default. You can turn it off when you create a vault. It is not offered when the server has no escrow key. The settings show whether a vault has escrow.
+**Escrow** is on by default unless your admin changed the default. You can turn it off when you create a vault. The **Escrow** setting shows only after you turn on **End-to-end encryption** for the new vault. It is not offered when the server has no escrow key. The settings show whether a vault has escrow.
 
 If an owner turns escrow off later, new changes are no longer readable by the backup. Older versions stay readable by it until the owner re-encrypts the history.
 

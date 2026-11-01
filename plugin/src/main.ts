@@ -346,6 +346,10 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
     return removeOtherDevice(this.protocolClient(), this.data, deviceId);
   }
 
+  get defaultDeviceName(): string {
+    return platformName();
+  }
+
   /** The Device name setting was edited: while signed in, this device is renamed to it once the edits settle. */
   deviceNameChanged(before: string): void {
     if (this.authState === "signed-in") this.deviceNameEdits.edited(before);

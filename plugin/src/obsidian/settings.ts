@@ -7,6 +7,7 @@ import type { EscrowChange, EscrowOffer } from "../core/keys/encrypted-vault";
 import type { RekeyResult } from "../core/sync/rekey";
 import { connectProblem } from "./controller";
 import { type ConnectedVault, type PluginData } from "./data";
+import { deviceNameOf, deviceNameProblem } from "./device-name";
 import { DeviceListLoads, DeviceRemovals, type DeviceRow } from "./devices";
 import { quotedVaultLabel, vaultLabel } from "./display-text";
 import { conversionConfirmable, conversionMemberText, deleteConfirmed, escrowKeyFingerprint, memberKeyText, membershipErrorMessage, newVaultEscrowText, parseInvitationDays, vaultKeysText, roleDescription, roleName, roles, type CreatedInvitation, type MemberRow, type Sharing } from "./sharing";
@@ -45,6 +46,8 @@ export interface SettingsHost extends Plugin {
   removeDevice(deviceId: string): Promise<void>;
   /** The Device name setting was edited (and saved); `before` is its value before the edit. Renames this device once the edits settle. */
   deviceNameChanged(before: string): void;
+  /** The name this device uses when the Device name setting is empty: the platform's name. */
+  readonly defaultDeviceName: string;
   /** Registers this installation again after its device was removed, and starts sync. */
   registerAgain(): Promise<void>;
   /** The connected vault's Sharing section (#34). */
@@ -94,6 +97,7 @@ const accountDescriptions: Record<AuthState, string> = {
 export class VaultSyncSettingTab extends PluginSettingTab {
   private statusSetting: Setting | undefined;
   private deviceNameText: TextComponent | undefined;
+  private showDeviceNameProblem: ((problem: string | undefined) => void) | undefined;
   /** The new escrow key whose prompt this tab opened by itself, so that two sections showing the change open it once. */
   private promptedEscrowKey: string | undefined;
   /** Kept across renders, so a list rebuilt while a removal runs cannot send it again. */
@@ -206,18 +210,30 @@ export class VaultSyncSettingTab extends PluginSettingTab {
           }),
       );
     }
-    new Setting(containerEl)
-      .setName("Device name")
-      .setDesc("The name of this device in your device list, in history and in conflict copies. Leave empty to use the platform name.")
-      .addText((text) => {
-        this.deviceNameText = text;
-        text.setValue(host.data.deviceName).onChange(async (value) => {
+    const deviceName = new Setting(containerEl).setName("Device name").setDesc("The name of this device in your device list, in history and in conflict copies.");
+    const deviceNameError = deviceName.descEl.createDiv({ cls: "vault-sync-field-error" });
+    deviceName.addText((text) => {
+      this.deviceNameText = text;
+      // An invalid name is not saved: the error stays under the field until it is fixed.
+      const showProblem = (problem: string | undefined) => {
+        deviceNameError.setText(problem ?? "");
+        text.inputEl.toggleClass("vault-sync-field-invalid", problem !== undefined);
+        text.inputEl.setAttribute("aria-invalid", String(problem !== undefined));
+      };
+      this.showDeviceNameProblem = showProblem;
+      text
+        .setPlaceholder(host.defaultDeviceName)
+        .setValue(this.shownDeviceName())
+        .onChange(async (value) => {
+          const problem = deviceNameProblem(value);
+          showProblem(problem);
+          if (problem !== undefined) return;
           const before = host.data.deviceName;
           host.data.deviceName = value;
           await host.saveSettings();
           host.deviceNameChanged(before);
         });
-      });
+    });
 
     // The connected vault's owner actions in the Advanced group, filled in once the Sharing section loads.
     const vaultActions = createDiv({ cls: "vault-sync-vault-actions" });
@@ -317,7 +333,13 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 
   /** Shows the Device name setting as it is now, e.g. after a refused rename put it back. */
   showDeviceName(): void {
-    this.deviceNameText?.setValue(this.host.data.deviceName);
+    this.deviceNameText?.setValue(this.shownDeviceName());
+    this.showDeviceNameProblem?.(undefined);
+  }
+
+  /** The name this device goes by, so the field is never blank: the setting, or the platform's name when it is empty. */
+  private shownDeviceName(): string {
+    return deviceNameOf(this.host.data.deviceName, this.host.defaultDeviceName);
   }
 
   /** Lists the devices again, if the list is shown: after this device was renamed. */
@@ -804,7 +826,6 @@ export class VaultSyncSettingTab extends PluginSettingTab {
     // created, so that escrow is never left off by mistake.
     let escrowLoaded = false;
     let escrowToggle: ToggleComponent | undefined;
-    const updateEscrowToggle = () => escrowToggle?.setDisabled(!encrypted || !escrowAvailable);
     new Setting(containerEl)
       .setName("Create a vault")
       .setDesc("Create a vault on the server and sync this vault with it.")
@@ -839,6 +860,11 @@ export class VaultSyncSettingTab extends PluginSettingTab {
         }),
       );
     const escrowSetting = new Setting(containerEl).setName("Escrow").setDesc("Loading the server's escrow setting…");
+    // Escrow only applies to an encrypted vault, so it shows only while End-to-end encryption is on.
+    const updateEscrowToggle = () => {
+      escrowToggle?.setDisabled(!escrowAvailable);
+      escrowSetting.settingEl.toggle(encrypted);
+    };
     escrowSetting.addToggle((toggle) => {
       escrowToggle = toggle;
       toggle.onChange((value) => {

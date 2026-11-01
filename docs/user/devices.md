@@ -12,11 +12,11 @@ You can have up to 100 devices. Every installation and every reinstall registers
 
 ## Device name
 
-The **Device name** setting names this device. The name shows in the device list, in the history, and in the names of [conflict copies](conflicts-and-history.md). If it is empty, the plugin uses the platform: `Windows`, `Mac`, `Linux`, `Android` or `iOS`.
+The **Device name** setting names this device. The name shows in the device list, in the history, and in the names of [conflict copies](conflicts-and-history.md). Until you set a name, the setting shows the platform name that the plugin uses: `Windows`, `Mac`, `Linux`, `Android` or `iOS`. If you clear the setting, the plugin uses the platform name again.
 
 When you change the name while signed in, the plugin renames the device on the server about a second after you stop typing. The device keeps its history. If the rename fails, a notice says so, and the setting goes back to the last accepted name. A change made before the first registration completes is applied when it completes.
 
-The plugin removes invisible characters from the name, and cuts it to 256 bytes. In conflict copies, the name is cut to 40 characters, and characters that are not allowed in file names become `-`.
+The name cannot contain hidden characters, such as a line break or the joiner inside a combined emoji. It also cannot be longer than 256 bytes. If you type such a name, an error shows under the setting, and the plugin keeps the previous name until you fix it. In conflict copies, the name is cut to 40 characters, and characters that are not allowed in file names become `-`.
 
 If the server still refuses the name, the status says so and names the setting. Change the name, and the plugin registers the device with the new name at its next try.
 
