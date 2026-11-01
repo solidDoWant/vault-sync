@@ -45,6 +45,8 @@ History works only while the vault syncs: you are signed in and the vault is con
 
 Run **Vault Sync: Show file history** for the open file, or choose **Show sync history** in a file's context menu. To find any synced file, also a deleted one, run **Vault Sync: Browse sync history** and type part of its name in the search field.
 
+The title of the history window shows the path of the chosen file, as Obsidian shows it above a note. Click a folder in the path to show that folder in the list of files, or click the file's name to show the file.
+
 The history window has three parts, from left to right:
 
 1. The synced files, in their folders. Click a folder to open or close it. Deleted files are marked `(deleted)`. While you type in the search field, the list shows only the files that match, with their folders open.

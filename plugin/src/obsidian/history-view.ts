@@ -206,9 +206,9 @@ export function changeLabel(entry: HistoryEntry, previous: HistoryEntry | undefi
   return ["edited"];
 }
 
-/** The history view's title for the document at `path`. */
+/** The history view's title for the document at `path`: its path, which the view shows as a breadcrumb. */
 export function historyTitle(path: string): Shown {
-  return ["History of ", shownPath(path)];
+  return [shownPath(path)];
 }
 
 /** What the engine's RestoreError says after the path when the path cannot be used: `<path> cannot be used (<problem>); choose another path`. */
