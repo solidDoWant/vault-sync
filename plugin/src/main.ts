@@ -197,7 +197,8 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
         if (!(file instanceof TFile)) return;
         menu.addItem((item) =>
           item
-            .setTitle("Show sync history")
+            // Named after the plugin: Obsidian Sync puts "Open version history" in the same menu, with the same icon.
+            .setTitle("Show Vault Sync history")
             .setIcon("history")
             .onClick(() => void this.showHistory(file.path)),
         );

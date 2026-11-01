@@ -43,7 +43,7 @@ History works only while the vault syncs: you are signed in and the vault is con
 
 ### See the history of a file
 
-Run **Vault Sync: Show file history** for the open file, or choose **Show sync history** in a file's context menu. To find any synced file, also a deleted one, run **Vault Sync: Browse sync history** and type part of its name in the search field.
+Run **Vault Sync: Show file history** for the open file, or choose **Show Vault Sync history** in a file's context menu. To find any synced file, also a deleted one, run **Vault Sync: Browse sync history** and type part of its name in the search field.
 
 The title of the history window shows the path of the chosen file, as Obsidian shows it above a note. Click a folder in the path to show that folder in the list of files, or click the file's name to show the file.
 

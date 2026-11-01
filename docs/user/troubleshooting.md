@@ -76,6 +76,10 @@ In an encrypted vault, the server sent key or member data that the plugin cannot
 
 Obsidian Sync is set up for this vault, so two services sync it. Every change is uploaded twice, and you can get extra conflict copies. Use only one of them. To stop Obsidian Sync, do one of these on every device: open **Settings → Sync** and disconnect from the remote vault, or open **Settings → Core plugins** and turn off **Sync** (see [Getting started](getting-started.md#install-the-plugin)).
 
+## "Unable to retrieve version history"
+
+This message comes from **Open version history** in a file's menu. That menu item belongs to Obsidian Sync, not to vault-sync, and it works only when Obsidian Sync is set up. To see the history that vault-sync keeps, choose **Show Vault Sync history** in the same menu instead (see [Conflicts and history](conflicts-and-history.md#history)). If you do not use Obsidian Sync, open **Settings → Core plugins** and turn off **Sync**. Then its menu item does not show.
+
 ## A file is missing on one device
 
 The file is too large for this device, or its name does not work on this device. Run **Vault Sync: Show conflicts** and look under **files not on this device** (see [Syncing](syncing.md#files-that-are-not-on-this-device)).
