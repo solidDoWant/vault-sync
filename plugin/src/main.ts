@@ -157,6 +157,15 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
       },
     });
     this.addCommand({
+      id: "browse-history",
+      name: "Browse sync history",
+      checkCallback: (checking) => {
+        if (this.vaultHistory() === undefined) return false;
+        if (!checking) this.browseHistory();
+        return true;
+      },
+    });
+    this.addCommand({
       id: "show-file-history",
       name: "Show file history",
       checkCallback: (checking) => {
@@ -334,6 +343,16 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
       return;
     }
     new HistoryModal(this.app, history, documentId, path).open();
+  }
+
+  /** Opens the sync history with no file chosen yet, to search the synced files (SPEC.md §11). */
+  browseHistory(): void {
+    const history = this.vaultHistory();
+    if (history === undefined) {
+      new Notice("Vault Sync: history is available while this vault syncs.");
+      return;
+    }
+    new HistoryModal(this.app, history).open();
   }
 
   /** The signed-in user's devices, as the settings list them (#590). */

@@ -43,25 +43,40 @@ History works only while the vault syncs: you are signed in and the vault is con
 
 ### See the history of a file
 
-Run **Vault Sync: Show file history** for the open file, or choose **Show sync history** in a file's context menu. The list shows the file's versions, newest first. Each line shows:
+Run **Vault Sync: Show file history** for the open file, or choose **Show sync history** in a file's context menu. To find any synced file, also a deleted one, run **Vault Sync: Browse sync history** and type part of its name in the search field.
+
+The history window has three parts, from left to right:
+
+1. The synced files. Deleted files are marked `(deleted)`.
+2. The versions of the chosen file, newest first. **Load older versions** shows more.
+3. The chosen version.
+
+Each version in the list shows:
 
 - when the server received the version
 - which user made it, by the name from their login, or by the start of their user id
 - which device made it: `this device`, another device's name in quotes, or the start of its id
 - what changed: edited, moved, deleted or restored.
 
-**Load older versions** shows more. Every member of a vault sees the names of the devices that changed its files.
+Every member of a vault sees the names of the devices that changed its files.
 
 Another member can choose any name. So that one name cannot pass for another, the history and the conflict view show invisible characters as `\uXXXX` (a right-to-left override shows as `\u202E`) and a backslash as `\\`. Device names longer than 64 characters end in `…`. Only the display changes.
 
-### Restore a version
+### Compare a version with the one before
 
-1. Choose a version in the list to preview it. Text shows as it is, or only its start for a very long file. Other files show their size.
-2. Click **Restore this version**.
+Turn on **Show changes** to see what the chosen version changed. Removed lines are red, and added lines are green. Long runs of unchanged lines are folded. Click a fold to show all lines. Turn on **Side by side** to see the version before on the left and the chosen version on the right. The window keeps both choices until you close Obsidian.
 
-The restore is a new version, so the version that it replaces stays in the history. It reaches your other devices like any edit, and the file keeps its current name and folder. A local edit that did not sync yet meets the restored version like an edit from another device.
+Changes show only for text. A very large file shows only its start, and its changes do not show.
 
-Viewers can see the history and preview versions, but they cannot restore. If the plugin cannot read your role, for example because the server cannot be reached, it shows the button, and the server decides.
+### Copy, restore or revert a version
+
+- **Copy** copies the text of the chosen version.
+- **Restore this version** makes the chosen version the current version.
+- **Revert this change** undoes only the changes that the chosen version made. Changes made after it stay. If a later change touches the same lines, the plugin does not revert, and a notice says why. Then restore a version, or edit the file.
+
+A restore is a new version, so the version that it replaces stays in the history. It reaches your other devices like any edit, and the file keeps its current name and folder. A local edit that did not sync yet meets the restored version like an edit from another device. A revert changes the file on this device, and the file then syncs like any edit.
+
+Viewers can see the history, preview versions and copy them, but they cannot restore or revert. If the plugin cannot read your role, for example because the server cannot be reached, it shows the buttons, and the server decides.
 
 ### When another file uses the path
 

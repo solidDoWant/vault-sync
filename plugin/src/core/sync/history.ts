@@ -36,6 +36,14 @@ export interface HistoryEntry {
   createdAt: Date | undefined;
 }
 
+/** A synced document this device knows, live or deleted, as the history view lists it. */
+export interface HistoryDocument {
+  documentId: string;
+  /** Its path now, or, for a deleted document, where it was when it was deleted. */
+  path: string;
+  deleted: boolean;
+}
+
 /** One page of a document's history, newest first. */
 export interface HistoryPage {
   documentId: string;

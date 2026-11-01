@@ -48,21 +48,72 @@ input.vault-sync-field-invalid {
 }
 
 /* The history view (SPEC.md §11): the revision list, then the preview. */
-.vault-sync-history-list {
-  max-height: 40vh;
-  overflow-y: auto;
-  margin-bottom: var(--size-4-3);
+/*
+ * The sync history: a large modal, like Obsidian's File recovery, with the
+ * synced files, the chosen file's versions and the chosen version side by
+ * side. Narrow windows and phones stack the three panes.
+ */
+.modal.vault-sync-history {
+  width: min(1280px, 95vw);
+  max-width: 95vw;
+  height: min(860px, 90vh);
+  max-height: 90vh;
 }
 
+.vault-sync-history .modal-content.vault-sync-history-body {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) minmax(200px, 1.3fr) minmax(0, 3.5fr);
+  gap: var(--size-4-3);
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.vault-sync-history-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+.vault-sync-history-files-pane,
+.vault-sync-history-versions-pane {
+  border-right: 1px solid var(--background-modifier-border);
+  padding-right: var(--size-4-2);
+}
+
+.vault-sync-history-search {
+  width: 100%;
+  margin-bottom: var(--size-4-2);
+}
+
+.vault-sync-history-files,
+.vault-sync-history-list,
+.vault-sync-history-preview {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.vault-sync-history-file,
 .vault-sync-history-entry {
   padding: var(--size-4-1) var(--size-4-2);
   border-radius: var(--radius-s);
   cursor: pointer;
+  font-size: var(--font-ui-small);
+  overflow-wrap: anywhere;
 }
 
+.vault-sync-history-file:hover,
+.vault-sync-history-file.is-selected,
 .vault-sync-history-entry:hover,
 .vault-sync-history-entry.is-selected {
   background-color: var(--background-modifier-hover);
+}
+
+.vault-sync-history-file.is-selected,
+.vault-sync-history-entry.is-selected {
+  color: var(--text-accent);
 }
 
 .vault-sync-history-current,
@@ -70,9 +121,27 @@ input.vault-sync-field-invalid {
   color: var(--text-muted);
 }
 
+.vault-sync-history-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--size-4-4);
+  margin-bottom: var(--size-4-2);
+}
+
+.vault-sync-history-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+  font-size: var(--font-ui-small);
+}
+
+.vault-sync-history-actions .setting-item {
+  border-top: none;
+  padding-bottom: 0;
+}
+
 .vault-sync-history-text {
-  max-height: 40vh;
-  overflow: auto;
+  margin: 0;
   white-space: pre-wrap;
   font-family: var(--font-monospace);
   font-size: var(--font-ui-small);
@@ -80,6 +149,94 @@ input.vault-sync-field-invalid {
 
 .vault-sync-history-error {
   color: var(--text-error);
+}
+
+.vault-sync-diff {
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-small);
+}
+
+.vault-sync-diff-line {
+  display: grid;
+  grid-template-columns: 3.5em 3.5em 1.5em minmax(0, 1fr);
+}
+
+.vault-sync-diff-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--size-4-2);
+}
+
+.vault-sync-diff-side {
+  display: grid;
+  grid-template-columns: 3.5em minmax(0, 1fr);
+}
+
+.vault-sync-diff-number {
+  color: var(--text-faint);
+  text-align: right;
+  padding-right: var(--size-4-2);
+  user-select: none;
+}
+
+.vault-sync-diff-marker {
+  user-select: none;
+}
+
+.vault-sync-diff-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.vault-sync-diff .is-added {
+  background-color: rgba(var(--color-green-rgb), 0.15);
+}
+
+.vault-sync-diff .is-removed {
+  background-color: rgba(var(--color-red-rgb), 0.15);
+}
+
+.vault-sync-diff .is-empty {
+  background-color: var(--background-secondary);
+}
+
+.vault-sync-diff-fold {
+  padding: var(--size-4-1) var(--size-4-2);
+  color: var(--text-muted);
+  background-color: var(--background-secondary);
+  cursor: pointer;
+}
+
+@media (max-width: 900px) {
+  .vault-sync-history .modal-content.vault-sync-history-body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr);
+    overflow: auto;
+  }
+}
+
+.is-mobile .vault-sync-history .modal-content.vault-sync-history-body {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
+  overflow: auto;
+}
+
+.is-mobile .vault-sync-history-files,
+.is-mobile .vault-sync-history-list {
+  max-height: 25vh;
+}
+
+@media (max-width: 900px) {
+  .vault-sync-history-files,
+  .vault-sync-history-list {
+    max-height: 25vh;
+  }
+
+  .vault-sync-history-files-pane,
+  .vault-sync-history-versions-pane {
+    border-right: none;
+    padding-right: 0;
+  }
 }
 
 .vault-sync-invite-code {

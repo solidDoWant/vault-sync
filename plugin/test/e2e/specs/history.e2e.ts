@@ -102,6 +102,30 @@ function clickRestore() {
   });
 }
 
+/** Switches the history view's toggle labelled `label` (Show changes, Side by side). */
+function clickToggle(label: string) {
+  return browser.executeObsidian((_, text) => {
+    const toggle = [...document.querySelectorAll<HTMLElement>(".vault-sync-history-toggle")].find((candidate) => candidate.textContent === text);
+    const control = toggle?.querySelector<HTMLElement>(".checkbox-container");
+    if (control === undefined || control === null) throw new Error(`no ${text} toggle`);
+    control.click();
+  }, label);
+}
+
+/** Clicks the history view's button labelled `label`. */
+function clickHistoryButton(label: string) {
+  return browser.executeObsidian((_, text) => {
+    const button = [...document.querySelectorAll<HTMLButtonElement>(".vault-sync-history button")].find((candidate) => candidate.textContent === text);
+    if (button === undefined) throw new Error(`no ${text} button`);
+    button.click();
+  }, label);
+}
+
+/** The lines of the history view's comparison of `kind` (added or removed), inline or side by side. */
+function diffLines(kind: "added" | "removed") {
+  return browser.executeObsidian((_, wanted) => [...document.querySelectorAll<HTMLElement>(`.vault-sync-diff .is-${wanted} .vault-sync-diff-text`)].map((line) => line.textContent), kind);
+}
+
 /** Closes the history view as the user would, with Escape. */
 async function closeHistory() {
   await browser.keys("Escape");
@@ -158,6 +182,59 @@ describe("history and restore", function () {
     await browser.waitUntil(async () => (await historyRows()).length === 3, { timeoutMsg: "the history view never listed the restore" });
     expect(await remoteRevisions(note)).toBe(3);
     await closeHistory();
+  });
+
+  it("shows a version's changes inline and side by side, and reverts them while keeping later changes", async function () {
+    // A note of its own, so the AC-24 note keeps exactly the revisions that scenario counts.
+    const revertNote = "Revert.md";
+    await browser.executeObsidian(async ({ app }, path) => {
+      await app.vault.create(path, "title\nkeep me\n");
+    }, revertNote);
+    await browser.waitUntil(async () => (await remoteRevisions(revertNote)) === 1, { timeoutMsg: "the note never reached the server" });
+    await waitForIdle();
+    const edit = async (text: string, revisions: number) => {
+      await browser.executeObsidian(
+        async ({ app }, path, content) => {
+          const file = app.vault.getFileByPath(path);
+          if (file === null) throw new Error(`no ${path}`);
+          await app.vault.modify(file, content);
+        },
+        revertNote,
+        text,
+      );
+      await browser.waitUntil(async () => (await remoteRevisions(revertNote)) === revisions, { timeoutMsg: `the note never had ${String(revisions)} revisions` });
+      await waitForIdle();
+    };
+    await edit("title\nkeep me\nan unwanted line\n", 2);
+    await edit("A later title\nkeep me\nan unwanted line\n", 3);
+
+    await browser.executeObsidian(async ({ app }, id, path) => {
+      await (app as unknown as { plugins: { plugins: Record<string, VaultSyncPlugin> } }).plugins.plugins[id]?.showHistory(path);
+    }, pluginId, revertNote);
+    await browser.waitUntil(async () => (await historyRows()).length === 3, { timeoutMsg: "the history view never listed three revisions" });
+    // The version that added the unwanted line.
+    await clickRow(1);
+    await browser.waitUntil(async () => (await previewText()) === "title\nkeep me\nan unwanted line\n", { timeoutMsg: "the preview never showed the version" });
+
+    await clickToggle("Show changes");
+    await browser.waitUntil(async () => (await diffLines("added")).length > 0, { timeoutMsg: "the changes never showed" });
+    expect(await diffLines("added")).toEqual(["an unwanted line"]);
+    expect(await diffLines("removed")).toEqual([]);
+    await clickToggle("Side by side");
+    await browser.waitUntil(async () => browser.executeObsidian(() => document.querySelector(".vault-sync-diff-split") !== null), { timeoutMsg: "the side-by-side view never showed" });
+    expect(await diffLines("added")).toEqual(["an unwanted line"]);
+
+    // Reverting undoes only that version's change: the later title stays.
+    await clickHistoryButton("Revert this change");
+    await browser.waitUntil(async () => (await fileText(revertNote)) === "A later title\nkeep me\n", { timeoutMsg: "the note was never reverted" });
+    await browser.waitUntil(async () => (await remoteRevisions(revertNote)) === 4, { timeoutMsg: "the revert never reached the server" });
+
+    // The view options last while Obsidian runs: leave them off for the tests after this one.
+    await clickToggle("Side by side");
+    await clickToggle("Show changes");
+    await browser.waitUntil(async () => (await previewText()) !== null, { timeoutMsg: "the plain preview never came back" });
+    await closeHistory();
+    await waitForIdle();
   });
 
   describe("for a member who may not restore (#527)", function () {

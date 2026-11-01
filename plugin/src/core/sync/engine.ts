@@ -16,6 +16,7 @@ import { conflictCopyName } from "./conflict-name";
 import { detectChanges, HashCache, isTemporaryPath, kindOfPath, project, replacementPath, replacementTarget, temporaryPath, type Projection, type RenameHint } from "./detect";
 import { applyChange, type ConflictEntry, type Cursor, type DocEntry, type JournalChange, type JournalState, type PendingKind, type PendingOp, type SentCommitFields, type SkippedEntry, type SkipReason, type SyncJournal, type SyncKind } from "./journal";
 import { mergeContent } from "./merge-rules";
+import type { HistoryDocument } from "./history";
 
 /** The protocol calls the engine makes. */
 export type SyncApi = PullApi;
@@ -1126,6 +1127,12 @@ export class SyncEngine {
   /** The synced document whose file is at `path` on this device, if any. */
   async documentAt(path: string): Promise<string | undefined> {
     return liveAt(await this.loadState(), path)?.documentId;
+  }
+
+  /** The synced documents this device knows, live and deleted, for the history view: files only, not folders. */
+  async documents(): Promise<HistoryDocument[]> {
+    const state = await this.loadState();
+    return [...state.docs.values()].filter((entry) => entry.kind !== "folder").map((entry) => ({ documentId: entry.documentId, path: entry.path, deleted: entry.deleted === true }));
   }
 
   /** Why this device skips a revision at `path` of `size` bytes, if it does (§6, §7). */

@@ -1,6 +1,6 @@
 import { RealtimeClient, type RealtimeClientOptions } from "../core/realtime/client";
 import { SyncEngine, type RefusedName, type SyncApi, type TooLargeFile } from "../core/sync/engine";
-import { commitRestore, documentHistory, readRevision, type HistoryEntry, type HistoryPage } from "../core/sync/history";
+import { commitRestore, documentHistory, readRevision, type HistoryDocument, type HistoryEntry, type HistoryPage } from "../core/sync/history";
 import type { SkippedEntry, SyncJournal } from "../core/sync/journal";
 import type { VaultKeyring } from "../core/sync/codec";
 import type { RemoteRevision } from "../core/sync/remote";
@@ -95,6 +95,8 @@ export interface SyncProblemList {
 export interface VaultHistory {
   /** The id of the synced document at `path`, if a live one is there. */
   documentAt(path: string): Promise<string | undefined>;
+  /** The synced documents this device knows, live and deleted, to search in the history view. Absent: only the document the view opened with. */
+  documents?(): Promise<HistoryDocument[]>;
   history(documentId: string, pageToken?: string): Promise<HistoryPage>;
   /** `entry`'s content; with `limit`, only its first `limit` bytes when it is larger, for a preview. */
   readRevision(entry: HistoryEntry, limit?: number): Promise<Uint8Array>;
@@ -169,6 +171,7 @@ export class SyncSession {
     const api = this.gatedApi();
     return {
       documentAt: (path) => engine.documentAt(path),
+      documents: () => engine.documents(),
       history: (documentId, pageToken) => documentHistory(api, vaultId, deviceId, documentId, pageToken),
       readRevision: (entry, limit) => readRevision(api, vaultId, entry, limit),
       restore: async (entry, content, path) => {
