@@ -137,10 +137,17 @@ export class HistoryModal extends Modal {
       this.renderFiles();
     });
     this.filesEl = filesPane.createDiv({ cls: "vault-sync-history-files" });
-    const versionsPane = contentEl.createDiv({ cls: "vault-sync-history-pane vault-sync-history-versions-pane" });
+    // The files run top to bottom on the left; on the right, the title, then the versions beside the chosen version.
+    const main = contentEl.createDiv({ cls: "vault-sync-history-main" });
+    // The modal's own header (or, in an Obsidian without one, its title) moves into the right column.
+    const header = this.titleEl.parentElement === this.modalEl || this.titleEl.parentElement === null ? this.titleEl : this.titleEl.parentElement;
+    header.addClass("vault-sync-history-header");
+    main.appendChild(header);
+    const panes = main.createDiv({ cls: "vault-sync-history-panes" });
+    const versionsPane = panes.createDiv({ cls: "vault-sync-history-pane vault-sync-history-versions-pane" });
     this.listEl = versionsPane.createDiv({ cls: "vault-sync-history-list" });
     this.moreEl = versionsPane.createDiv();
-    const contentPane = contentEl.createDiv({ cls: "vault-sync-history-pane vault-sync-history-content-pane" });
+    const contentPane = panes.createDiv({ cls: "vault-sync-history-pane vault-sync-history-content-pane" });
     this.toolbarEl = contentPane.createDiv({ cls: "vault-sync-history-toolbar" });
     this.previewEl = contentPane.createDiv({ cls: "vault-sync-history-preview" });
     this.actionsEl = contentPane.createDiv({ cls: "vault-sync-history-actions" });
