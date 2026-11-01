@@ -172,29 +172,69 @@ export class HistoryModal extends Modal {
     }
   }
 
+  /**
+   * The title: the file's path as a breadcrumb, as Obsidian shows it above a
+   * note, its folders muted and its name in full. Clicking a part reveals
+   * that folder, or the file, in the file tree. The breadcrumb is the path
+   * element renderShown makes, isolated, with the whole path as its text:
+   * the separators are the path's own slashes.
+   */
   private showTitle(): void {
     this.titleEl.empty();
-    if (this.document === undefined) {
+    const document = this.document;
+    if (document === undefined) {
       this.titleEl.setText("Sync history");
       return;
     }
-    // "History of" as a label, then the path in a box: its folders muted and the file's name in bold.
-    for (const part of historyTitle(this.document.path)) {
-      if (typeof part === "string") {
-        this.titleEl.createSpan({ text: part, cls: "vault-sync-history-title-label" });
-        continue;
-      }
-      renderShown(this.titleEl, [part]);
-    }
+    renderShown(this.titleEl, historyTitle(document.path));
     const pathEl = this.titleEl.querySelector<HTMLElement>(`.${pathClass}`);
     if (pathEl === null) return;
-    // The path element stays as renderShown made it, isolated, with the whole path as its text.
-    const text = pathEl.textContent;
-    const slash = text.lastIndexOf("/");
+    const shownParts = pathEl.textContent.split("/");
+    const parts = document.path.split("/");
     pathEl.empty();
-    pathEl.addClass("vault-sync-history-title-path");
-    if (slash !== -1) pathEl.createSpan({ text: text.slice(0, slash + 1), cls: "vault-sync-history-title-folder" });
-    pathEl.createSpan({ text: text.slice(slash + 1), cls: "vault-sync-history-title-file" });
+    pathEl.addClass("view-header-title-parent", "vault-sync-history-breadcrumbs");
+    // Shown parts match the path's parts one for one: shownPath adds no slash.
+    shownParts.forEach((shown, index) => {
+      const isFile = index === shownParts.length - 1;
+      const crumb = pathEl.createSpan({ text: shown, cls: isFile ? "view-header-breadcrumb vault-sync-history-breadcrumb-file" : "view-header-breadcrumb" });
+      crumb.setAttribute("role", "button");
+      crumb.tabIndex = 0;
+      const folder = isFile ? undefined : parts.slice(0, index + 1).join("/");
+      const reveal = () => {
+        this.revealInTree(folder);
+      };
+      crumb.addEventListener("click", reveal);
+      crumb.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          reveal();
+        }
+      });
+      if (!isFile) pathEl.createSpan({ text: "/", cls: "view-header-breadcrumb-separator" });
+    });
+  }
+
+  /**
+   * Shows `folder` in the file tree, or, without it, the open file: clears
+   * the search, opens the folders around it, scrolls to it and flashes it,
+   * as Obsidian's file explorer does when a breadcrumb is clicked.
+   */
+  private revealInTree(folder: string | undefined): void {
+    const target = folder ?? this.document?.path;
+    if (target === undefined) return;
+    this.searchEl.value = "";
+    for (const parent of foldersOf(target)) this.openFolders.add(parent);
+    this.renderFiles();
+    const row =
+      folder === undefined
+        ? this.filesEl.querySelector<HTMLElement>(".tree-item-self.is-active")
+        : Array.from(this.filesEl.querySelectorAll<HTMLElement>(".tree-item-self[data-folder]")).find((candidate) => candidate.dataset.folder === folder);
+    if (row === null || row === undefined) return;
+    row.scrollIntoView({ block: "center" });
+    row.addClass("is-flashing");
+    window.setTimeout(() => {
+      row.removeClass("is-flashing");
+    }, 1500);
   }
 
   /** The synced files to search (VaultHistory.documents); without it, only the file the view opened with. */
@@ -212,7 +252,7 @@ export class HistoryModal extends Modal {
       if (known !== undefined) this.document = known;
     }
     this.renderFiles();
-    this.filesEl.querySelector(".is-selected")?.scrollIntoView({ block: "nearest" });
+    this.filesEl.querySelector(".is-active")?.scrollIntoView({ block: "nearest" });
   }
 
   /** The synced files as a folder tree, or the files that match the search, with their folders open. */
@@ -229,6 +269,7 @@ export class HistoryModal extends Modal {
     if (searching && matching.length > maxListedFiles) this.filesEl.createEl("p", { text: `${String(matching.length - maxListedFiles)} more. Type more to narrow the list.`, cls: "vault-sync-history-hint" });
   }
 
+  /** `nodes` in Obsidian's own tree markup, so the tree looks and behaves like the file explorer: its arrows, indentation guides, hover and selection. */
   private renderTree(parent: HTMLElement, nodes: TreeNode[], searching: boolean): void {
     const activate = (row: HTMLElement, action: () => void) => {
       row.setAttribute("role", "button");
@@ -244,25 +285,29 @@ export class HistoryModal extends Modal {
     for (const node of nodes) {
       if (node.kind === "folder") {
         const open = searching || this.openFolders.has(node.path);
-        const row = parent.createDiv({ cls: "vault-sync-history-folder" });
+        const item = parent.createDiv({ cls: open ? "tree-item vault-sync-history-folder" : "tree-item vault-sync-history-folder is-collapsed" });
+        const row = item.createDiv({ cls: "tree-item-self is-clickable mod-collapsible", attr: { "data-folder": node.path } });
         row.setAttribute("aria-expanded", String(open));
-        setIcon(row.createSpan({ cls: "vault-sync-history-folder-icon" }), open ? "chevron-down" : "chevron-right");
-        renderShown(row.createSpan({ cls: "vault-sync-history-folder-name" }), [shownPath(node.name)]);
-        row.createSpan({ text: String(node.files), cls: "vault-sync-history-folder-count" });
+        const arrow = row.createDiv({ cls: open ? "tree-item-icon collapse-icon" : "tree-item-icon collapse-icon is-collapsed" });
+        setIcon(arrow, "right-triangle");
+        renderShown(row.createDiv({ cls: "tree-item-inner" }), [shownPath(node.name)]);
+        row.createDiv({ cls: "tree-item-flair-outer" }).createSpan({ text: String(node.files), cls: "tree-item-flair" });
         activate(row, () => {
           if (searching) return;
           if (open) this.openFolders.delete(node.path);
           else this.openFolders.add(node.path);
           this.renderFiles();
         });
-        if (open) this.renderTree(parent.createDiv({ cls: "vault-sync-history-tree-children" }), node.children, searching);
+        if (open) this.renderTree(item.createDiv({ cls: "tree-item-children" }), node.children, searching);
         continue;
       }
       const { document } = node;
-      const row = parent.createDiv({ cls: "vault-sync-history-file" });
-      renderShown(row, [shownPath(node.name)]);
-      if (document.deleted) row.createSpan({ text: " (deleted)", cls: "vault-sync-history-hint" });
-      if (document.documentId === this.document?.documentId) row.addClass("is-selected");
+      const item = parent.createDiv({ cls: "tree-item vault-sync-history-file" });
+      const row = item.createDiv({ cls: "tree-item-self is-clickable" });
+      const name = row.createDiv({ cls: "tree-item-inner" });
+      renderShown(name, [shownPath(node.name)]);
+      if (document.deleted) name.createSpan({ text: " (deleted)", cls: "vault-sync-history-hint" });
+      if (document.documentId === this.document?.documentId) row.addClass("is-active");
       activate(row, () => {
         this.openDocument(document);
       });

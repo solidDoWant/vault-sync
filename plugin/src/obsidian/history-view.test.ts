@@ -159,8 +159,8 @@ describe("history view", () => {
       const before = entry({ path, contentHash: "aa" });
       expect(changeLabel(entry({ contentHash: "bb" }), before)).toEqual(["moved from ", { path }, " and edited"]);
       expect(entryLabel(entry({}), before, () => "then")).toEqual(["then · user 0190a5c4, device 0190a5c4 · ", "moved from ", { path }]);
-      expect(historyTitle(path)).toEqual(["History of ", { path }]);
-      expect(historyTitle("a\u202e.md")).toEqual(["History of ", { path: "a\\u202E.md" }]);
+      expect(historyTitle(path)).toEqual([{ path }]);
+      expect(historyTitle("a\u202e.md")).toEqual([{ path: "a\\u202E.md" }]);
     });
 
     it("names a device by id when its name is nothing but invisible characters", () => {
