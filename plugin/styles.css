@@ -177,6 +177,11 @@ input.vault-sync-field-invalid {
 
 .vault-sync-history-entry-who {
   order: 3;
+  /* Centred in a row: a box with an icon has the icon's baseline, which would put it off the line of the text. */
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--size-2-2);
   color: var(--text-muted);
   font-size: var(--font-ui-smaller);
 }
