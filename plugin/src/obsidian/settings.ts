@@ -508,8 +508,8 @@ export class VaultSyncSettingTab extends PluginSettingTab {
     if (sharing.kind === "not-member") {
       intro.setDesc(
         host.syncStatus.state === "vault-deleted"
-          ? "An owner deleted this vault. Disconnect it above. Your files stay here."
-          : "You are no longer a member of this vault. Disconnect it above. Your files stay here.",
+          ? "An owner deleted this vault, so it cannot sync. Disconnect it above. Your files stay here."
+          : "You are no longer a member of this vault, so it cannot sync. Disconnect it above. Your files stay here.",
       );
       return;
     }
