@@ -2,6 +2,18 @@
 
 All notable changes to vault-sync are listed here, newest release first.
 
+## 0.4.4
+
+vault-sync is a self-hosted replacement for Obsidian Sync. It has two parts: an Obsidian plugin, and a sync server that stores its data in PostgreSQL and S3. This release changes only the server, and only how it connects to S3. It fixes a server that cannot reach S3 when a proxy or gateway that offers HTTP/2 sits in front of the S3 endpoint. To install it, use the server image `ghcr.io/soliddowant/vault-sync:0.4.4` or the Helm chart `oci://ghcr.io/soliddowant/charts/vault-sync` (version 0.4.4). It has no database migration and no new setting, so you can upgrade a 0.4.3 server one replica at a time. The plugin has no changes.
+
+### Fixes
+
+- The server no longer fails its S3 requests when a proxy or gateway in front of S3 offers HTTP/2, for example an Envoy or Istio gateway. Before, the server's start-up check failed with `HeadBucket ... EOF`, and the server restarted in a loop. The server talks to S3 only over HTTP/1.1, but its TLS handshake still offered HTTP/2. A proxy that supports HTTP/2 chose it, got an HTTP/1.1 request, and closed the connection. The handshake now offers only HTTP/1.1, both with and without `VAULT_SYNC_S3_TLS_CA_FILE`. An S3 endpoint that does not offer HTTP/2 was not affected. The problem started in 0.3.0. ([#1467](https://github.com/solidDoWant/vault-sync/pull/1467))
+
+### Known issues
+
+- None known.
+
 ## 0.4.3
 
 vault-sync is a self-hosted replacement for Obsidian Sync. It has two parts: an Obsidian plugin, and a sync server that stores its data in PostgreSQL and S3. This release makes escrow safer. Escrow lets the admin's backup read an encrypted vault. Your devices now remember the escrow key of the server, and they show you its fingerprint. A fingerprint is a short code that identifies a key. If the escrow key changes without a signature from the old key, the plugin asks you before it uses the new key. The release also rewrites the documentation in plain English, with separate pages for users, admins and developers. It also fixes one sync defect with folder renames. To install it, use the server image `ghcr.io/soliddowant/vault-sync:0.4.3` or the Helm chart `oci://ghcr.io/soliddowant/charts/vault-sync` (version 0.4.3). Install the plugin with BRAT from the GitHub releases of this repository. You can upgrade a 0.4.2 server one replica at a time. Upgrade the server before the plugin.
