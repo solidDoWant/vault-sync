@@ -1,9 +1,10 @@
-import { Modal, Notice, Setting, ToggleComponent, type App } from "obsidian";
+import { Modal, Notice, Setting, ToggleComponent, setIcon, type App } from "obsidian";
 
 import { RestoreError, type HistoryDocument, type HistoryEntry } from "../core/sync/history";
 import { shownPath, type Shown } from "./display-text";
-import { diffCounts, foldUnchanged, isFold, lineDiff, matchingDocuments, revertChange, sideBySide, type DiffLine, type SideRow } from "./history-diff";
-import { entryLabel, historyTitle, maxPreviewBytes, otherPathValue, previewOf, restoreFailureText, sizeLabel, type Preview } from "./history-view";
+import { diffCounts, foldUnchanged, isFold, lineDiff, matchingDocuments, revertChange, sideBySide, withWordChanges, type DiffLine, type Segment, type SideRow } from "./history-diff";
+import { documentTree, foldersOf, type TreeNode } from "./history-tree";
+import { entryParts, historyTitle, maxPreviewBytes, otherPathValue, previewOf, restoreFailureText, sizeLabel, type Preview } from "./history-view";
 import { renderShown, shownFragment } from "./shown-dom";
 import type { VaultHistory } from "./session";
 import { errorMessage } from "./status";
@@ -12,13 +13,23 @@ const timeFormat = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", tim
 const formatTime = (date: Date) => timeFormat.format(date);
 const versionTime = (entry: HistoryEntry) => (entry.createdAt === undefined ? "an unknown time" : formatTime(entry.createdAt));
 
-/** The most files the file list shows at once; typing in the search narrows it. */
+/** The most files a search shows at once; typing more narrows it. */
 const maxListedFiles = 500;
 
 /** How the selected version is shown, kept while Obsidian runs so each history view opens as the last one was left. */
 const viewOptions = { changes: false, sideBySide: false };
 
 const strictDecoder = new TextDecoder("utf-8", { fatal: true });
+
+/** A line of a comparison, with the parts a change touched marked when it is one of a changed pair (withWordChanges). */
+function renderLineText(parent: HTMLElement, text: string, segments: Segment[] | undefined): void {
+  const element = parent.createSpan({ cls: "vault-sync-diff-text" });
+  if (segments === undefined) {
+    element.setText(text);
+    return;
+  }
+  for (const segment of segments) element.createSpan({ text: segment.text, cls: segment.changed ? "vault-sync-diff-word is-changed" : "vault-sync-diff-word" });
+}
 
 /** A revert that a later change makes impossible: it touches the same lines. */
 class RevertConflict extends Error {}
@@ -40,6 +51,8 @@ export class HistoryModal extends Modal {
   private selected: { entry: HistoryEntry; preview: Preview | undefined; content: Uint8Array | undefined } | undefined;
   /** The previews read so far, by revision id: only their start for a large revision. */
   private readonly previews = new Map<string, Uint8Array>();
+  /** The folders open in the file tree. While a search is typed, every folder shows open. */
+  private readonly openFolders = new Set<string>();
   /** Whether folded unchanged lines are shown, for the selected version. */
   private unfolded = false;
   /** Counts the documents opened, so a late answer for an earlier one is dropped. */
@@ -61,7 +74,10 @@ export class HistoryModal extends Modal {
     path?: string,
   ) {
     super(app);
-    if (documentId !== undefined && path !== undefined) this.document = { documentId, path, deleted: false };
+    if (documentId !== undefined && path !== undefined) {
+      this.document = { documentId, path, deleted: false };
+      for (const folder of foldersOf(path)) this.openFolders.add(folder);
+    }
     this.modalEl.addClass("vault-sync-history");
     this.showTitle();
   }
@@ -128,35 +144,67 @@ export class HistoryModal extends Modal {
       if (known !== undefined) this.document = known;
     }
     this.renderFiles();
+    this.filesEl.querySelector(".is-selected")?.scrollIntoView({ block: "nearest" });
   }
 
+  /** The synced files as a folder tree, or the files that match the search, with their folders open. */
   private renderFiles(): void {
     this.filesEl.empty();
+    const searching = this.searchEl.value.trim() !== "";
     const matching = matchingDocuments(this.documents, this.searchEl.value);
     if (matching.length === 0) {
       this.filesEl.createEl("p", { text: this.documents.length === 0 ? "No synced files yet." : "No synced file matches.", cls: "vault-sync-history-hint" });
       return;
     }
-    for (const document of matching.slice(0, maxListedFiles)) {
-      const row = this.filesEl.createDiv({ cls: "vault-sync-history-file" });
-      renderShown(row, [shownPath(document.path)]);
-      if (document.deleted) row.createSpan({ text: " (deleted)", cls: "vault-sync-history-hint" });
-      if (document.documentId === this.document?.documentId) row.addClass("is-selected");
+    // Closed folders draw nothing below them, so only a search needs a limit.
+    this.renderTree(this.filesEl, documentTree(searching ? matching.slice(0, maxListedFiles) : matching), searching);
+    if (searching && matching.length > maxListedFiles) this.filesEl.createEl("p", { text: `${String(matching.length - maxListedFiles)} more. Type more to narrow the list.`, cls: "vault-sync-history-hint" });
+  }
+
+  private renderTree(parent: HTMLElement, nodes: TreeNode[], searching: boolean): void {
+    const activate = (row: HTMLElement, action: () => void) => {
       row.setAttribute("role", "button");
       row.tabIndex = 0;
-      row.addEventListener("click", () => {
+      row.addEventListener("click", action);
+      row.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          action();
+        }
+      });
+    };
+    for (const node of nodes) {
+      if (node.kind === "folder") {
+        const open = searching || this.openFolders.has(node.path);
+        const row = parent.createDiv({ cls: "vault-sync-history-folder" });
+        row.setAttribute("aria-expanded", String(open));
+        setIcon(row.createSpan({ cls: "vault-sync-history-folder-icon" }), open ? "chevron-down" : "chevron-right");
+        renderShown(row.createSpan({ cls: "vault-sync-history-folder-name" }), [shownPath(node.name)]);
+        row.createSpan({ text: String(node.files), cls: "vault-sync-history-folder-count" });
+        activate(row, () => {
+          if (searching) return;
+          if (open) this.openFolders.delete(node.path);
+          else this.openFolders.add(node.path);
+          this.renderFiles();
+        });
+        if (open) this.renderTree(parent.createDiv({ cls: "vault-sync-history-tree-children" }), node.children, searching);
+        continue;
+      }
+      const { document } = node;
+      const row = parent.createDiv({ cls: "vault-sync-history-file" });
+      renderShown(row, [shownPath(node.name)]);
+      if (document.deleted) row.createSpan({ text: " (deleted)", cls: "vault-sync-history-hint" });
+      if (document.documentId === this.document?.documentId) row.addClass("is-selected");
+      activate(row, () => {
         this.openDocument(document);
       });
-      row.addEventListener("keydown", (event) => {
-        if (event.key === "Enter" || event.key === " ") this.openDocument(document);
-      });
     }
-    if (matching.length > maxListedFiles) this.filesEl.createEl("p", { text: `${String(matching.length - maxListedFiles)} more. Type to narrow the list.`, cls: "vault-sync-history-hint" });
   }
 
   /** Shows the versions of `document`. */
   private openDocument(document: HistoryDocument): void {
     this.document = document;
+    for (const folder of foldersOf(document.path)) this.openFolders.add(folder);
     this.selected = undefined;
     this.showTitle();
     this.renderFiles();
@@ -195,11 +243,18 @@ export class HistoryModal extends Modal {
     this.listEl.empty();
     this.entries.forEach((entry, index) => {
       const row = this.listEl.createDiv({ cls: "vault-sync-history-entry" });
-      renderShown(row, entryLabel(entry, this.entries[index + 1], formatTime));
+      // Three lines: when, what changed, and who. In the DOM, who comes before
+      // what with a hidden " · " between them, so the row's text reads as
+      // one line when copied.
+      const parts = entryParts(entry, this.entries[index + 1], formatTime);
+      const time = row.createDiv({ cls: "vault-sync-history-entry-time", text: parts.when });
+      if (index === 0) time.createSpan({ text: " (current)", cls: "vault-sync-history-current" });
+      row.createDiv({ cls: "vault-sync-history-entry-who", text: parts.who });
+      row.createSpan({ cls: "vault-sync-history-entry-separator", text: " · " });
+      renderShown(row.createDiv({ cls: "vault-sync-history-entry-change" }), parts.change);
       row.dataset.revisionId = entry.revisionId;
       row.setAttribute("role", "button");
       row.tabIndex = 0;
-      if (index === 0) row.createSpan({ text: " (current)", cls: "vault-sync-history-current" });
       if (entry.revisionId === this.selected?.entry.revisionId) row.addClass("is-selected");
       row.addEventListener("click", () => void this.select(entry));
       row.addEventListener("keydown", (event) => {
@@ -340,7 +395,7 @@ export class HistoryModal extends Modal {
       this.renderVersion(after, Number(entry.size));
       return;
     }
-    const lines = lineDiff(before.text, after.text);
+    const lines = withWordChanges(lineDiff(before.text, after.text));
     const counts = diffCounts(lines);
     previewEl.createEl("p", {
       text: counts.added + counts.removed === 0 ? `No change to the text since the version of ${versionTime(previous)}.` : `Changes since the version of ${versionTime(previous)}: ${String(counts.added)} added, ${String(counts.removed)} removed.`,
@@ -377,7 +432,7 @@ export class HistoryModal extends Modal {
       line.createSpan({ cls: "vault-sync-diff-number", text: row.before === undefined ? "" : String(row.before) });
       line.createSpan({ cls: "vault-sync-diff-number", text: row.after === undefined ? "" : String(row.after) });
       line.createSpan({ cls: "vault-sync-diff-marker", text: row.kind === "added" ? "+" : row.kind === "removed" ? "−" : "" });
-      line.createSpan({ cls: "vault-sync-diff-text", text: row.text });
+      renderLineText(line, row.text, row.segments);
     }
   }
 
@@ -393,7 +448,7 @@ export class HistoryModal extends Modal {
       for (const cell of [row.left, row.right]) {
         const side = line.createDiv({ cls: `vault-sync-diff-side ${cell === undefined ? "is-empty" : `is-${cell.kind}`}` });
         side.createSpan({ cls: "vault-sync-diff-number", text: cell === undefined ? "" : String(cell.number) });
-        side.createSpan({ cls: "vault-sync-diff-text", text: cell?.text ?? "" });
+        renderLineText(side, cell?.text ?? "", cell?.segments);
       }
     }
   }

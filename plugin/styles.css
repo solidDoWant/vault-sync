@@ -99,15 +99,94 @@ input.vault-sync-field-invalid {
   overflow: auto;
 }
 
-.vault-sync-history-file,
-.vault-sync-history-entry {
-  padding: var(--size-4-1) var(--size-4-2);
+/* The file tree: folders open and close like Obsidian's file explorer. */
+.vault-sync-history-folder,
+.vault-sync-history-file {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-1);
+  padding: var(--size-2-2) var(--size-4-2);
   border-radius: var(--radius-s);
   cursor: pointer;
   font-size: var(--font-ui-small);
   overflow-wrap: anywhere;
 }
 
+.vault-sync-history-file {
+  /* In line with the names of folders, past their chevron. */
+  padding-left: calc(var(--size-4-2) + var(--icon-s) + var(--size-4-1));
+}
+
+.vault-sync-history-folder-icon {
+  display: flex;
+  color: var(--text-muted);
+}
+
+.vault-sync-history-folder-icon svg {
+  width: var(--icon-s);
+  height: var(--icon-s);
+}
+
+.vault-sync-history-folder-name {
+  flex: 1 1 auto;
+  font-weight: var(--font-semibold);
+}
+
+.vault-sync-history-folder-count {
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+}
+
+.vault-sync-history-tree-children {
+  margin-left: var(--size-4-3);
+  padding-left: var(--size-4-1);
+  border-left: 1px solid var(--background-modifier-border);
+}
+
+/* The versions: one card each, when on top, then what changed, then who. */
+.vault-sync-history-entry {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-2-1);
+  padding: var(--size-4-2) var(--size-4-3);
+  border-bottom: 1px solid var(--background-modifier-border);
+  border-left: 3px solid transparent;
+  cursor: pointer;
+  font-size: var(--font-ui-small);
+  overflow-wrap: anywhere;
+}
+
+.vault-sync-history-entry-time {
+  order: 1;
+  font-weight: var(--font-semibold);
+  color: var(--text-normal);
+}
+
+.vault-sync-history-entry-change {
+  order: 2;
+}
+
+.vault-sync-history-entry-change::first-letter {
+  text-transform: uppercase;
+}
+
+.vault-sync-history-entry-who {
+  order: 3;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+/* Joins who and what in the row's text, which shows them on lines of their own. */
+.vault-sync-history-entry-separator {
+  display: none;
+}
+
+.vault-sync-history-current {
+  font-weight: var(--font-normal);
+  color: var(--text-accent);
+}
+
+.vault-sync-history-folder:hover,
 .vault-sync-history-file:hover,
 .vault-sync-history-file.is-selected,
 .vault-sync-history-entry:hover,
@@ -115,12 +194,14 @@ input.vault-sync-field-invalid {
   background-color: var(--background-modifier-hover);
 }
 
-.vault-sync-history-file.is-selected,
-.vault-sync-history-entry.is-selected {
+.vault-sync-history-file.is-selected {
   color: var(--text-accent);
 }
 
-.vault-sync-history-current,
+.vault-sync-history-entry.is-selected {
+  border-left-color: var(--interactive-accent);
+}
+
 .vault-sync-history-hint {
   color: var(--text-muted);
 }
@@ -198,6 +279,17 @@ input.vault-sync-field-invalid {
 
 .vault-sync-diff .is-removed {
   background-color: rgba(var(--color-red-rgb), 0.15);
+}
+
+/* Within a changed line: the text the change touched. */
+.vault-sync-diff .is-removed .vault-sync-diff-word.is-changed {
+  background-color: rgba(var(--color-red-rgb), 0.4);
+  border-radius: var(--radius-s);
+}
+
+.vault-sync-diff .is-added .vault-sync-diff-word.is-changed {
+  background-color: rgba(var(--color-green-rgb), 0.4);
+  border-radius: var(--radius-s);
 }
 
 .vault-sync-diff .is-empty {

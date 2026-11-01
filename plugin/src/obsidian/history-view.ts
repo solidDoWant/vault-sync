@@ -103,10 +103,25 @@ export function sizeLabel(size: bigint | number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
+/** A revision in the history list, in parts: when, by which user and device, and what happened. */
+export interface EntryParts {
+  when: string;
+  who: string;
+  change: Shown;
+}
+
+export function entryParts(entry: HistoryEntry, previous: HistoryEntry | undefined, formatTime: (date: Date) => string): EntryParts {
+  return {
+    when: entry.createdAt === undefined ? "unknown time" : formatTime(entry.createdAt),
+    who: `${userLabel(entry)}, ${deviceLabel(entry)}`,
+    change: changeLabel(entry, previous),
+  };
+}
+
 /** One line per revision in the history list: when, by which user and device, and what happened. */
 export function entryLabel(entry: HistoryEntry, previous: HistoryEntry | undefined, formatTime: (date: Date) => string): Shown {
-  const when = entry.createdAt === undefined ? "unknown time" : formatTime(entry.createdAt);
-  return [`${when} · ${userLabel(entry)}, ${deviceLabel(entry)} · `, ...changeLabel(entry, previous)];
+  const { when, who, change } = entryParts(entry, previous, formatTime);
+  return [`${when} · ${who} · `, ...change];
 }
 
 /**
