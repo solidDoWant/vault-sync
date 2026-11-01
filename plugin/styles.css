@@ -57,30 +57,23 @@ input.vault-sync-field-invalid {
  * synced files, the chosen file's versions and the chosen version side by
  * side. Narrow windows and phones stack the three panes.
  */
-/* The title: "History of" as a label, then the file's path in a box, its folders muted and its name in bold. */
-.vault-sync-history-title-label {
-  color: var(--text-muted);
+/*
+ * The title: the file's path as a breadcrumb, in Obsidian's own view-header
+ * classes. The file's name reads in full, as Obsidian's title does.
+ */
+.vault-sync-history-breadcrumbs {
+  white-space: normal;
+  flex-wrap: wrap;
+  justify-content: center;
   font-weight: var(--font-normal);
 }
 
-.vault-sync-history-title-path {
-  padding: var(--size-2-1) var(--size-4-2);
-  border: 1px solid var(--background-modifier-border);
-  border-radius: var(--radius-s);
-  background-color: var(--background-secondary);
-  font-family: var(--font-monospace);
-  font-size: 0.85em;
-  overflow-wrap: anywhere;
-}
-
-.vault-sync-history-title-folder {
-  color: var(--text-muted);
-  font-weight: var(--font-normal);
-}
-
-.vault-sync-history-title-file {
+.vault-sync-history-breadcrumbs .vault-sync-history-breadcrumb-file {
   color: var(--text-normal);
-  font-weight: var(--font-semibold);
+}
+
+.vault-sync-history-breadcrumbs .view-header-breadcrumb {
+  cursor: pointer;
 }
 
 .modal.vault-sync-history {
@@ -88,14 +81,18 @@ input.vault-sync-field-invalid {
   max-width: 95vw;
   height: min(860px, 90vh);
   max-height: 90vh;
+  padding: 0;
+  overflow: hidden;
 }
 
+/* Left, top to bottom: the files, on the sidebar's background as in Obsidian's file explorer. Right: the title, then the versions beside the chosen version. */
 .vault-sync-history .modal-content.vault-sync-history-body {
   display: grid;
-  grid-template-columns: minmax(160px, 1fr) minmax(200px, 1.3fr) minmax(0, 3.5fr);
-  gap: var(--size-4-3);
+  grid-template-columns: minmax(180px, 1fr) minmax(0, 4.5fr);
   flex: 1 1 auto;
+  height: 100%;
   min-height: 0;
+  margin: 0;
   overflow: hidden;
 }
 
@@ -106,10 +103,41 @@ input.vault-sync-field-invalid {
   min-width: 0;
 }
 
-.vault-sync-history-files-pane,
+.vault-sync-history-files-pane {
+  padding: var(--size-4-4) var(--size-4-2) var(--size-4-2);
+  background-color: var(--background-secondary);
+  border-right: 1px solid var(--background-modifier-border);
+}
+
+.vault-sync-history-main {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+.vault-sync-history-header {
+  padding: var(--size-4-4) var(--size-4-12) var(--size-4-3) var(--size-4-4);
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.vault-sync-history-header .modal-title {
+  margin: 0;
+}
+
+.vault-sync-history-panes {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.3fr) minmax(0, 3.5fr);
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
 .vault-sync-history-versions-pane {
   border-right: 1px solid var(--background-modifier-border);
-  padding-right: var(--size-4-2);
+}
+
+.vault-sync-history-content-pane {
+  padding: var(--size-4-3) var(--size-4-4);
 }
 
 .vault-sync-history-search {
@@ -125,48 +153,9 @@ input.vault-sync-field-invalid {
   overflow: auto;
 }
 
-/* The file tree: folders open and close like Obsidian's file explorer. */
-.vault-sync-history-folder,
-.vault-sync-history-file {
-  display: flex;
-  align-items: center;
-  gap: var(--size-4-1);
-  padding: var(--size-2-2) var(--size-4-2);
-  border-radius: var(--radius-s);
-  cursor: pointer;
-  font-size: var(--font-ui-small);
-  overflow-wrap: anywhere;
-}
-
-.vault-sync-history-file {
-  /* In line with the names of folders, past their chevron. */
-  padding-left: calc(var(--size-4-2) + var(--icon-s) + var(--size-4-1));
-}
-
-.vault-sync-history-folder-icon {
-  display: flex;
-  color: var(--text-muted);
-}
-
-.vault-sync-history-folder-icon svg {
-  width: var(--icon-s);
-  height: var(--icon-s);
-}
-
-.vault-sync-history-folder-name {
-  flex: 1 1 auto;
-  font-weight: var(--font-semibold);
-}
-
-.vault-sync-history-folder-count {
-  color: var(--text-faint);
-  font-size: var(--font-ui-smaller);
-}
-
-.vault-sync-history-tree-children {
-  margin-left: var(--size-4-3);
-  padding-left: var(--size-4-1);
-  border-left: 1px solid var(--background-modifier-border);
+/* The file tree uses Obsidian's own tree-item markup: only the file counts need spacing. */
+.vault-sync-history-files .tree-item-flair-outer {
+  margin-inline-start: auto;
 }
 
 /* The versions: one card each, when on top, then what changed, then who. */
@@ -253,16 +242,9 @@ input.vault-sync-field-invalid {
   color: var(--text-accent);
 }
 
-.vault-sync-history-folder:hover,
-.vault-sync-history-file:hover,
-.vault-sync-history-file.is-selected,
 .vault-sync-history-entry:hover,
 .vault-sync-history-entry.is-selected {
   background-color: var(--background-modifier-hover);
-}
-
-.vault-sync-history-file.is-selected {
-  color: var(--text-accent);
 }
 
 .vault-sync-history-entry.is-selected {
@@ -370,26 +352,15 @@ input.vault-sync-field-invalid {
   cursor: pointer;
 }
 
+/* Narrow windows and phones: everything in one column, the files and the versions each in a short scrolling list. */
 @media (max-width: 900px) {
-  .vault-sync-history .modal-content.vault-sync-history-body {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto auto minmax(0, 1fr);
+  .vault-sync-history .modal-content.vault-sync-history-body,
+  .vault-sync-history-panes {
+    display: flex;
+    flex-direction: column;
     overflow: auto;
   }
-}
 
-.is-mobile .vault-sync-history .modal-content.vault-sync-history-body {
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto auto minmax(0, 1fr);
-  overflow: auto;
-}
-
-.is-mobile .vault-sync-history-files,
-.is-mobile .vault-sync-history-list {
-  max-height: 25vh;
-}
-
-@media (max-width: 900px) {
   .vault-sync-history-files,
   .vault-sync-history-list {
     max-height: 25vh;
@@ -398,8 +369,26 @@ input.vault-sync-field-invalid {
   .vault-sync-history-files-pane,
   .vault-sync-history-versions-pane {
     border-right: none;
-    padding-right: 0;
+    border-bottom: 1px solid var(--background-modifier-border);
   }
+}
+
+.is-mobile .vault-sync-history .modal-content.vault-sync-history-body,
+.is-mobile .vault-sync-history-panes {
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+}
+
+.is-mobile .vault-sync-history-files,
+.is-mobile .vault-sync-history-list {
+  max-height: 25vh;
+}
+
+.is-mobile .vault-sync-history-files-pane,
+.is-mobile .vault-sync-history-versions-pane {
+  border-right: none;
+  border-bottom: 1px solid var(--background-modifier-border);
 }
 
 .vault-sync-invite-code {
