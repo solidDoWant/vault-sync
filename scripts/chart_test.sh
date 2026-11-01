@@ -496,7 +496,7 @@ check "an enabled PrometheusRule is named after the release, in its namespace, w
 	"$prometheus_rules | length == 1 and .[0].apiVersion == \"monitoring.coreos.com/v1\" and .[0].metadata.name == \"$release\" and .[0].metadata.namespace == \"sync\" and .[0].metadata.labels.release == \"prometheus\" and .[0].metadata.annotations.team == \"sync\""
 check "every alert has a severity of critical or warning" "$alert_rules | length > 0 and all(.labels.severity == \"critical\" or .labels.severity == \"warning\")"
 check "every alert's runbook_url is the docs/admin/alerts.md anchor of its name" \
-	"$alert_rules | all(.annotations.runbook_url == \"https://github.com/solidDoWant/vault-sync/blob/master/docs/admin/alerts.md#\" + (.alert | ascii_downcase))"
+	"$alert_rules | all(.annotations.runbook_url == \"https://github.com/solidDoWant/vault-sync/blob/$(yq .appVersion "$chart/Chart.yaml")/docs/admin/alerts.md#\" + (.alert | ascii_downcase))"
 check "every vault_sync expression matches the release's namespace and job" \
 	"$alert_rules | map(select(.expr | test(\"vault_sync_\"))) | length > 0 and all(.expr | [scan(\"vault_sync_[a-z0-9_]+[{][^}]*[}]\")] | length > 0 and all(test(\"namespace=\\\"sync\\\", job=\\\"$release\\\"\")))"
 check "kube-state-metrics alerts are off by default" \
