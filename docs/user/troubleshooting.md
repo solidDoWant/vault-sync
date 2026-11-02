@@ -58,7 +58,17 @@ An owner removed you from the connected vault, or you left it. Sync of the vault
 
 ## vault deleted
 
-An owner deleted the connected vault. Sync of the vault stops. Click **Disconnect**. Your files stay. For 30 days, your admin can restore the vault. Ask an owner or your admin.
+An owner deleted the connected vault. Sync of the vault stops. Click **Disconnect**. Your files stay. For 30 days, your admin can restore the vault. Ask an owner or your admin. If your admin restored the vault into a new vault, see [After your admin restored a vault](#after-your-admin-restored-a-vault).
+
+## After your admin restored a vault
+
+If the server lost the files of a vault, your admin can restore them from a backup into a new vault. The new vault is a different vault from the old one. If the old vault still exists, an owner deletes it, and the status shows `vault deleted`. Your device still has all your files. To sync them with the new vault:
+
+1. Wait until an owner invites you to the new vault, and join it (see [Join a vault](sharing.md#join-a-vault)).
+2. In the settings, click **Disconnect** for the old vault.
+3. Choose **Connect to an existing vault**, and choose the new vault. The plugin asks before it connects, because both sides have files.
+
+The plugin then combines your files with the files of the new vault. Nothing is deleted or overwritten (see [When both sides already have files](getting-started.md#when-both-sides-already-have-files)). Your edits that are newer than the backup are uploaded. If a file differs, you get a conflict copy next to it. If you deleted or renamed a file and the change did not sync before the loss, the old file comes back. Delete it again if you do not want it. The new vault has no history from before the restore.
 
 ## stopped: key data doesn't verify
 
