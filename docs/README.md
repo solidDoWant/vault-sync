@@ -87,6 +87,7 @@ docs/design/               Unchanged location. The design of the engine, sharing
   sharing.md               Vault membership, invitations and roles.
   encryption.md            End-to-end encryption: keys, epochs, escrow, the membership log.
   crypto.md                The byte formats of the cipher suite.
+  live-editing.md          Live editing of open notes: rooms, the writer, the relay.
 
 docs/testing/              Unchanged location. The test tiers and how to run them. For developers.
   acceptance.md            How `make acceptance` finds and counts the acceptance tests.
@@ -99,6 +100,7 @@ docs/acceptance/           Unchanged location. The owner's acceptance checklists
   phase-2.md
   phase-3.md
   phase-4.md
+  phase-5.md
 
 docs/agents/               Unchanged. For agents only.
 
