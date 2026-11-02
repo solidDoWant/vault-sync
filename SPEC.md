@@ -145,8 +145,6 @@ All identifiers are UUIDv7 unless stated. Every table below is scoped by `vault_
 | `anchor_lists` | `user_id` (PK), `version`, `sealed_list`, `updated_at` | E2EE only (§9.3). The sealed anchor list of a user (`docs/design/encryption.md`, *Trust anchors*). It is opaque to the server, and only the next version replaces it. |
 | `maintenance_runs` | `job` (PK), `last_success_at` | The time that each server background job last finished a run without errors, on any replica. Today the only job is `retention` (§11). The service-wide metrics read it (§12). |
 | `export_status` | `id` (PK, always `true`), `finished_at`, `status`, `last_success_at` | Exactly one row, which migration 0028 inserts. The export updates it at the end of each run with the time the run finished, its status (`ok`, `partial`, `failed`), and the time a run last finished `ok` (`docs/admin/backup-and-restore.md`). |
-| `live_rooms` | `document_id` (PK), `room_id`, `seed_rev_id`, `latest_mark_rev_id`, `writer_device_id`, `writer_token`, `created_at` | Phase 5 (§10). One row per live session, with its fenced writer. It holds no note content, and it is deleted with its last participant. |
-| `live_participants` | `room_id`, `device_id`, `user_id`, `read_only`, `replica_id`, `last_seen` | Phase 5 (§10). The devices in a live session. A participant without a heartbeat for 30 seconds expires. |
 
 **Escrow slots and the escrow chain.** These rules hold for `key_slots` with `recipient_kind = escrow` and for `escrow_chain`:
 
@@ -403,7 +401,7 @@ Each device opens one WebSocket (`GET /v1/realtime`) with the same bearer token 
 
 - Client to server: `subscribe{vault_id}`, `unsubscribe{vault_id}`.
 - Server to client: `subscribed{vault_id, head_seq}`, `vault_changed{vault_id, seq}`, `error`, and later membership and key-epoch changes.
-- Field numbers 100–199 of both envelopes are reserved for the live-editing frames of §10: join, leave, and relayed Yjs sync and awareness messages, multiplexed by room.
+- Field numbers 100–199 of both envelopes are reserved for live editing (§10).
 
 The channel only makes sync faster. Correctness never depends on receiving a notification.
 
@@ -936,19 +934,9 @@ Escrow key rotation:
 - During an escrow key rotation, the export job writes through the job-only `EscrowJobService`. It appends the next rotation statement and replaces escrow slots conditionally (§5).
 - `EscrowJobService` is authenticated only by a static bearer token (`VAULT_SYNC_ESCROW_JOB_TOKEN_FILE`, compared in constant time). User tokens are refused. Without a token configured, the service refuses every call.
 
-## 10. Live collaborative editing (Phase 5)
+## 10. Live collaborative editing (Phase 5, deferred)
 
-The design is in [`docs/design/live-editing.md`](docs/design/live-editing.md). The rules that bind the rest of the system are these:
-
-- A **live session** is the set of devices that have one Markdown note (`TEXT` document) open in an editor at the same time. Each device keeps the note as a Yjs document in memory. The server only relays Yjs sync and awareness messages between them, over the realtime channel (§6.4). It parses none of them and stores none of them.
-- **The revision log stays the only durable copy of a note** (principle 2). One participant, the writer, commits the session text as ordinary revisions. A commit can carry a `live_mark` (the room, the writer's token and the Yjs snapshot of the committed text), which the server stores with the revision in the same transaction.
-- **Rooms.** The server keeps one `live_rooms` row per active session and its `live_participants` (§5). Every change of a room is one transaction under the room's row lock. The server picks the seed revision, the head at creation, so that every device builds the same starting state and no text is duplicated.
-- **One fenced writer.** The server grants one participant the writer role with a token. Only the writer moves text between revisions and the session, and `CommitRevision` refuses a mark whose token is not current.
-- **Bases follow the disk.** A device's journal base for a note in a session never moves ahead of the text that its file on disk holds.
-- **Fallback.** Any failure of the live layer leaves the note to file sync (`docs/design/engine.md`), which never loses an edit.
-- **Authorization.** Every join resolves the caller's role. Viewers receive but cannot send edits. The membership check on delivery applies to live frames.
-- **Encryption.** In an encrypted vault, every relayed payload and every mark state is sealed with `subkey(epoch_key, "live")` or `subkey(epoch_key, "live-mark")` (`docs/design/crypto.md`).
-- **Bounds.** Rooms per connection, participants per room, part size, message size and byte rates are bounded (`docs/design/live-editing.md` §8).
+Live editing is not built. The owner deferred it on 2026-11-02 and keeps file sync for every file, including Markdown notes. If it is built, the proposal is [`docs/design/crdt-notes.md`](docs/design/crdt-notes.md): for Markdown notes, an append-only log of CRDT updates becomes the only way content moves between devices, and files and revisions become one-way views of it. Nothing in this specification depends on that proposal. The `yjs` document kind and the field numbers reserved in §6.4 stay unused until then.
 
 ## 11. Retention and history
 
@@ -1160,7 +1148,7 @@ GitHub milestones and parent issues track the work. A phase is done when its acc
 2. **Single-user file sync:** a new plugin engine (`docs/design/engine.md`) plus the adapter for desktop and Android, conflicts, history and restore, Markdown import, and the Helm chart. It is done as `docs/acceptance/phase-2.md` defines: the checklist passes on `master`, a security review and a narrow bug hunt ran and their critical and high findings are fixed, and `0.2.0` is released.
 3. **Vault sharing:** membership management, invitations, roles in the UI.
 4. **End-to-end encryption:** key hierarchy, escrow, export decryption, crypto vectors, independent crypto review. Until then, creating an E2EE vault is rejected (§9.3).
-5. **Live collaborative editing:** live sessions for open notes, relayed through the server, with presence, on desktop and mobile, in plaintext and encrypted vaults. It is done as `docs/acceptance/phase-5.md` defines.
+5. **Live collaborative editing:** deferred by the owner on 2026-11-02 (§10). The proposal is `docs/design/crdt-notes.md`. It needs an owner-approved checklist before work starts.
 
 ## 16. Open questions
 

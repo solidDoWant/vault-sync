@@ -27,7 +27,6 @@ Out of scope for Phase 2: vault sharing, end-to-end encryption, live co-editing,
   - `docs`: `document_id` → `{ path, kind, base_rev_id, base_hash }`. `base_*` is the revision this device last synced for the document; `base_hash` is the SHA-256 of its content.
   - `pending`: local operations not yet acknowledged. Each is `{ op_id, document_id, kind: create|edit|rename|delete, path, revision_id, content_hash }`. `revision_id` is chosen once and kept until the commit is acknowledged, so a retry after a crash is idempotent.
   - `conflicts`: conflict copies this device created, for the conflict view.
-  - For live editing (`docs/design/live-editing.md` §5), a `docs[d]` entry can also carry `held` (the room of a session the note is in) and `seen_rev_id` (the newest revision of the note that this device pulled or committed). Outside a session, `seen_rev_id` equals `base_rev_id`.
 
 ## 3. The sync loop
 
@@ -121,18 +120,6 @@ After every row, set `base = R` (rows A2, A5 and A11 drop the document instead).
 | P2 | `ALREADY_EXISTS` (another document holds the path) | Keep the operation and pull. The other document arrives and meets the local file through rule W: same content binds it and drops the pending create; different content moves the local file to a conflict copy name (C), and that is pushed as a new document. |
 | P3 | The name is refused as unportable (§6) | Keep the file untouched, list it in the conflict view with the reason, and don't retry until it is renamed. |
 
-**Held notes** (live editing, `docs/design/live-editing.md` §5). A note whose `docs[d]` has `held` set is in the local state `held`, and only these rows apply to it. A device enters and leaves `held` only through the two transitions of that design (*Enter held*, *Leave held*), under the cycle lock. `held` keeps `base` at or behind the file (that design's invariant I2), so these rows never set `base`.
-
-| # | Event | Action |
-|---|---|---|
-| H1 | Pulled `R`, live, same path | Write nothing. Set `seen_rev_id = R`. (The session's writer absorbs `R`.) |
-| H2 | Pulled `R`, live, new path | Move the file to `R.path` (rule W). Set `path` and `seen_rev_id = R`. Write no content. |
-| H3 | Pulled `R`, tombstone | Keep the file. Push nothing. Set `seen_rev_id = R`. (The session's writer re-creates the note.) |
-| H4 | The file's content changes | No pending operation. (Obsidian saved the editor. The base may move by the save rule of that design, §5.5.) |
-| H5 | The user renames the note | A pending rename: a path-only commit based on `seen_rev_id`, reusing that revision's content. On success set `path` and `seen_rev_id`. On P1, retry on the new `seen_rev_id` after the pull. P2 and P3 as for any rename. |
-| H6 | The user deletes the note | The editor closes, so *Leave held* runs. It commits the tombstone based on `seen_rev_id`. If that is refused (P1), the rows above apply after the release, so an edit made by others wins (A8). |
-| H7 | A crash while held | At startup, `held` is still set, so *Leave held* runs from its step 4: the head is applied to the note with rows A3 and A5 to A10 against `base`. |
-
 **Rule C: conflict copies.**
 - The name is `<name> (Conflicted copy <user> <device name> <YYYYMMDDHHMM>).<ext>`, in the same folder, after the local user and device (`sharing.md`, Attribution). If that is taken, append ` 2`, ` 3`, and so on.
 - If the name would exceed the path limits (§6), shorten `<name>`. The copy is never dropped.
@@ -208,9 +195,7 @@ Keep the existing Obsidian UI:
 4. **No rule pushes a change in response to a change unless the device has a local change of its own.** Rows A1–A5, A8 and A11 push nothing, and rows A6, A7, A9 and A10 push only on top of a local change. So when users stop editing, each device's queue empties after finitely many cycles, and every device ends at the server's heads. Two devices cannot keep re-pushing to each other.
 5. **Paths can't collide on the server** (one name per key), so rule W and P2 run once per collision, and the copy is a new document with a free name.
 
-6. **A held note always comes back.** While a note is held, its `base` may lag behind `seen_rev_id`. *Leave held* (also run at startup after a crash) applies the head against `base` with the ordinary rows, so the lag always resolves into points 1 to 4.
-
-A rule that breaks any of points 1–6 is a design change and needs the owner.
+A rule that breaks any of points 1–5 is a design change and needs the owner.
 
 ## 12. Settled questions from the old engine's tests
 
