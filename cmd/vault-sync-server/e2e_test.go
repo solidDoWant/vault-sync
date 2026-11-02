@@ -81,7 +81,7 @@ func TestPluginE2E(t *testing.T) {
 	// for the test token.
 	// The users of the shared-vault spec (shared-vault.e2e.ts) have display
 	// names on the identity provider, as real users do.
-	issuer.EnableDeviceFlow(t, key, authtest.DeviceFlowOptions{Subject: "plugin-e2e-device-user", Names: map[string]string{
+	flow := issuer.EnableDeviceFlow(t, key, authtest.DeviceFlowOptions{Subject: "plugin-e2e-device-user", Names: map[string]string{
 		"plugin-e2e-shared-owner":  "Olivia Owner",
 		"plugin-e2e-shared-member": "Max Member",
 	}})
@@ -101,9 +101,19 @@ func TestPluginE2E(t *testing.T) {
 		config.ShutdownDelayEnv + "=0s",
 	}
 
+	mainBucket := testinfra.S3Bucket(t)
+
 	mainEnv := append([]string{config.DatabaseURLEnv + "=" + database.DSN}, serverEnv...)
-	mainEnv = append(mainEnv, bucketEnvironment(testinfra.S3Bucket(t))...)
+	mainEnv = append(mainEnv, bucketEnvironment(mainBucket)...)
 	apiAddress, _ := startE2EServer(t, "server", binary, mainEnv)
+
+	// The restore spec's admin steps (e2e_restore_test.go) on the main
+	// server.
+	restore := &e2eRestoreDeployment{
+		binary: binary, database: database.DSN, bucket: mainBucket, apiURL: "http://" + apiAddress, flow: flow, exports: map[string]string{},
+	}
+	restoreControls := make(chan escrowControlRequest)
+	restoreControlURL := serveEscrowControl(t, restoreControls)
 
 	escrow := startE2EEscrowDeployment(t, binary, serverEnv)
 	controls := make(chan escrowControlRequest)
@@ -124,6 +134,7 @@ func TestPluginE2E(t *testing.T) {
 		e2eClientIDEnv+"="+authtest.DefaultAudience,
 		e2eEscrowServerURLEnv+"="+escrow.proxyURL,
 		e2eEscrowControlURLEnv+"="+controlURL,
+		e2eRestoreControlURLEnv+"="+restoreControlURL,
 		"CI=1", // no interactive output
 	)
 	// Streamed, so that a slow first run (it downloads Obsidian) shows
@@ -132,12 +143,14 @@ func TestPluginE2E(t *testing.T) {
 	suite.Command.Stderr = os.Stderr
 	suite.Start(t)
 
-	// The escrow reset spec's operator steps run here, on the test
-	// goroutine, while the suite runs.
+	// The escrow reset and restore specs' operator steps run here, on the
+	// test goroutine, while the suite runs.
 	for {
 		select {
 		case request := <-controls:
 			request.reply <- escrow.handle(t, request)
+		case request := <-restoreControls:
+			request.reply <- restore.handle(t, request)
 		case <-suite.Exited():
 			require.NoError(t, suite.Err(), "plugin e2e suite failed (see its output above)")
 
