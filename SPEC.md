@@ -43,7 +43,7 @@ The export follows these rules:
 - A document whose path that tree cannot hold goes to `<out>/<vault-id>.unplaced/<document-id>` instead. Examples are a file/folder collision such as `a` and `a/b.md`, a name the filesystem rejects such as one over 255 bytes, and an invalid or non-UTF-8 path.
 - A streamed JSON Lines manifest, `<out>/<vault-id>.manifest.jsonl`, lists every live document: id, original path, kind, head revision id, size, SHA-256, status (`placed`, `unplaced` or `missing`) and where its bytes are.
 - The unplaced tree and the manifest sit beside the vault's directory, never inside it. So no user file can be mistaken for them.
-- The layout and the manifest are a versioned format (format 2, in the marker and in every manifest), so the Phase 6 importer can restore exactly. The format is specified in `docs/admin/backup-and-restore.md` and the `internal/export` package doc.
+- The layout and the manifest are a versioned format (format 2, in the marker and in every manifest), so the restore (`docs/design/restore-from-export.md`) can restore exactly. The format is specified in `docs/admin/backup-and-restore.md` and the `internal/export` package doc.
 - A live document's bytes can be absent for one reason only: its content is missing or corrupt in S3, or, in an escrowed vault, cannot be decrypted. The manifest lists it as `missing`, and the run reports `partial`.
 - History, tombstones and E2EE vaults without escrow are not exported.
 
@@ -1149,6 +1149,7 @@ GitHub milestones and parent issues track the work. A phase is done when its acc
 3. **Vault sharing:** membership management, invitations, roles in the UI.
 4. **End-to-end encryption:** key hierarchy, escrow, export decryption, crypto vectors, independent crypto review. Until then, creating an E2EE vault is rejected (§9.3).
 5. **Live collaborative editing:** deferred by the owner on 2026-11-02 (§10). The proposal is `docs/design/crdt-notes.md`. It needs an owner-approved checklist before work starts.
+6. **Restore from an export:** restore a vault's current files from the export into a new vault, verified against the manifest, and reconnect devices without losing files. It is done as `docs/acceptance/phase-6.md` defines. Design: `docs/design/restore-from-export.md`.
 
 ## 16. Open questions
 
