@@ -2,7 +2,7 @@
 
 For: developers and agents. This page says how `make acceptance` finds and counts the acceptance tests.
 
-`make acceptance` runs the acceptance tests of `docs/acceptance/phase-2.md`, `docs/acceptance/phase-3.md` and `docs/acceptance/phase-4.md` and prints, for each checklist, one line per scenario, then the number passing, for example:
+`make acceptance` runs the acceptance tests of `docs/acceptance/phase-2.md`, `docs/acceptance/phase-3.md`, `docs/acceptance/phase-4.md` and `docs/acceptance/phase-6.md` and prints, for each checklist, one line per scenario, then the number passing, for example:
 
 ```
 Phase 2 (docs/acceptance/phase-2.md)
@@ -23,9 +23,16 @@ P4-01  no test
 ...
 P4-23  no test
 passing 5/23
+
+Phase 6 (docs/acceptance/phase-6.md)
+P6-01  pass
+P6-02  not run
+P6-03  no test
+P6-04  owner sign-off
+passing 1/4
 ```
 
-The Phase 2 checklist lists its scenarios as `- **AC-nn** …` items, the Phase 3 and Phase 4 ones as `| P3-nn | … |` and `| P4-nn | … |` table rows.
+The Phase 2 checklist lists its scenarios as `- **AC-nn** …` items, the Phase 3, 4 and 6 ones as `| P3-nn | … |`, `| P4-nn | … |` and `| P6-nn | … |` table rows.
 
 ## Naming a test for its scenario
 
@@ -40,9 +47,9 @@ A scenario may have several tests.
 
 `scripts/acceptance.sh` runs, each against a real server on PostgreSQL and S3 (docker compose, so it needs Docker):
 
-1. the `integration`-tagged Go tests named `TestAC…`, the top-level Go tests that hold an `[AC-nn]`, `[P3-nn]` or `[P4-nn]` subtest (run whole, with their other subtests), and the plugin integration suite (`TestPluginProtocolClient`), whose report it keeps. `TestAC22OfflineRestore` and `TestAC25Convergence` (`cmd/vault-sync-server/acceptance_integration_test.go`) each start the server and run one plugin acceptance suite (`plugin/test/acceptance/*.acceptance.test.ts`, `vitest.acceptance.config.ts`): the real sync engine on in-memory vaults against that server. For AC-22 the Go test also plays the operator, stopping the server, snapshotting and restoring PostgreSQL and S3, and starting it again behind a proxy at a fixed address. AC-25 runs ten fixed seeds; `VAULT_SYNC_AC25_SEED=n` runs only seed `n`, for example to replay a failure (`VAULT_SYNC_AC25_SEED=7 ./scripts/test-integration.sh -run TestAC25 ./cmd/vault-sync-server/`);
-2. the plugin unit test files (`plugin/src/**/*.test.ts`) that hold a `[P4-nn]` test, with vitest's JSON report;
-3. the desktop e2e spec files that hold an `[AC-nn]`, `[P3-nn]` or `[P4-nn]` test. Whole files run, because a spec's tests build on the ones before them; `plugin/wdio.conf.mts` records each test's result when `VAULT_SYNC_ACCEPTANCE_RESULTS` names a directory.
+1. the `integration`-tagged Go tests named `TestAC…`, the top-level Go tests that hold an `[AC-nn]`, `[P3-nn]`, `[P4-nn]` or `[P6-nn]` subtest (run whole, with their other subtests), and the plugin integration suite (`TestPluginProtocolClient`), whose report it keeps. `TestAC22OfflineRestore` and `TestAC25Convergence` (`cmd/vault-sync-server/acceptance_integration_test.go`) each start the server and run one plugin acceptance suite (`plugin/test/acceptance/*.acceptance.test.ts`, `vitest.acceptance.config.ts`): the real sync engine on in-memory vaults against that server. For AC-22 the Go test also plays the operator, stopping the server, snapshotting and restoring PostgreSQL and S3, and starting it again behind a proxy at a fixed address. AC-25 runs ten fixed seeds; `VAULT_SYNC_AC25_SEED=n` runs only seed `n`, for example to replay a failure (`VAULT_SYNC_AC25_SEED=7 ./scripts/test-integration.sh -run TestAC25 ./cmd/vault-sync-server/`);
+2. the plugin unit test files (`plugin/src/**/*.test.ts`) that hold a `[P4-nn]` or `[P6-nn]` test, with vitest's JSON report;
+3. the desktop e2e spec files that hold an `[AC-nn]`, `[P3-nn]`, `[P4-nn]` or `[P6-nn]` test. Whole files run, because a spec's tests build on the ones before them; `plugin/wdio.conf.mts` records each test's result when `VAULT_SYNC_ACCEPTANCE_RESULTS` names a directory.
 
 Android-only specs (`*.android.e2e.ts`) need a device and run only in the `android-e2e` workflow. With `VAULT_SYNC_ACCEPTANCE_RESULTS` set, `plugin/wdio.android.conf.mts` records their tests' results (not those of the specs shared with desktop, which the desktop run reports) in `android-e2e.jsonl`; the workflow uploads it as the `android-e2e-results` artifact. When `VAULT_SYNC_ACCEPTANCE_ANDROID_RESULTS` names a directory holding that file, `scripts/acceptance.sh` adds it to the results, so the scoreboard shows that run's outcome for AC-21 and for P4-15's emulator check (`unlock.android.e2e.ts`). Without it, those scenarios show as `not run`.
 
@@ -54,6 +61,7 @@ A failing suite does not stop the others. Everything lands in `build/acceptance/
 - `fail`: at least one of its tests failed.
 - `not run`: it has a test, but none failed and not all of them passed (skipped, or not run at all, e.g. an Android-only spec or a suite that could not start).
 - `no test`: no test is named for it.
+- `owner sign-off`: the checklist says the owner signs it off ("apart from P6-04, which the owner signs off"), so no test decides it. It counts in the total but never as passing. P4-18 and P6-04 show this way.
 
 ## CI
 
