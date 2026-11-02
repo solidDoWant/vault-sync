@@ -2,13 +2,13 @@
 
 For: admins. You run the server with the Helm chart, and you back up PostgreSQL and S3 with your own tools.
 
-This page tells you what to back up, how to run the plaintext export job and read its output, and how to undelete a vault. The export job is a CronJob that writes a plaintext copy of every vault to a volume. Your tape-archival tooling then reads that volume.
+This page tells you what to back up, how to run the plaintext export job and read its output, how to restore a vault from an export, and how to undelete a vault. The export job is a CronJob that writes a plaintext copy of every vault to a volume. Your tape-archival tooling then reads that volume.
 
 ## What to back up
 
 The server keeps all its data in one PostgreSQL database and one S3 bucket ([What lives where](postgresql-and-s3.md#what-lives-where)). Back up both of them, as a pair. One without the other is not a usable backup.
 
-Run the export job too. The export is the plaintext disaster-recovery copy of every vault. You can read it with any editor, without vault-sync, PostgreSQL or S3. So it is what you restore from if you lose the database or the bucket. The server does not restore from an export yet. That is planned for Phase 6, and the export is designed so that a later restore can be exact.
+Run the export job too. The export is the plaintext disaster-recovery copy of every vault. You can read it with any editor, without vault-sync, PostgreSQL or S3. So it is what you restore from if you lose the database or the bucket. [Restore a vault from an export](#restore-a-vault-from-an-export) tells you how.
 
 Old backups keep the keys and the encrypted data that they held when you made them. [What encryption does not protect](security.md#what-encryption-does-not-protect) tells you what that means for end-to-end encrypted vaults.
 
@@ -129,7 +129,7 @@ Such a document is still exported, so the run stays `ok`. The summary counts the
 
 ### Manifest
 
-`<vault-id>.manifest.jsonl` lists every live document of the vault and where its bytes are. Use it to make sure that an export is complete. A later restore will use it to restore exactly. It is a [JSON Lines](https://jsonlines.org/) file: a line for the vault, one line for each document, and an end line with counts. A manifest without the end line is incomplete, for example a truncated copy. The format has a version number, 2 now, in the marker and in each manifest. The doc comments of the manifest types in `internal/export/manifest.go` describe every field.
+`<vault-id>.manifest.jsonl` lists every live document of the vault and where its bytes are. Use it to make sure that an export is complete. A restore uses it to make sure that every file is intact. It is a [JSON Lines](https://jsonlines.org/) file: a line for the vault, one line for each document, and an end line with counts. A manifest without the end line is incomplete, for example a truncated copy. The format has a version number, 2 now, in the marker and in each manifest. The doc comments of the manifest types in `internal/export/manifest.go` describe every field.
 
 ```json
 {"type":"vault","format":2,"vault_id":"0192…","name":"Notes","encryption":"none","head_seq":9123,"started_at":"2026-10-18T03:00:00Z"}
@@ -301,27 +301,106 @@ A usage error exits with status 2.
 
 ## Restore a vault from an export
 
-The `import` subcommand can also restore one vault from an export that the export job wrote. It creates every document of the vault in a new, empty vault. The rules for the target vault, the sign-in and the encryption flags are the same as for the Markdown import. A restore does not bring back history, members, roles, devices or vault settings. For the design, see [Restore from an export](../design/restore-from-export.md).
+Use this runbook when a vault lost its files on the server, and you have an export of the vault. The `import` subcommand reads the vault from the export and creates every file again in a new, empty vault. The devices then connect to the new vault. For the design, see [Restore from an export](../design/restore-from-export.md).
+
+If you lost the whole database or the whole bucket, and you have a backup of both, [restore the server](#restore-a-server) instead. That brings back history, members and devices too.
+
+### What a restore brings back
+
+A restore brings back the current version of every file that is in the export, at its path. The export holds only that, so a restore does not bring back:
+
+- The history of the files. Each file gets a single version.
+- The members, their roles, and their invitations. You are the only member of the new vault.
+- The devices. Each user connects their devices again.
+- The settings of the vault, for example its retention override.
+- Empty folders. The export holds no folders. A folder comes back only if it holds a file.
+- End-to-end encrypted vaults without escrow. The export skips them, so there is nothing to restore from. Restore the server from the PostgreSQL and S3 backups, or connect a device that still has the files to a new vault.
+
+The devices hold full copies of their vaults. When a device connects to the restored vault, it uploads its own changes that are newer than the export. See [step 8](#8-connect-the-devices-again).
+
+### 1. Protect the export
+
+The export job replaces its output directory at each run. If it replaces the directory during a restore, the restore stops with `failed`. Do one of these before you start:
+
+- Copy the output directory of the export to another place, and restore from the copy.
+- Suspend the export job. Find the name of its CronJob with `kubectl get cronjob`, then run `kubectl patch cronjob NAME -p '{"spec":{"suspend":true}}'`.
+
+The restore runs on any machine that can read the export and can connect to the server. It needs no access to PostgreSQL or S3.
+
+### 2. Find the vault in the export
+
+The export names each vault by its ID. Find the ID of the lost vault: in the plugin settings, in the summary of the export job, or in the first line of each `<vault-id>.manifest.jsonl` file, which also holds the name of the vault. You give this ID with `-source-vault`.
+
+### 3. Create the target vault
+
+Create a new vault in the plugin (**Create a vault**) or with `CreateVault`, and copy its ID. You are its owner. The restore refuses a vault that ever had a document.
+
+If the lost vault was end-to-end encrypted, the export holds it only if it had escrow. Then:
+
+- Turn on **End-to-end encryption** for the new vault. The restore refuses a plaintext target for an encrypted vault, so that the files never reach the server in plaintext.
+- Turn on **Escrow** for the new vault too. If the new vault has no escrow, the next export skips it, and your backup no longer covers the vault.
+
+### 4. Run the restore
+
+Run the `import` subcommand with `-from-export`, for example:
 
 ```sh
 vault-sync-server import -from-export /backup/export -source-vault 0192f2c4-7a1e-7c3d-9f0a-2b4c6d8e0f12 https://sync.example.com 0193a8d1-2b3c-7d4e-8f5a-6b7c8d9e0f1a
 ```
 
-`-from-export` is the output directory of the export. `-source-vault` is the ID of the exported vault in it. The last argument is the ID of the new vault. Restore from a copy of the export, or suspend the export job first. If the export job replaces the directory during the restore, the restore stops.
+- `-from-export` is the output directory of the export (or of your copy).
+- `-source-vault` is the ID of the lost vault from step 2.
+- The last argument is the ID of the new vault from step 3.
 
-Before the restore creates a document, it makes sure that the export is intact:
+The subcommand signs you in like the [Markdown import](#import-markdown). You must be an owner or an editor of the new vault. For an encrypted target vault, add the same flags as for an [import into an end-to-end encrypted vault](#import-into-an-end-to-end-encrypted-vault): your passphrase, your private key, or the [escrow identity](#import-with-the-escrow-identity).
+
+Before the restore creates a file, it makes sure that the export is intact:
 
 - The export marker and the manifest are format 2, and the manifest is complete.
-- Each file has the size and the SHA-256 that the manifest gives, and is within the file size limit.
+- Each file has the size and the SHA-256 that the manifest gives, and is within the file size limit of the server.
 - No file is in the directory of the vault that the manifest does not name.
 
-If a check fails, the restore lists every failure in the report and creates nothing. If you give `-allow-partial`, the restore imports the files that pass the checks and lists the others. A damaged manifest or another format version always stops the restore.
+If a check fails, the restore lists every failure in the report and creates nothing. The reason of each failure is one of `file missing`, `size differs`, `sha256 differs` and `over the file size limit`. Restore from an older export if you have one. Otherwise, run the restore again with `-allow-partial`. Then it imports the files that pass the checks and lists the others. A damaged manifest or another format version always stops the restore, also with `-allow-partial`.
 
-If the exported vault was end-to-end encrypted with escrow, restore it into a new end-to-end encrypted vault. The restore refuses a plaintext target vault for it.
+### 5. Read the report
 
-Each file keeps its path. If the server refuses a path, or two paths collide, the restore puts the file in the folder `Restored files`, named by its document ID. Files that the export could not place at their path go through the same rule.
+The restore writes one line of JSON to stdout. It is the report of the Markdown import with three more lists:
 
-The report is the report of the Markdown import with three more lists. `fallback` lists the files in `Restored files`, with the original path and the new path. `missing` lists the documents whose content the export did not have. `failed_verification` lists the files that failed a check. The status is `ok` (exit status 0) only when every document is at its own path. It is `partial` when a list is not empty, and `failed` when the restore stopped. If the restore stopped, create another new vault and restore again. The logs name documents by ID, never by path.
+- `fallback`: the files that the restore could not put at their own path, with the original path and the new path.
+- `missing`: the documents whose content the export did not have.
+- `failed_verification`: the files that failed a check, with the reason (only with `-allow-partial`).
+
+| `status` | Exit status | Meaning |
+| --- | --- | --- |
+| `ok` | 0 | Every file of the vault is back at its own path. |
+| `partial` | 1 | The restore finished, and one of the three lists is not empty. |
+| `failed` | 1 | The restore stopped. `error` tells why. |
+
+If the status is `failed`, delete the new vault, create another new vault, and restore again. A restore does not continue where a stopped restore ended.
+
+Each file keeps its path when it can. If a path breaks the path rules of the server, or two paths collide, the restore puts the file in the folder `Restored files`. The file is named by its document ID, for example `Restored files/0192f2c4-8b1d-7e2f-9a3b-4c5d6e7f8a9b.md`. It keeps its extension if the extension is valid. A Markdown file always ends in `.md`. If a file of the vault already has the name `Restored files`, the restore uses `Restored files 2`, `Restored files 3`, and so on. The export also has files that it could not place at their path. These go through the same rule. To give a file in `Restored files` its name back, find its document ID in `fallback`, and rename the file on a device.
+
+The logs name documents by ID, never by path.
+
+### 6. Delete the lost vault
+
+If the lost vault still exists on the server, an owner of the lost vault deletes it now, with **Delete vault** in the plugin (see [Delete a vault](../user/sharing.md#delete-a-vault-owners)). This happens, for example, when only the object store lost data. Its devices then show `vault deleted`, and stop writing to it. Do this before the devices connect to the new vault.
+
+### 7. Invite the members again
+
+The new vault has only you as a member. Invite each member of the lost vault again, with their role (see [Sharing](../user/sharing.md)). For an end-to-end encrypted vault, a member's devices cannot connect before the member joins, because the restore does not bring back the members or their keys.
+
+### 8. Connect the devices again
+
+Each user connects their existing Obsidian vault to the new vault. Send them to [After your admin restored a vault](../user/troubleshooting.md#after-your-admin-restored-a-vault). The device compares its files with the files of the new vault:
+
+- A file that is identical on both sides stays as it is.
+- If a file differs, the version of the server stays at its path, and the device keeps its own version next to it as a conflict copy.
+- A file that only the device has is uploaded. So edits that are newer than the export come back.
+
+A device does not use what it knew about the lost vault. So if a user deleted or renamed a file and that change never reached the server, the old file comes back. Nothing is lost. The user deletes the extra file again.
+
+After the restore, resume the export job if you suspended it in step 1. Run the same `kubectl patch` command with `"suspend":false`.
 
 ## Undelete a vault
 
