@@ -1,6 +1,6 @@
 # Phase 5 acceptance checklist: live editing
 
-Owner-approved on 2026-11-02. **This list is the definition of done for Phase 5. Only the owner adds to it or changes it.**
+Owner-approved on 2026-11-02. P5-08 was changed by the owner on 2026-11-02 to allow one conflict copy after a long outage. **This list is the definition of done for Phase 5. Only the owner adds to it or changes it.**
 
 Phase 5 is done when:
 - every scenario below passes as an automated test on `master` (named `[P5-nn] …`), apart from P5-17, which the owner signs off;
@@ -20,7 +20,7 @@ In the scenarios, "two people" are two users who are members of the vault, each 
 | P5-05 | During a session, a device that does not have the note open (or runs an older plugin) edits it. The edit appears in the open editors. If it cannot be merged, the editors keep their text and the other version becomes a conflict copy. |
 | P5-06 | During a session, another plugin (`processFrontMatter`) or an external editor changes the note on one device. The change appears in the other editors. |
 | P5-07 | Each person sees the other people's cursors and selections, labelled with their name and a color, and a list of who has the note open. Within 30 seconds of a person closing the note or losing the connection, their cursor and their entry disappear. |
-| P5-08 | A device loses its connection during a session and types offline. Its offline edits and the others' edits merge when it reconnects, after a short outage and after a long one. |
+| P5-08 | A device loses its connection during a session and types offline. Its offline edits and the others' edits merge when it reconnects. After a short outage (under 30 seconds) there is no conflict copy. After a long one, at most one conflict copy is created. |
 | P5-09 | The app is killed on a device during a session, just after typing. After a restart, no edit that was typed and saved to disk on any device is missing from the note. At most one conflict copy is created. |
 | P5-10 | One server replica is stopped during a session. The editors keep working after reconnecting, and no edit is lost. |
 | P5-11 | Live editing works in Obsidian's emulated mobile mode, and between a mobile device and a desktop. Putting the mobile app in the background leaves the session, and returning rejoins it. |
