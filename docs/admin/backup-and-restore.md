@@ -299,6 +299,30 @@ The subcommand writes its logs to stderr. When it ends, it writes one line of JS
 
 A usage error exits with status 2.
 
+## Restore a vault from an export
+
+The `import` subcommand can also restore one vault from an export that the export job wrote. It creates every document of the vault in a new, empty vault. The rules for the target vault, the sign-in and the encryption flags are the same as for the Markdown import. A restore does not bring back history, members, roles, devices or vault settings. For the design, see [Restore from an export](../design/restore-from-export.md).
+
+```sh
+vault-sync-server import -from-export /backup/export -source-vault 0192f2c4-7a1e-7c3d-9f0a-2b4c6d8e0f12 https://sync.example.com 0193a8d1-2b3c-7d4e-8f5a-6b7c8d9e0f1a
+```
+
+`-from-export` is the output directory of the export. `-source-vault` is the ID of the exported vault in it. The last argument is the ID of the new vault. Restore from a copy of the export, or suspend the export job first. If the export job replaces the directory during the restore, the restore stops.
+
+Before the restore creates a document, it makes sure that the export is intact:
+
+- The export marker and the manifest are format 2, and the manifest is complete.
+- Each file has the size and the SHA-256 that the manifest gives, and is within the file size limit.
+- No file is in the directory of the vault that the manifest does not name.
+
+If a check fails, the restore lists every failure in the report and creates nothing. If you give `-allow-partial`, the restore imports the files that pass the checks and lists the others. A damaged manifest or another format version always stops the restore.
+
+If the exported vault was end-to-end encrypted with escrow, restore it into a new end-to-end encrypted vault. The restore refuses a plaintext target vault for it.
+
+Each file keeps its path. If the server refuses a path, or two paths collide, the restore puts the file in the folder `Restored files`, named by its document ID. Files that the export could not place at their path go through the same rule.
+
+The report is the report of the Markdown import with three more lists. `fallback` lists the files in `Restored files`, with the original path and the new path. `missing` lists the documents whose content the export did not have. `failed_verification` lists the files that failed a check. The status is `ok` (exit status 0) only when every document is at its own path. It is `partial` when a list is not empty, and `failed` when the restore stopped. If the restore stopped, create another new vault and restore again. The logs name documents by ID, never by path.
+
 ## Undelete a vault
 
 When an owner deletes a vault, the server keeps it for 30 days. Then the retention job purges it ([Deleting a vault](../design/sharing.md#deleting-a-vault)). Before the purge, you can restore the vault with the `vault` subcommand of the server binary. It reads only the PostgreSQL variables. For example, run it in a running server pod (here the Deployment of a release named `vault-sync`). The image has no shell, so call the binary directly:

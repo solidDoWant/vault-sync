@@ -106,6 +106,7 @@ func Plan(documents []export.ManifestDocument) []PlannedDocument {
 			chosen.add(document.Path)
 		} else {
 			planned.Fallback = true
+
 			fallbacks = append(fallbacks, len(files))
 		}
 
@@ -205,6 +206,7 @@ func withFolders(files []PlannedDocument) []PlannedDocument {
 		for _, folder := range ancestors(file.Path) {
 			if key := pathkey.Key(folder); !created[key] {
 				created[key] = true
+
 				result = append(result, PlannedDocument{Path: folder, Kind: KindFolder})
 			}
 		}

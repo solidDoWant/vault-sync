@@ -52,9 +52,26 @@ func (cluster *deployment) importFolderWithLogs(t *testing.T, binary string, ser
 ) (int, vaultimport.Report, string) {
 	t.Helper()
 
+	code, stdout, logs := runImportCommand(t, binary, flow, subject, slices.Concat(flags, []string{server.apiURL, vaultID, source}))
+
+	var report vaultimport.Report
+	if len(stdout) > 0 {
+		require.NoError(t, json.Unmarshal(stdout, &report), "import report: %s", stdout)
+	}
+
+	return code, report, logs
+}
+
+// runImportCommand runs `vault-sync-server import args...`, approves its
+// device sign-in as subject, and returns its exit code, its stdout and its
+// stderr. The child gets none of the server's variables: it reaches the
+// vault only through the API.
+func runImportCommand(t *testing.T, binary string, flow *authtest.DeviceFlow, subject string, args []string) (int, []byte, string) {
+	t.Helper()
+
 	var stdout bytes.Buffer
 
-	command := exec.CommandContext(t.Context(), binary, slices.Concat([]string{"import"}, flags, []string{server.apiURL, vaultID, source})...)
+	command := exec.CommandContext(t.Context(), binary, slices.Concat([]string{"import"}, args)...)
 
 	for _, variable := range os.Environ() {
 		if !strings.HasPrefix(variable, "VAULT_SYNC_") {
@@ -90,14 +107,9 @@ func (cluster *deployment) importFolderWithLogs(t *testing.T, binary string, ser
 		require.NoError(t, err, "import: %s", logs.String())
 	}
 
-	var report vaultimport.Report
-	if stdout.Len() > 0 {
-		require.NoError(t, json.Unmarshal(stdout.Bytes(), &report), "import report: %s", stdout.String())
-	}
-
 	t.Logf("import logs:\n%s", logs.String())
 
-	return code, report, logs.String()
+	return code, stdout.Bytes(), logs.String()
 }
 
 // syncedFile is one document a device holds after a full sync.

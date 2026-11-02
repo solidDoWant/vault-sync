@@ -221,6 +221,7 @@ func (creator *restoreCreator) create(ctx context.Context, planned PlannedDocume
 		creator.logger.WarnContext(ctx, "a document's path was taken during the restore; it goes to the restored-files folder", "document_id", document.DocumentID)
 
 		planned.Fallback = true
+
 		if entry.Path, err = creator.fallbackPath(ctx, document); err != nil {
 			return err
 		}

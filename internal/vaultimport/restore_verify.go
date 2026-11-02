@@ -357,6 +357,7 @@ func (trees *exportTrees) readVerified(document export.ManifestDocument, limit i
 	if err != nil {
 		return nil, "", fmt.Errorf("open document %s: %w", document.DocumentID, withoutPath(err))
 	}
+
 	defer func() { _ = file.Close() }()
 
 	if document.Size > limit {
