@@ -88,6 +88,7 @@ docs/design/               Unchanged location. The design of the engine, sharing
   encryption.md            End-to-end encryption: keys, epochs, escrow, the membership log.
   crypto.md                The byte formats of the cipher suite.
   crdt-notes.md            Proposal, not scheduled: notes as CRDT documents, for live editing.
+  restore-from-export.md   Restoring a vault's files from an export.
 
 docs/testing/              Unchanged location. The test tiers and how to run them. For developers.
   acceptance.md            How `make acceptance` finds and counts the acceptance tests.
@@ -100,6 +101,7 @@ docs/acceptance/           Unchanged location. The owner's acceptance checklists
   phase-2.md
   phase-3.md
   phase-4.md
+  phase-6.md
 
 docs/agents/               Unchanged. For agents only.
 
