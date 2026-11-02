@@ -3,7 +3,8 @@
 of the checklist with the result of its tests, then the number passing.
 
 A test belongs to a scenario by its name: `[AC-nn] ...` (Phase 2),
-`[P3-nn] ...` (Phase 3) or `[P4-nn] ...` (Phase 4) for the e2e, plugin
+`[P3-nn] ...` (Phase 3), `[P4-nn] ...` (Phase 4) or `[P6-nn] ...`
+(Phase 6) for the e2e, plugin
 integration and plugin unit tests (mocha and vitest titles) and Go subtests (`t.Run`), and `TestACnn...` for top-level Go
 tests (Go function names cannot hold brackets). The checklist lists its
 scenarios as `- **AC-nn** ...` items or as `| P3-nn | ... |` table rows.
@@ -16,6 +17,9 @@ The results directory holds what the runs wrote:
 A scenario is `fail` if any of its tests failed, `pass` if its tests ran and
 all passed, `not run` if it has tagged tests (in the sources or skipped in the
 results) of which none failed and not all passed, and `no test` otherwise.
+A scenario the checklist names as signed off by the owner ("apart from P6-04,
+which the owner signs off") is `owner sign-off`, whatever its tests: it counts
+in the total but never as passing.
 
 With `--go-run-pattern`, it prints instead the `go test -run` pattern that
 selects the Go acceptance tests: the `TestACnn...` tests, the plugin protocol
@@ -31,6 +35,7 @@ import sys
 
 SCENARIO = re.compile(r"^- \*\*(AC-\d+)\*\*\s*(.*)$")
 TABLE_SCENARIO = re.compile(r"^\|\s*(P\d+-\d+)\s*\|\s*(.*?)\s*\|\s*$")
+SIGN_OFF = re.compile(r"\bapart from (P\d+-\d+), which the owner signs off\b")
 TAG = re.compile(r"\[((?:AC|P\d+)-\d+)\]")
 GO_TEST = re.compile(r"^TestAC(\d+)")
 GO_DECLARATION = re.compile(r"^func TestAC(\d+)\w*\(", re.MULTILINE)
@@ -50,6 +55,11 @@ def scenarios(checklist):
         if match and not match.group(2).startswith("(Removed"):
             ids.append(match.group(1))
     return ids
+
+
+def signed_off(checklist):
+    """The scenario ids the checklist leaves to the owner's sign-off."""
+    return set(SIGN_OFF.findall(checklist.read_text(encoding="utf-8")))
 
 
 def title_id(title):
@@ -171,10 +181,14 @@ def main():
         if scenario in outcomes:
             outcomes[scenario].append(outcome)
     tagged = tagged_in_sources(arguments.sources)
+    sign_off = signed_off(arguments.checklist)
 
     passing = 0
     for scenario in ids:
-        line_status = status(outcomes[scenario], scenario in tagged)
+        if scenario in sign_off:
+            line_status = "owner sign-off"
+        else:
+            line_status = status(outcomes[scenario], scenario in tagged)
         passing += line_status == "pass"
         print(f"{scenario}  {line_status}")
     print(f"passing {passing}/{len(ids)}")
