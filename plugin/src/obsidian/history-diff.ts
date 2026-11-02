@@ -1,7 +1,9 @@
 import DiffMatchPatch from "diff-match-patch";
 
 import type { HistoryDocument } from "../core/sync/history";
+import { blobMergeFor, mergeBlob } from "../core/merge/file-merge";
 import { mergeText } from "../core/merge/text-merge";
+import { kindOfPath } from "../core/sync/detect";
 
 // What the history view compares, folds, reverts and searches. No Obsidian
 // import, so it is unit-tested; history-modal.ts renders it.
@@ -217,6 +219,59 @@ export function isFold(row: unknown): row is Fold {
  */
 export function revertChange(changed: string, previous: string, current: string): string | null {
   return mergeText(changed, current, previous);
+}
+
+const encoder = new TextEncoder();
+const strictDecoder = new TextDecoder("utf-8", { fatal: true });
+
+/**
+ * The content of the file at `path`, `current` now, with the change that
+ * turned `previous` into `changed` undone, merged as sync merges that kind
+ * of file (merge-rules.ts): a note line by line (revertChange), and a canvas,
+ * a base, JSON or another text format by its own merge (mergeBlob), so the
+ * result stays a valid file of its kind. Null when a later change touches
+ * the same parts, when the file is not text, or when it has no merge.
+ */
+export function revertContent(path: string, changed: Uint8Array, previous: Uint8Array, current: Uint8Array): Uint8Array | null {
+  if (kindOfPath(path) === "blob") return blobMergeFor(path) === null ? null : mergeBlob(path, changed, current, previous);
+  let texts: [string, string, string];
+  try {
+    texts = [strictDecoder.decode(changed), strictDecoder.decode(previous), strictDecoder.decode(current)];
+  } catch {
+    return null;
+  }
+  const reverted = revertChange(...texts);
+  return reverted === null ? null : encoder.encode(reverted);
+}
+
+/** What reverting one version does: undo its content change, move the file back, or both. */
+export interface RevertPlan {
+  /** Whether the version changed the content, which the revert undoes with revertChange. */
+  undoContent: boolean;
+  /** The move back to where the version moved the file from, when the file is still where the version put it. */
+  moveBack: { from: string; to: string } | undefined;
+  /** Whether the version moved the file but a later version moved it again: the later move stays, as later changes do. */
+  laterMoveKept: boolean;
+}
+
+/**
+ * What reverting `entry` (which changed `previous`) does to the file that is
+ * at `currentPath` now. Undefined when the revert has nothing it can do: the
+ * version changed neither content nor place, or it changed content that is
+ * not text (`isText` false), which cannot be merged.
+ */
+export function revertPlan(
+  entry: { path: string; contentHash: string },
+  previous: { path: string; contentHash: string },
+  currentPath: string,
+  isText: boolean,
+): RevertPlan | undefined {
+  const undoContent = entry.contentHash !== previous.contentHash;
+  if (undoContent && !isText) return undefined;
+  const moved = entry.path !== previous.path;
+  const moveBack = moved && currentPath === entry.path ? { from: entry.path, to: previous.path } : undefined;
+  if (!undoContent && moveBack === undefined) return undefined;
+  return { undoContent, moveBack, laterMoveKept: moved && moveBack === undefined };
 }
 
 /**

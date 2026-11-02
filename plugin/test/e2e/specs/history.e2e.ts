@@ -238,6 +238,44 @@ describe("history and restore", function () {
     await waitForIdle();
   });
 
+  it("reverts a move by moving the file back where it was", async function () {
+    // Notes of their own, so the AC-24 note keeps exactly the revisions that scenario counts.
+    const before = "Before/Move me.md";
+    const after = "After/Move me.md";
+    await browser.executeObsidian(async ({ app }, path) => {
+      await app.vault.createFolder("Before");
+      await app.vault.create(path, "move me\n");
+    }, before);
+    await browser.waitUntil(async () => (await remoteRevisions(before)) === 1, { timeoutMsg: "the note never reached the server" });
+    await waitForIdle();
+    await browser.executeObsidian(
+      async ({ app }, from, to) => {
+        const file = app.vault.getFileByPath(from);
+        if (file === null) throw new Error(`no ${from}`);
+        await app.vault.createFolder("After");
+        await app.fileManager.renameFile(file, to);
+      },
+      before,
+      after,
+    );
+    await browser.waitUntil(async () => (await remoteRevisions(after)) === 1, { timeoutMsg: "the move never reached the server" });
+    await waitForIdle();
+
+    await browser.executeObsidian(async ({ app }, id, path) => {
+      await (app as unknown as { plugins: { plugins: Record<string, VaultSyncPlugin> } }).plugins.plugins[id]?.showHistory(path);
+    }, pluginId, after);
+    await browser.waitUntil(async () => (await historyRows()).length === 2, { timeoutMsg: "the history view never listed the move" });
+    // The newest version is the move.
+    await clickRow(0);
+    await browser.waitUntil(async () => (await previewText()) === "move me\n", { timeoutMsg: "the preview never showed the moved version" });
+    await clickHistoryButton("Revert this change");
+
+    await browser.waitUntil(async () => (await fileText(before)) === "move me\n" && (await fileText(after)) === null, { timeoutMsg: "the note was never moved back" });
+    await browser.waitUntil(async () => (await remoteRevisions(before)) === 2, { timeoutMsg: "the move back never reached the server" });
+    await closeHistory();
+    await waitForIdle();
+  });
+
   describe("for a member who may not restore (#527)", function () {
     /** Opens the harness's two-version history as `role`, previews the older version and returns what the preview offers once the role check settled. */
     async function previewOlderAs(role: "viewer" | "editor" | "unknown") {
