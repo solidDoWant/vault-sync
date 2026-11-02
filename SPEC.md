@@ -145,7 +145,7 @@ All identifiers are UUIDv7 unless stated. Every table below is scoped by `vault_
 | `anchor_lists` | `user_id` (PK), `version`, `sealed_list`, `updated_at` | E2EE only (§9.3). The sealed anchor list of a user (`docs/design/encryption.md`, *Trust anchors*). It is opaque to the server, and only the next version replaces it. |
 | `maintenance_runs` | `job` (PK), `last_success_at` | The time that each server background job last finished a run without errors, on any replica. Today the only job is `retention` (§11). The service-wide metrics read it (§12). |
 | `export_status` | `id` (PK, always `true`), `finished_at`, `status`, `last_success_at` | Exactly one row, which migration 0028 inserts. The export updates it at the end of each run with the time the run finished, its status (`ok`, `partial`, `failed`), and the time a run last finished `ok` (`docs/admin/backup-and-restore.md`). |
-| `yjs_updates` | `document_id`, `seq`, `update` | Phase 5 (§10). |
+| `live_rooms` | `document_id` (PK), `room_id`, `seed_rev_id`, `created_at`, `last_active` | Phase 5 (§10). One row per live session. It holds no note content. A row is inactive 30 seconds after its last heartbeat, and a join or the cleanup job replaces or deletes it. |
 
 **Escrow slots and the escrow chain.** These rules hold for `key_slots` with `recipient_kind = escrow` and for `escrow_chain`:
 
@@ -402,7 +402,7 @@ Each device opens one WebSocket (`GET /v1/realtime`) with the same bearer token 
 
 - Client to server: `subscribe{vault_id}`, `unsubscribe{vault_id}`.
 - Server to client: `subscribed{vault_id, head_seq}`, `vault_changed{vault_id, seq}`, `error`, and later membership and key-epoch changes.
-- Field numbers 100–199 of both envelopes are reserved for the Phase 5 Yjs frames. Phase 5 adds Yjs subscribe, update and awareness messages, multiplexed by `document_id`.
+- Field numbers 100–199 of both envelopes are reserved for the live-editing frames of §10: join, leave, and relayed Yjs sync and awareness messages, multiplexed by room.
 
 The channel only makes sync faster. Correctness never depends on receiving a notification.
 
@@ -937,13 +937,15 @@ Escrow key rotation:
 
 ## 10. Live collaborative editing (Phase 5)
 
-The v1 protocol has the hooks for this from the start: stable document ids, the `kind` field, the multiplexed WebSocket, and an append-only log per document.
+The design is in [`docs/design/live-editing.md`](docs/design/live-editing.md). The rules that bind the rest of the system are these:
 
-- The state of a `yjs` document is its ordered `yjs_updates` log plus periodic snapshots. For E2EE vaults, each update is encrypted, and the server stores and relays opaque bytes.
-- **Conversion** of a `text` document to `yjs` happens **exactly once**. It is a server-side compare-and-set on `documents.kind`, done by a single elected client that holds a lease from the server. If two clients each initialize a `Y.Text` from the same file, the content is duplicated (the classic Yjs bug). This must be impossible.
-- The plugin binds `Y.Text` to the CodeMirror 6 editor of Obsidian (`y-codemirror.next`) and to the file on disk. Edits that arrive outside the editor (other plugins, `processFrontMatter`, external editors, git) are diffed into the `Y.Text`.
-- Awareness (cursors, presence) is ephemeral over the WebSocket and is never persisted.
-- **Compaction** folds the update log into a snapshot. Plaintext and escrow vaults can compact on the server (for escrow vaults, the export job can do it). Other E2EE vaults compact on clients. The compaction runtime is an open question for Phase 5, because no Go Yjs implementation is mature.
+- A **live session** is the set of devices that have one Markdown note (`TEXT` document) open in an editor at the same time. Each device keeps the note as a Yjs document in memory. The server only relays Yjs sync and awareness messages between them, over the realtime channel (§6.4). It parses none of them and stores none of them.
+- **The revision log stays the only durable copy of a note** (principle 2). One participant, the writer, commits the session text as ordinary revisions. A commit can carry a `live_mark` (the room and the Yjs state vector of the committed text), which the server stores with the revision in the same transaction.
+- **Rooms.** The server keeps one `live_rooms` row per active session (§5). The server picks the seed revision, the head at creation, so that every device builds the same starting state and no text is duplicated.
+- **Fallback.** Any failure of the live layer leaves the note to file sync (`docs/design/engine.md`), which never loses an edit.
+- **Authorization.** Every join resolves the caller's role. Viewers receive but cannot send edits. The membership check on delivery applies to live frames.
+- **Encryption.** In an encrypted vault, every relayed payload and every mark state is sealed with `subkey(epoch_key, "live")` or `subkey(epoch_key, "live-mark")` (`docs/design/crypto.md`).
+- **Bounds.** Rooms per connection, participants per room, part size, message size and byte rates are bounded (`docs/design/live-editing.md` §8).
 
 ## 11. Retention and history
 
@@ -1155,7 +1157,7 @@ GitHub milestones and parent issues track the work. A phase is done when its acc
 2. **Single-user file sync:** a new plugin engine (`docs/design/engine.md`) plus the adapter for desktop and Android, conflicts, history and restore, Markdown import, and the Helm chart. It is done as `docs/acceptance/phase-2.md` defines: the checklist passes on `master`, a security review and a narrow bug hunt ran and their critical and high findings are fixed, and `0.2.0` is released.
 3. **Vault sharing:** membership management, invitations, roles in the UI.
 4. **End-to-end encryption:** key hierarchy, escrow, export decryption, crypto vectors, independent crypto review. Until then, creating an E2EE vault is rejected (§9.3).
-5. **Live collaborative editing:** Yjs documents, conversion, editor binding, awareness, compaction.
+5. **Live collaborative editing:** live sessions for open notes, relayed through the server, with presence, on desktop and mobile, in plaintext and encrypted vaults. It is done as `docs/acceptance/phase-5.md` defines.
 
 ## 16. Open questions
 
