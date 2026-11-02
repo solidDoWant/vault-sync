@@ -2,7 +2,7 @@
 
 For: developers and agents. You know `SPEC.md`, the engine design (`docs/design/engine.md`) and the encryption design (`docs/design/encryption.md`, `docs/design/crypto.md`).
 
-Status: draft for owner approval. It replaces the plan in the earlier `SPEC.md` §10 (permanent Yjs documents, a conversion lease, a server update log and compaction). The owner chose this smaller model on 2026-11-02.
+Status: approved by the owner on 2026-11-02. It replaces the plan in the earlier `SPEC.md` §10 (permanent Yjs documents, a conversion lease, a server update log and compaction). The owner chose this smaller model on 2026-11-02.
 
 Agents implement this design. They do not change it. If it does not decide a case, ask on the issue. Every answer must keep the safety argument in §9 true.
 

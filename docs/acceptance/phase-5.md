@@ -1,6 +1,6 @@
 # Phase 5 acceptance checklist: live editing
 
-Draft for owner approval (2026-11-02). **This list is the definition of done for Phase 5. Only the owner adds to it or changes it.**
+Owner-approved on 2026-11-02. **This list is the definition of done for Phase 5. Only the owner adds to it or changes it.**
 
 Phase 5 is done when:
 - every scenario below passes as an automated test on `master` (named `[P5-nn] …`), apart from P5-17, which the owner signs off;
