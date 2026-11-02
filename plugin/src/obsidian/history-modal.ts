@@ -1,8 +1,8 @@
-import { Modal, Notice, Setting, ToggleComponent, setIcon, type App } from "obsidian";
+import { Modal, Notice, Setting, TextFileView, ToggleComponent, setIcon, type App } from "obsidian";
 
 import { RestoreError, type HistoryDocument, type HistoryEntry } from "../core/sync/history";
 import { shownPath, type Shown } from "./display-text";
-import { diffCounts, foldUnchanged, isFold, lineDiff, matchingDocuments, revertChange, sideBySide, withWordChanges, type DiffLine, type Segment, type SideRow } from "./history-diff";
+import { diffCounts, foldUnchanged, isFold, lineDiff, matchingDocuments, revertContent, revertPlan, sideBySide, withWordChanges, type DiffLine, type RevertPlan, type Segment, type SideRow } from "./history-diff";
 import { documentTree, foldersOf, type TreeNode } from "./history-tree";
 import { entryParts, exactTime, historyTitle, maxPreviewBytes, otherPathValue, previewOf, relativeTime, restoreFailureText, sizeLabel, whoParts, type Preview, type WhoPart } from "./history-view";
 import { pathClass, renderShown, shownFragment } from "./shown-dom";
@@ -20,6 +20,7 @@ const maxListedFiles = 500;
 const viewOptions = { changes: false, sideBySide: false };
 
 const strictDecoder = new TextDecoder("utf-8", { fatal: true });
+const encoder = new TextEncoder();
 
 /** The class of the times refreshRelativeTimes keeps current. */
 const relativeTimeClass = "vault-sync-relative-time";
@@ -584,10 +585,16 @@ export class HistoryModal extends Modal {
     );
     const current = this.entries[0];
     const isCurrent = entry === current && !entry.deleted;
-    const previous = this.entries[this.entries.indexOf(entry) + 1];
-    // A revert edits the file on this device: it needs a text change to undo, and the file in place.
-    const revertible = isText && !entry.deleted && previous !== undefined && !previous.deleted && current !== undefined && !current.deleted;
-    if (isCurrent && !revertible) return;
+    // The version before, loading older versions when it is not listed yet, as the comparison does.
+    let previous: HistoryEntry | undefined;
+    try {
+      previous = await this.previousOf(entry);
+    } catch {
+      previous = undefined;
+    }
+    // A revert changes the file on this device: its content (text only, merged) or its place, or both.
+    const plan = previous === undefined || entry.deleted || previous.deleted || current === undefined || current.deleted ? undefined : revertPlan(entry, previous, current.path, isText);
+    if ((isCurrent || (current !== undefined && !current.deleted && entry.contentHash === current.contentHash)) && plan === undefined) return;
     const allowed = await this.canRestore;
     // The view was drawn again meanwhile: that drawing shows the actions.
     if (!bar.settingEl.isConnected) return;
@@ -595,20 +602,23 @@ export class HistoryModal extends Modal {
       this.actionsEl.createEl("p", { text: "You can view this vault but not change it, so you cannot restore versions.", cls: "vault-sync-history-viewer" });
       return;
     }
-    if (revertible) {
+    if (plan !== undefined && previous !== undefined) {
+      const before = previous;
       bar.addButton((button) =>
         button
           .setButtonText("Revert this change")
           .setTooltip("Undo the changes made in this version, and keep the changes made after it")
           .onClick(() => {
             button.setDisabled(true);
-            void this.revert(entry, previous).finally(() => {
+            void this.revert(entry, before, plan).finally(() => {
               button.setDisabled(false);
             });
           }),
       );
     }
-    if (!isCurrent) {
+    // A restore brings back the version's content at the file's current path: with the same content as now, it would change nothing.
+    const sameContent = current !== undefined && !current.deleted && entry.contentHash === current.contentHash;
+    if (!isCurrent && !sameContent) {
       bar.addButton((button) =>
         button
           .setButtonText("Restore this version")
@@ -634,34 +644,66 @@ export class HistoryModal extends Modal {
   }
 
   /**
-   * Undoes the changes `entry` made to `previous` in the file on this
-   * device, keeping later changes (revertChange). The file then syncs like
-   * any edit.
+   * Undoes what `entry` changed from `previous` in the file on this device,
+   * as `plan` says, keeping later changes: its content, merged as sync merges
+   * the file's kind (revertContent), and its move, by moving the file back.
+   * The file then syncs like any edit. Nothing changes when a part cannot be
+   * done: a later change touches the same parts, or another file is where
+   * the file would move back to.
    */
-  private async revert(entry: HistoryEntry, previous: HistoryEntry): Promise<void> {
+  private async revert(entry: HistoryEntry, previous: HistoryEntry, plan: RevertPlan): Promise<void> {
     const path = this.entries[0]?.path ?? entry.path;
+    const fail = (reason: Shown) => {
+      new Notice(shownFragment(["Vault Sync: the change could not be reverted: ", ...reason]));
+    };
     try {
-      const [changed, before] = await Promise.all([this.fullContent(entry), this.fullContent(previous)]);
-      const changedText = strictDecoder.decode(changed);
-      const previousText = strictDecoder.decode(before);
       const file = this.app.vault.getFileByPath(path);
       if (file === null) {
-        new Notice(shownFragment(["Vault Sync: the change could not be reverted: ", shownPath(path), " is not on this device."]));
+        fail([shownPath(path), " is not on this device."]);
         return;
       }
-      await this.app.vault.process(file, (current) => {
-        const reverted = revertChange(changedText, previousText, current);
-        if (reverted === null) throw new RevertConflict();
-        return reverted;
-      });
-      new Notice(`Vault Sync: reverted the change of ${versionTime(entry)}. The file syncs as usual.`);
+      if (plan.moveBack !== undefined && this.app.vault.getAbstractFileByPath(plan.moveBack.to) !== null) {
+        fail(["another file is at ", shownPath(plan.moveBack.to), " now. Move it away first, or restore a version."]);
+        return;
+      }
+      // Keystrokes an open editor has not saved yet go to disk first, so the merge keeps them.
+      await this.saveOpenEditors(path);
+      if (plan.undoContent) {
+        const [changed, before] = await Promise.all([this.fullContent(entry), this.fullContent(previous)]);
+        await this.app.vault.process(file, (current) => {
+          const reverted = revertContent(path, changed, before, encoder.encode(current));
+          if (reverted === null) throw new RevertConflict();
+          return strictDecoder.decode(reverted);
+        });
+      }
+      if (plan.moveBack !== undefined) {
+        const target = plan.moveBack.to;
+        for (const folder of foldersOf(target)) {
+          if (this.app.vault.getAbstractFileByPath(folder) === null) await this.app.vault.createFolder(folder);
+        }
+        // Through the file manager, so links to the file follow it as they do when the user moves it.
+        await this.app.fileManager.renameFile(file, target);
+      }
+      const moved = plan.moveBack === undefined ? [] : [" The file is back at ", shownPath(plan.moveBack.to), "."];
+      const kept = plan.laterMoveKept ? [" A later move is kept, so the file stays where it is."] : [];
+      new Notice(shownFragment([`Vault Sync: reverted the change of ${versionTime(entry)}.`, ...moved, ...kept, " The file syncs as usual."]));
     } catch (error) {
       if (error instanceof RevertConflict) {
-        new Notice("Vault Sync: the change could not be reverted, because later changes touch the same lines. Restore a version, or edit the file.");
+        fail(["later changes touch the same parts of the file. Restore a version, or edit the file."]);
         return;
       }
-      new Notice(`Vault Sync: the change could not be reverted: ${errorMessage(error)}`);
+      fail([errorMessage(error)]);
     }
+  }
+
+  /** Saves every open editor of the file at `path`, so what it holds is on disk. */
+  private async saveOpenEditors(path: string): Promise<void> {
+    const saves: Promise<void>[] = [];
+    this.app.workspace.iterateAllLeaves((leaf) => {
+      const view = leaf.view;
+      if (view instanceof TextFileView && view.file?.path === path) saves.push(view.save());
+    });
+    await Promise.all(saves);
   }
 
   /** Restores `entry`, at `path` if given; offers another path when its own is taken (#420). */

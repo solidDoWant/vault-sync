@@ -72,8 +72,11 @@ Changes show only for text. A very large file shows only its start, and its chan
 ### Copy, restore or revert a version
 
 - **Copy** copies the text of the chosen version.
-- **Restore this version** makes the chosen version the current version.
-- **Revert this change** undoes only the changes that the chosen version made. Changes made after it stay. If a later change touches the same lines, the plugin does not revert, and a notice says why. Then restore a version, or edit the file.
+- **Restore this version** brings back the content of the chosen version. The file keeps its current name and folder. When the chosen version has the same content as the current one, there is nothing to restore, and the button does not show.
+- **Revert this change** undoes only what the chosen version changed. Changes made after it stay.
+  - If the version changed the content, the plugin undoes that change. If a later change touches the same lines, the plugin does not revert, and a notice says why. Then restore a version, or edit the file. A canvas or a base is merged as sync merges it, so it stays valid. The content of an image or another file that is not text cannot be reverted. Restore a version of it instead.
+  - If the version moved the file, the plugin moves the file back. Links to the file follow it, as when you move the file yourself. If the file was moved again later, the later move stays. If another file is now at the old place, the plugin does not revert, and a notice says why.
+  - You cannot revert a deletion or a restore. To bring back a deleted file, restore a version of it.
 
 A restore is a new version, so the version that it replaces stays in the history. It reaches your other devices like any edit, and the file keeps its current name and folder. A local edit that did not sync yet meets the restored version like an edit from another device. A revert changes the file on this device, and the file then syncs like any edit.
 

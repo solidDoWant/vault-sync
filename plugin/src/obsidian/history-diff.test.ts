@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { diffCounts, foldUnchanged, isFold, lineDiff, matchingDocuments, revertChange, sideBySide, withWordChanges, wordDiff, type DiffLine } from "./history-diff";
+import { diffCounts, foldUnchanged, isFold, lineDiff, matchingDocuments, revertChange, revertContent, revertPlan, sideBySide, withWordChanges, wordDiff, type DiffLine } from "./history-diff";
 
 describe("lineDiff", () => {
   it("numbers kept, removed and added lines in each version", () => {
@@ -182,5 +182,60 @@ describe("withWordChanges", () => {
     const rows = sideBySide(withWordChanges(lineDiff("the red fox\n", "the blue fox\n")));
     expect(rows[0]?.left?.segments?.find((segment) => segment.changed)?.text).toBe("red");
     expect(rows[0]?.right?.segments?.find((segment) => segment.changed)?.text).toBe("blue");
+  });
+});
+
+describe("revertPlan", () => {
+  const version = (path: string, contentHash: string) => ({ path, contentHash });
+
+  it("undoes an edit", () => {
+    expect(revertPlan(version("a.md", "2"), version("a.md", "1"), "a.md", true)).toEqual({ undoContent: true, moveBack: undefined, laterMoveKept: false });
+  });
+
+  it("moves a moved file back to where it was", () => {
+    expect(revertPlan(version("new/a.md", "1"), version("old/a.md", "1"), "new/a.md", true)).toEqual({ undoContent: false, moveBack: { from: "new/a.md", to: "old/a.md" }, laterMoveKept: false });
+  });
+
+  it("moves a moved and edited file back and undoes the edit", () => {
+    expect(revertPlan(version("b.md", "2"), version("a.md", "1"), "b.md", true)).toEqual({ undoContent: true, moveBack: { from: "b.md", to: "a.md" }, laterMoveKept: false });
+  });
+
+  it("moves back a file that is not text, whose move needs no merge", () => {
+    expect(revertPlan(version("img/b.png", "1"), version("a.png", "1"), "img/b.png", false)).toEqual({ undoContent: false, moveBack: { from: "img/b.png", to: "a.png" }, laterMoveKept: false });
+  });
+
+  it("keeps a later move, as it keeps later edits", () => {
+    expect(revertPlan(version("b.md", "1"), version("a.md", "1"), "c.md", true)).toBeUndefined();
+    expect(revertPlan(version("b.md", "2"), version("a.md", "1"), "c.md", true)).toEqual({ undoContent: true, moveBack: undefined, laterMoveKept: true });
+  });
+
+  it("has nothing to do for a change of content that is not text, or for no change", () => {
+    expect(revertPlan(version("a.png", "2"), version("a.png", "1"), "a.png", false)).toBeUndefined();
+    expect(revertPlan(version("a.md", "1"), version("a.md", "1"), "a.md", true)).toBeUndefined();
+  });
+});
+
+describe("revertContent", () => {
+  const bytes = (text: string) => new TextEncoder().encode(text);
+  const text = (content: Uint8Array | null) => (content === null ? null : new TextDecoder().decode(content));
+
+  it("undoes a note's change line by line, keeping later changes", () => {
+    expect(text(revertContent("a.md", bytes("x\nCHANGED\n"), bytes("x\nold\n"), bytes("x\nCHANGED\nlater\n")))).toBe("x\nold\nlater\n");
+  });
+
+  it("undoes a canvas's change with the canvas merge, so the result stays a valid canvas", () => {
+    const node = (id: string, x: number) => ({ id, type: "text", text: id, x, y: 0, width: 100, height: 50 });
+    const canvas = (...nodes: object[]) => bytes(JSON.stringify({ nodes, edges: [] }, null, "\t"));
+    const previous = canvas(node("a", 0));
+    const changed = canvas(node("a", 0), node("b", 200));
+    const current = canvas(node("a", 50), node("b", 200));
+    const reverted = JSON.parse(text(revertContent("board.canvas", changed, previous, current)) ?? "null") as { nodes: { id: string; x: number }[] };
+    // The version added node b: the revert removes it, and keeps the later move of node a.
+    expect(reverted.nodes.map((n) => [n.id, n.x])).toEqual([["a", 50]]);
+  });
+
+  it("refuses a file that is not text or has no merge", () => {
+    expect(revertContent("a.png", bytes("2"), bytes("1"), bytes("2"))).toBeNull();
+    expect(revertContent("a.md", new Uint8Array([0xff]), bytes("1"), bytes("1"))).toBeNull();
   });
 });
