@@ -200,6 +200,12 @@ func (target *APITarget) Create(ctx context.Context, entry Entry) error {
 		return err
 	}
 
+	return target.CreateWithIDs(ctx, documentID, revisionID, entry)
+}
+
+// CreateWithIDs creates one document with the given document and revision
+// ids, so a retry after a lost reply ends in one state (SPEC.md §6.2).
+func (target *APITarget) CreateWithIDs(ctx context.Context, documentID, revisionID uuid.UUID, entry Entry) error {
 	for attempt := 0; ; attempt++ {
 		err := target.commit(ctx, documentID, revisionID, entry)
 		if target.keys == nil || attempt >= maxEpochRetries || !hasReason(err, vaultsyncv1.ErrorReason_ERROR_REASON_EPOCH_NOT_CURRENT) {
@@ -264,7 +270,7 @@ func (target *APITarget) commit(ctx context.Context, documentID, revisionID uuid
 
 	_, err := target.client.sync.CommitRevision(ctx, connect.NewRequest(request))
 	if connect.CodeOf(err) == connect.CodeAlreadyExists {
-		return &SkipError{Reason: "the server refused the name: " + connectMessage(err)}
+		return &SkipError{Reason: "the server refused the name: " + connectMessage(err), PathTaken: true}
 	}
 
 	if err != nil {

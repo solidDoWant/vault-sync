@@ -51,6 +51,9 @@ type Target interface {
 // SkipError is a document Target.Create refused, with the reason.
 type SkipError struct {
 	Reason string
+	// PathTaken is true when the server refused the path because another
+	// document already has it (ALREADY_EXISTS).
+	PathTaken bool
 }
 
 func (err *SkipError) Error() string { return err.Reason }
