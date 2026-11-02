@@ -19,7 +19,8 @@ import (
 	"github.com/solidDoWant/vault-sync/internal/version"
 )
 
-const usage = "usage: vault-sync-server import [-passphrase-file FILE | -private-key-file FILE | -escrow-identity-file FILE -genesis HASH | -escrow -genesis HASH] SERVER_URL VAULT_ID DIR"
+const usage = "usage: vault-sync-server import [-passphrase-file FILE | -private-key-file FILE | -escrow-identity-file FILE -genesis HASH | -escrow -genesis HASH] SERVER_URL VAULT_ID DIR\n" +
+	"       vault-sync-server import -from-export EXPORT_DIR -source-vault VAULT_ID [-allow-partial] [-passphrase-file FILE | -private-key-file FILE | -escrow-identity-file FILE -genesis HASH | -escrow -genesis HASH] SERVER_URL TARGET_VAULT_ID"
 
 // DeviceName names the device the import's revisions are attributed to. It
 // is registered for the signed-in user for the run and removed afterwards.
@@ -60,6 +61,9 @@ func Main(ctx context.Context, args []string, lookup func(string) (string, bool)
 	escrowIdentityFile := flags.String("escrow-identity-file", "", "file holding the deployment's escrow identity (age identity file), for an escrowed end-to-end encrypted vault")
 	escrowPrompt := flags.Bool("escrow", false, "type the deployment's escrow identity at the terminal, for an escrowed end-to-end encrypted vault")
 	genesis := flags.String("genesis", "", "the vault's genesis hash (its vault fingerprint in the plugin), required with -escrow-identity-file and -escrow")
+	fromExport := flags.String("from-export", "", "restore from this export's output directory instead of importing a folder")
+	sourceVault := flags.String("source-vault", "", "with -from-export, the id of the exported vault to restore")
+	allowPartial := flags.Bool("allow-partial", false, "with -from-export, import the documents that verify when others do not")
 
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -69,8 +73,25 @@ func Main(ctx context.Context, args []string, lookup func(string) (string, bool)
 		return 2
 	}
 
-	if flags.NArg() != 3 {
+	restoring := *fromExport != ""
+
+	if want := map[bool]int{false: 3, true: 2}[restoring]; flags.NArg() != want {
 		_, _ = fmt.Fprintln(stderr, usage)
+
+		return 2
+	}
+
+	var sourceVaultID uuid.UUID
+
+	if restoring {
+		var err error
+		if sourceVaultID, err = uuid.Parse(*sourceVault); err != nil {
+			_, _ = fmt.Fprintf(stderr, "-from-export needs -source-vault: the id of the exported vault\n%s\n", usage)
+
+			return 2
+		}
+	} else if *sourceVault != "" || *allowPartial {
+		_, _ = fmt.Fprintf(stderr, "-source-vault and -allow-partial are only for -from-export\n%s\n", usage)
 
 		return 2
 	}
@@ -128,8 +149,6 @@ func Main(ctx context.Context, args []string, lookup func(string) (string, bool)
 		return 2
 	}
 
-	report := Report{VaultID: vaultID, Source: flags.Arg(2), Result: Result{Skipped: []Skip{}}}
-
 	secrets := secretSource{
 		passphraseFile:     *passphraseFile,
 		privateKeyFile:     *privateKeyFile,
@@ -138,6 +157,15 @@ func Main(ctx context.Context, args []string, lookup func(string) (string, bool)
 		genesisHash:        genesisHash,
 		prompt:             stderr,
 	}
+
+	if restoring {
+		return mainRestore(ctx, restoreRun{
+			serverURL: strings.TrimSuffix(serverURL.String(), "/"), vaultID: vaultID, exportDir: *fromExport,
+			sourceVaultID: sourceVaultID, allowPartial: *allowPartial, secrets: secrets,
+		}, lookup, stdout, stderr)
+	}
+
+	report := Report{VaultID: vaultID, Source: flags.Arg(2), Result: Result{Skipped: []Skip{}}}
 
 	result, err := run(ctx, strings.TrimSuffix(serverURL.String(), "/"), vaultID, report.Source, secrets, lookup, stderr)
 	report.Result = result
@@ -189,36 +217,11 @@ func run(ctx context.Context, serverURL string, vaultID uuid.UUID, source string
 		return empty, err
 	}
 
-	target := &APITarget{client: client, vaultID: vaultID}
-
-	if encrypted {
-		opener, err := secrets.opener(ctx, client, vaultID)
-		if err != nil {
-			return empty, err
-		}
-
-		seen := &verifiedState{}
-
-		target.refreshKeys = func(ctx context.Context) (*vaultKeys, error) { return client.vaultKeys(ctx, vaultID, opener, seen) }
-		if target.keys, err = target.refreshKeys(ctx); err != nil {
-			return empty, err
-		}
-
-		logger.InfoContext(ctx, "unlocked the vault's keys", "epoch", target.keys.epoch)
-	}
-
-	target.deviceID, err = client.registerDevice(ctx)
+	target, cleanup, err := openTarget(ctx, client, vaultID, encrypted, secrets, logger)
 	if err != nil {
 		return empty, err
 	}
-
-	deviceID := target.deviceID
-
-	defer func() {
-		if err := client.removeDevice(context.WithoutCancel(ctx), deviceID); err != nil {
-			logger.ErrorContext(ctx, "cannot remove the import device", "device_id", deviceID, "error", err)
-		}
-	}()
+	defer cleanup()
 
 	result, err := Import(ctx, Options{
 		Source:       source,
@@ -339,4 +342,41 @@ func (source secretSource) read() (UserSecret, error) {
 	}
 
 	return UserSecret{Passphrase: passphrase}, err
+}
+
+// openTarget unlocks an encrypted vault's keys and registers the device the
+// import commits as. cleanup removes the device.
+func openTarget(ctx context.Context, client *apiClient, vaultID uuid.UUID, encrypted bool, secrets secretSource, logger *slog.Logger) (*APITarget, func(), error) {
+	target := &APITarget{client: client, vaultID: vaultID}
+
+	if encrypted {
+		opener, err := secrets.opener(ctx, client, vaultID)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		seen := &verifiedState{}
+
+		target.refreshKeys = func(ctx context.Context) (*vaultKeys, error) { return client.vaultKeys(ctx, vaultID, opener, seen) }
+		if target.keys, err = target.refreshKeys(ctx); err != nil {
+			return nil, nil, err
+		}
+
+		logger.InfoContext(ctx, "unlocked the vault's keys", "epoch", target.keys.epoch)
+	}
+
+	deviceID, err := client.registerDevice(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	target.deviceID = deviceID
+
+	cleanup := func() {
+		if err := client.removeDevice(context.WithoutCancel(ctx), deviceID); err != nil {
+			logger.ErrorContext(ctx, "cannot remove the import device", "device_id", deviceID, "error", err)
+		}
+	}
+
+	return target, cleanup, nil
 }

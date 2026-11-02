@@ -15,6 +15,8 @@
 //
 // `vault-sync-server import SERVER_URL VAULT_ID DIR` loads a folder of Markdown notes
 // and attachments into an empty vault and exits (docs/admin/backup-and-restore.md).
+// With -from-export EXPORT_DIR -source-vault VAULT_ID, it instead restores one
+// vault of an export into an empty vault.
 //
 // `vault-sync-server retention set|unset|list` manages per-vault retention
 // overrides and exits (docs/admin/history-and-retention.md, SPEC.md §11).
