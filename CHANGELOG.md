@@ -2,6 +2,22 @@
 
 All notable changes to vault-sync are listed here, newest release first.
 
+## 0.4.10
+
+vault-sync is a self-hosted replacement for Obsidian Sync. It has two parts: an Obsidian plugin, and a sync server that stores its data in PostgreSQL and S3. This release changes only the plugin. It fixes **Revert this change** and **Restore this version** in the history window for several kinds of change. Install the plugin with BRAT from the GitHub releases of this repository. The server image `ghcr.io/soliddowant/vault-sync:0.4.10` and the Helm chart `oci://ghcr.io/soliddowant/charts/vault-sync` (version 0.4.10) have no changes from 0.4.9, so you do not have to upgrade the server.
+
+### Fixes
+
+- **Revert this change** on a version that moved a file now moves the file back. Before, it did nothing. Links to the file follow it, as when you move the file yourself. If the file was moved again later, the later move stays. If another file is now at the old place, the plugin does not revert, and a notice says why. A moved image or another file that is not text can now be moved back too. ([#1488](https://github.com/solidDoWant/vault-sync/pull/1488))
+- **Revert this change** on a canvas or a base merges the file as sync does, so the file stays valid. Before, it merged the file line by line, which could break it. ([#1488](https://github.com/solidDoWant/vault-sync/pull/1488))
+- **Revert this change** first saves the file if it is open in an editor, so text that you typed just before is not lost. ([#1488](https://github.com/solidDoWant/vault-sync/pull/1488))
+- **Revert this change** now shows also for a version whose previous version was not loaded yet. ([#1488](https://github.com/solidDoWant/vault-sync/pull/1488))
+- **Restore this version** no longer shows when the chosen version has the same content as the current one. A restore keeps the file at its current place, so it changed nothing and only added a version to the history. ([#1488](https://github.com/solidDoWant/vault-sync/pull/1488))
+
+### Known issues
+
+- The screenshots of the settings in the user guide still show the text from 0.4.4.
+
 ## 0.4.9
 
 vault-sync is a self-hosted replacement for Obsidian Sync. It has two parts: an Obsidian plugin, and a sync server that stores its data in PostgreSQL and S3. This release changes only the plugin, and only the name of one item in a file's menu. Install the plugin with BRAT from the GitHub releases of this repository. The server image `ghcr.io/soliddowant/vault-sync:0.4.9` and the Helm chart `oci://ghcr.io/soliddowant/charts/vault-sync` (version 0.4.9) have no changes from 0.4.8, so you do not have to upgrade the server.
