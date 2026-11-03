@@ -2,6 +2,35 @@
 
 All notable changes to vault-sync are listed here, newest release first.
 
+## 0.6.0
+
+vault-sync is a self-hosted replacement for Obsidian Sync. It has two parts: an Obsidian plugin, and a sync server that stores its data in PostgreSQL and S3. This release lets an admin restore a vault from the plaintext export into a new vault. The plugin has no changes from 0.4.10, except its version number. To install the server, use the server image `ghcr.io/soliddowant/vault-sync:0.6.0` or the Helm chart `oci://ghcr.io/soliddowant/charts/vault-sync` (version 0.6.0). Install the plugin with BRAT from the GitHub releases of this repository. There is no 0.5.0, because the work for that version was postponed.
+
+### Upgrade notes for admins
+
+- You do not have to do anything. This release has no database migration, no change to the API and no new setting, so you can upgrade a 0.4.10 server one replica at a time.
+
+### Server and deployment
+
+- The new restore brings back a vault from an export. Run `vault-sync-server import -from-export EXPORT_DIR -source-vault VAULT_ID SERVER_URL TARGET_VAULT_ID`. It creates each file of the exported vault again, at its path, in a new, empty vault. Use it when the server lost the files of a vault and you have an export. A restore brings back only the current version of each file. It does not bring back the history, the members, the devices or the settings of the vault. The runbook in [Backup and restore](https://github.com/solidDoWant/vault-sync/blob/0.6.0/docs/admin/backup-and-restore.md#restore-a-vault-from-an-export) gives all the steps. ([#1499](https://github.com/solidDoWant/vault-sync/pull/1499), [#1505](https://github.com/solidDoWant/vault-sync/pull/1505), [#1507](https://github.com/solidDoWant/vault-sync/pull/1507), [#1509](https://github.com/solidDoWant/vault-sync/pull/1509))
+- Before the restore creates a file, it makes sure that the export is complete and not damaged. It compares the size and the SHA-256 of each file with the manifest of the export. If a check fails, it creates nothing and lists each failure. With `-allow-partial`, it restores the files that pass the checks and lists the others. ([#1507](https://github.com/solidDoWant/vault-sync/pull/1507))
+- The restore writes one line of JSON as its report, with the status `ok`, `partial` or `failed`. If a path is not valid on the server, or two paths collide, the file goes into the folder `Restored files`, and the report lists it under `fallback`. ([#1507](https://github.com/solidDoWant/vault-sync/pull/1507))
+
+### Security
+
+- An end-to-end encrypted vault is restored only into a vault that is also end-to-end encrypted, so its files never reach the server in plaintext. The restore unlocks the vault with your passphrase, your private key or the escrow identity, as the Markdown import does. ([#1507](https://github.com/solidDoWant/vault-sync/pull/1507))
+
+### Sync
+
+- After a restore, each user connects their devices to the new vault. A device keeps all its files. It uploads its edits that are newer than the export, and it makes a conflict copy if a file is different. Nothing is deleted or overwritten. The [troubleshooting page](https://github.com/solidDoWant/vault-sync/blob/0.6.0/docs/user/troubleshooting.md#after-your-admin-restored-a-vault) of the user guide gives the steps. ([#1508](https://github.com/solidDoWant/vault-sync/pull/1508), [#1509](https://github.com/solidDoWant/vault-sync/pull/1509))
+
+Internal work: acceptance tests and a scoreboard for the restore, end-to-end tests of a device that connects to a restored vault, and design documents for live editing, which is postponed ([#1490](https://github.com/solidDoWant/vault-sync/pull/1490), [#1497](https://github.com/solidDoWant/vault-sync/pull/1497), [#1498](https://github.com/solidDoWant/vault-sync/pull/1498), [#1506](https://github.com/solidDoWant/vault-sync/pull/1506)).
+
+### Known issues
+
+- The screenshots of the settings in the user guide still show the text from 0.4.4.
+- Live editing (Phase 5) is postponed. It is not in this release.
+
 ## 0.4.10
 
 vault-sync is a self-hosted replacement for Obsidian Sync. It has two parts: an Obsidian plugin, and a sync server that stores its data in PostgreSQL and S3. This release changes only the plugin. It fixes **Revert this change** and **Restore this version** in the history window for several kinds of change. Install the plugin with BRAT from the GitHub releases of this repository. The server image `ghcr.io/soliddowant/vault-sync:0.4.10` and the Helm chart `oci://ghcr.io/soliddowant/charts/vault-sync` (version 0.4.10) have no changes from 0.4.9, so you do not have to upgrade the server.
