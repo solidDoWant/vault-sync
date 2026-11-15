@@ -7,4 +7,4 @@
 # with-test-stack.sh fails if the server reports another major version).
 services:
   postgres:
-    image: mirror.gcr.io/library/postgres:14.24-alpine@sha256:862ffc2556a2db763f0439c8323490000cd01975d2798a845e4a8dd3a905862f
+    image: mirror.gcr.io/library/postgres:14.25-alpine@sha256:e7d9e6aac7fe3232f7661da103aebc0ce38b04105b46af5e9edd5ef6bc343f20
