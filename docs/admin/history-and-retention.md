@@ -107,4 +107,4 @@ The metrics of the job are named `vault_sync_retention_*`, and the service-wide 
 Two alerts watch the job. Each has a runbook:
 
 - [VaultSyncRetentionNotSucceeding](alerts.md#vaultsyncretentionnotsucceeding): no run finished without errors for 3 hours.
-- [VaultSyncBlobGCStalled](alerts.md#vaultsyncblobgcstalled): blobs wait for deletion, but no replica deleted one.
+- [VaultSyncBlobGCStalled](alerts.md#vaultsyncblobgcstalled): a blob waits for deletion for longer than the grace period and two retention runs allow.

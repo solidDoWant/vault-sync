@@ -147,13 +147,14 @@ groups:
           summary: Old vault-sync upload sessions are not being cleaned up.
           description: 'The oldest open upload session is {{ $value | humanizeDuration }} old, longer than the upload TTL allows.'
       - alert: VaultSyncBlobGCStalled
-        expr: max by () (vault_sync_service_gc_pending_blobs{__SELECTOR__}) > 0 and on () sum by () (increase(vault_sync_retention_blobs_collected_total{__SELECTOR__}[6h])) == 0
-        for: 24h
+        expr: max by () (vault_sync_service_gc_oldest_pending_blob_age_seconds{__SELECTOR__}) > __THRESHOLD__
+        threshold: 93600
+        for: 30m
         labels:
           severity: warning
         annotations:
           summary: vault-sync blob garbage collection is not making progress.
-          description: '{{ $value }} blobs await garbage collection and no replica has collected one for 30 hours.'
+          description: 'The oldest blob awaiting garbage collection was released {{ $value | humanizeDuration }} ago, longer than the grace period and the next retention runs allow.'
       - alert: VaultSyncRekeyBacklogNotShrinking
         expr: max by () (vault_sync_service_stale_epoch_revisions{__SELECTOR__}) > 0 and max by () (vault_sync_service_stale_epoch_revisions{__SELECTOR__}) >= max by () (vault_sync_service_stale_epoch_revisions{__SELECTOR__} offset 24h)
         for: 1h

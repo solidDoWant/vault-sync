@@ -192,7 +192,7 @@ func populatedStore() *fakeStore {
 		version:     27,
 		blobs:       store.BlobEstimate{Blobs: 400, Bytes: 1 << 20},
 		uploads:     store.UploadSessions{Open: 3, ReservedBytes: 9000, OldestCreatedAt: time.Unix(1_800_000_000-90, 0)},
-		released:    store.ReleasedBlobCounts{Blobs: 8, Bytes: 4096},
+		released:    store.ReleasedBlobCounts{Blobs: 8, Bytes: 4096, OldestReleasedAt: time.Unix(1_800_000_000-93_700, 0)},
 		deleted:     2,
 		stale:       store.StaleEpochCounts{Vaults: 1, Revisions: 300},
 		escrow:      store.EscrowCounts{On: 2, Off: 5},
@@ -226,6 +226,7 @@ func populatedSamples(refreshed time.Time) map[string]float64 {
 		"vault_sync_service_upload_session_oldest_age_seconds":              90,
 		"vault_sync_service_gc_pending_blobs":                               8,
 		"vault_sync_service_gc_pending_blob_bytes":                          4096,
+		"vault_sync_service_gc_oldest_pending_blob_age_seconds":             93_700,
 		"vault_sync_service_deleted_vaults":                                 2,
 		"vault_sync_service_rekey_vaults":                                   1,
 		"vault_sync_service_stale_epoch_revisions":                          300,
@@ -294,6 +295,7 @@ func TestFailedQueryKeepsOnlyItsValues(t *testing.T) {
 	want := populatedSamples(refreshed)
 	want["vault_sync_service_schema_version"] = 28
 	want["vault_sync_service_upload_session_oldest_age_seconds"] = 150
+	want["vault_sync_service_gc_oldest_pending_blob_age_seconds"] = 93_760
 	assert.Equal(t, want, scrape(t, metrics.Handler()))
 }
 
@@ -336,6 +338,19 @@ func TestOldestUploadAgeIsZeroWithoutOpenSessions(t *testing.T) {
 
 	require.True(t, refresher.Refresh(t.Context()))
 	assert.Zero(t, scrape(t, metrics.Handler())["vault_sync_service_upload_session_oldest_age_seconds"])
+}
+
+func TestOldestPendingBlobAgeIsZeroWithoutReleasedBlobs(t *testing.T) {
+	metrics := servicemetrics.NewMetrics()
+	fake := populatedStore()
+	refresher := &servicemetrics.Refresher{Store: fake, Metrics: metrics, Now: func() time.Time { return time.Unix(1_800_000_000, 0) }}
+
+	require.True(t, refresher.Refresh(t.Context()))
+
+	fake.released = store.ReleasedBlobCounts{}
+
+	require.True(t, refresher.Refresh(t.Context()))
+	assert.Zero(t, scrape(t, metrics.Handler())["vault_sync_service_gc_oldest_pending_blob_age_seconds"])
 }
 
 func TestLastRunGaugesFollowTheDatabase(t *testing.T) {
