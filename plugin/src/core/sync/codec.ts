@@ -63,6 +63,12 @@ export interface RevisionCodec {
   prepare(): Promise<void>;
   /** A revision from the server in plain form. */
   decode(revision: Revision): Promise<IncomingRevision>;
+  /**
+   * The revision's path, for listing it before it is decoded: read without
+   * fetching anything or changing the codec's state, so undefined when that
+   * needs a key this device does not hold yet or the path does not read.
+   */
+  peekPath(revision: Revision): string | undefined;
   /** The content of `contentHash`, of `size` bytes, as `revisionId` (if given) references it. */
   download(contentHash: string, size: bigint, revisionId?: string): Promise<Uint8Array>;
   /** The content of a merge base, or null if retention purged it (SPEC.md §8, §11). */
@@ -95,6 +101,10 @@ export class PlaintextCodec implements RevisionCodec {
 
   decode(revision: Revision): Promise<IncomingRevision> {
     return Promise.resolve(toIncoming(revision));
+  }
+
+  peekPath(revision: Revision): string | undefined {
+    return toIncoming(revision).remote.path;
   }
 
   download(contentHash: string, size: bigint): Promise<Uint8Array> {
@@ -201,6 +211,18 @@ export class EncryptedCodec implements RevisionCodec {
 
   decode(revision: Revision): Promise<IncomingRevision> {
     return this.decodeRevision(revision, false);
+  }
+
+  peekPath(revision: Revision): string | undefined {
+    const epoch = revision.epoch;
+    if (epoch === 0) return toIncoming(revision).remote.path;
+    const key = this.keys.epochKey(epoch);
+    if (key === undefined) return undefined;
+    try {
+      return strictDecoder.decode(open(deriveSubkey(key, "path"), revision.path, pathAad(this.vaultId, revision.documentId, epoch)));
+    } catch {
+      return undefined;
+    }
   }
 
   /**

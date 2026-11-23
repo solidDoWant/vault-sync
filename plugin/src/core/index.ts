@@ -1,6 +1,6 @@
 // Public surface of the platform-independent sync engine (SPEC.md §4). It
 // must never import `obsidian` or src/obsidian (lint-enforced).
-export { DivergedError, SyncEngine, type RefusedName, type SyncApi, type SyncEngineOptions, type SyncProblems, type SyncStatus, type TooLargeFile } from "./sync/engine";
+export { DivergedError, SyncEngine, type ChangeKind, type IncomingChange, type PendingChange, type RefusedName, type SyncApi, type SyncEngineOptions, type SyncProblems, type SyncProgress, type SyncStatus, type TooLargeFile } from "./sync/engine";
 export { commitRestore, documentHistory, readRevision, RestoreError, type HistoryEntry, type HistoryPage, type RestoreFailure } from "./sync/history";
 export { IndexedDbSyncJournal } from "./sync/indexeddb";
 export { MemorySyncJournal, type ConflictEntry, type Cursor, type DocEntry, type JournalChange, type JournalState, type PendingOp, type SkippedEntry, type SkipReason, type SyncJournal, type SyncKind } from "./sync/journal";

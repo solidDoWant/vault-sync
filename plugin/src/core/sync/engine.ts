@@ -51,6 +51,12 @@ export interface SyncEngineOptions {
   /** Called when the status changes and after every sync. */
   onChange?: () => void;
   /**
+   * Called when the pending changes, the incoming changes or the progress
+   * change: read them with `pendingChanges()`, `incoming()` and `progress()`.
+   * Called often during a long sync; an observer that draws should throttle.
+   */
+  onActivity?: () => void;
+  /**
    * Whether this device may only pull: the signed-in user is a `viewer` of
    * the vault (docs/design/sharing.md, Viewer devices). Read at the start of
    * every cycle, so a role change takes effect within one cycle. Defaults to
@@ -97,6 +103,44 @@ export interface SyncProblems {
 }
 
 export type SyncStatus = "idle" | "syncing" | "error";
+
+/** How a change alters a file or folder. */
+export type ChangeKind = "created" | "edited" | "renamed" | "deleted";
+
+/** A local change waiting to be pushed: one per document, all its pending operations together. */
+export interface PendingChange {
+  documentId: string;
+  /** The path once the change applies; a deleted document's last path. */
+  path: string;
+  /** created when the server has never had the document, deleted when the last operation deletes it, else renamed when any operation moves it, else edited. */
+  kind: ChangeKind;
+  folder: boolean;
+}
+
+/** A remote change learned in the current pull and not applied yet. */
+export interface IncomingChange {
+  documentId: string;
+  /** The path after the change; undefined in an encrypted vault until the change is read with a key this device does not hold yet. */
+  path: string | undefined;
+  kind: ChangeKind;
+  folder: boolean;
+  /** The document also has a local change waiting to be pushed: a likely conflict. */
+  conflict: boolean;
+}
+
+/**
+ * How far the current pull or push is. A pull reads the change list page by
+ * page and applies each page as it reads it, so its total is the changes
+ * learned so far in this pull and grows as pages arrive. A push's total is
+ * the operations pending when it started.
+ */
+export interface SyncProgress {
+  phase: "pull" | "push";
+  done: number;
+  total: number;
+  /** The path being applied or pushed; undefined between changes. */
+  path: string | undefined;
+}
 
 /**
  * A remote revision the engine cannot apply now (the file changed since this
@@ -156,6 +200,10 @@ export class SyncEngine {
   private readonly maxFileBytes: number;
   private readonly pathRules: PathRules;
   private readonly onChange: () => void;
+  private readonly onActivity: () => void;
+  /** The incoming changes of the current pull, by document, with the seq of the latest revision learned. */
+  private readonly incomingChanges = new Map<string, { change: IncomingChange; seq: bigint }>();
+  private currentProgress: SyncProgress | undefined;
   private readonly readOnly: () => Promise<boolean>;
   private readonly keepLocalCopy: (path: string, content: Uint8Array) => Promise<void>;
   /** Pending operations whose upload the server refused as too large, by op id, with the content hash then. */
@@ -208,6 +256,7 @@ export class SyncEngine {
     this.maxFileBytes = options.maxFileBytes ?? Number.POSITIVE_INFINITY;
     this.pathRules = options.pathRules ?? posixPathRules;
     this.onChange = options.onChange ?? (() => undefined);
+    this.onActivity = options.onActivity ?? (() => undefined);
     this.readOnly = options.readOnly ?? (() => Promise.resolve(false));
     this.keepLocalCopy =
       options.keepLocalCopy ??
@@ -350,11 +399,20 @@ export class SyncEngine {
     if (Object.keys(change).length === 0) return;
     await this.journal.commit(change);
     if (this.state !== undefined) applyChange(this.state, change);
+    if (change.putPending !== undefined || change.deletePending !== undefined) this.onActivity();
   }
 
   // Pull ----------------------------------------------------------------
 
   private async pull(): Promise<boolean> {
+    try {
+      return await this.pullChanges();
+    } finally {
+      this.finishProgress();
+    }
+  }
+
+  private async pullChanges(): Promise<boolean> {
     const state = await this.loadState();
     let progress = false;
     // Documents kept back for an epoch key this device lacked: read again, as the server holds them now, and applied once the key is here.
@@ -378,6 +436,7 @@ export class SyncEngine {
       });
       // The server was restored to before this device's cursor: resync (docs/design/engine.md §9).
       if (response.diverged) return this.resync();
+      this.learn(state, response.revisions);
       for (const revision of response.revisions) {
         if (revision.seq <= state.cursor.seq) continue;
         const cursor: Cursor = { seq: revision.seq, anchor: revision.anchor };
@@ -385,11 +444,14 @@ export class SyncEngine {
         if (incoming === undefined) {
           // Only this document waits (docs/design/encryption.md, *Interaction matrix*): the pull goes on past it, and later syncs retry it.
           await this.record({ cursor, putWaiting: [{ documentId: revision.documentId, revisionId: revision.id }] });
+          this.handled(revision);
           continue;
         }
+        this.working(incoming.remote.path);
         // A later revision of a waiting document takes its place.
         const waited: JournalChange = state.waiting.has(revision.documentId) ? { deleteWaiting: [revision.documentId] } : {};
         if (!(await this.applyPulled(state, revision, incoming, { ...waited, cursor }))) return progress;
+        this.handled(revision);
         progress = true;
       }
       if (!response.hasMore || response.revisions.length === 0) return progress;
@@ -1113,6 +1175,76 @@ export class SyncEngine {
     return { conflicts, refused: await this.refusedNames(), skipped: [...state.skipped.values()], tooLarge };
   }
 
+  /** The local changes waiting to be pushed, one per document, in push order. */
+  async pendingChanges(): Promise<PendingChange[]> {
+    const byDocument = new Map<string, PendingOp[]>();
+    for (const op of (await this.loadState()).pending) {
+      const ops = byDocument.get(op.documentId);
+      if (ops === undefined) byDocument.set(op.documentId, [op]);
+      else ops.push(op);
+    }
+    return [...byDocument.values()].map((ops) => {
+      const first = ops[0] as PendingOp;
+      const last = ops.at(-1) as PendingOp;
+      const kind: ChangeKind =
+        last.kind === "delete" ? "deleted" : first.kind === "create" ? "created" : ops.some((op) => op.kind === "rename") ? "renamed" : "edited";
+      return { documentId: last.documentId, path: last.path, kind, folder: last.docKind === "folder" };
+    });
+  }
+
+  /** The remote changes learned in the current pull and not applied yet, in the order the server sent them; empty between pulls. */
+  incoming(): IncomingChange[] {
+    return [...this.incomingChanges.values()].map((entry) => ({ ...entry.change }));
+  }
+
+  /** How far the current pull or push is; undefined when neither runs. */
+  progress(): SyncProgress | undefined {
+    return this.currentProgress === undefined ? undefined : { ...this.currentProgress };
+  }
+
+  private setProgress(progress: SyncProgress | undefined): void {
+    this.currentProgress = progress;
+    this.onActivity();
+  }
+
+  /** Adds the not-yet-applied revisions of a pulled page to the incoming changes and the pull's total. */
+  private learn(state: JournalState, revisions: readonly Revision[]): void {
+    const fresh = revisions.filter((revision) => revision.seq > state.cursor.seq);
+    if (fresh.length === 0) return;
+    const pending = new Set(state.pending.map((op) => op.documentId));
+    for (const revision of fresh) {
+      const local = state.docs.get(revision.documentId);
+      const known = local !== undefined && local.deleted !== true;
+      // A tombstone of a document this device does not hold changes nothing here.
+      if (revision.deleted && !known) continue;
+      const path = revision.deleted ? local?.path : (this.codec.peekPath(revision) ?? local?.path);
+      const kind: ChangeKind = revision.deleted ? "deleted" : !known ? "created" : path !== undefined && path !== local.path ? "renamed" : "edited";
+      const change: IncomingChange = { documentId: revision.documentId, path, kind, folder: revision.kind === DocumentKind.FOLDER, conflict: pending.has(revision.documentId) };
+      this.incomingChanges.set(revision.documentId, { change, seq: revision.seq });
+    }
+    const progress = this.currentProgress;
+    this.setProgress({ phase: "pull", done: progress?.phase === "pull" ? progress.done : 0, total: (progress?.phase === "pull" ? progress.total : 0) + fresh.length, path: undefined });
+  }
+
+  /** Marks a pulled revision as handled: it counts as done, and leaves the incoming changes unless a later revision of its document is still to come. */
+  private handled(revision: Revision): void {
+    const entry = this.incomingChanges.get(revision.documentId);
+    if (entry !== undefined && entry.seq <= revision.seq) this.incomingChanges.delete(revision.documentId);
+    if (this.currentProgress !== undefined) this.currentProgress = { ...this.currentProgress, done: this.currentProgress.done + 1, path: undefined };
+  }
+
+  /** Reports the start of work on `path`. */
+  private working(path: string | undefined): void {
+    if (this.currentProgress !== undefined) this.setProgress({ ...this.currentProgress, path });
+  }
+
+  /** Ends a pull or push: reports where it got to, if it did anything, then that none runs. */
+  private finishProgress(): void {
+    if (this.currentProgress !== undefined) this.setProgress({ ...this.currentProgress, path: undefined });
+    this.incomingChanges.clear();
+    if (this.currentProgress !== undefined) this.setProgress(undefined);
+  }
+
   /** The number of local operations the server has not acknowledged. */
   async pendingCount(): Promise<number> {
     return (await this.loadState()).pending.length;
@@ -1237,12 +1369,24 @@ export class SyncEngine {
 
   /** Pushes the pending operations; `pullAgain` when a commit was refused by P1 or P2. */
   private async push(): Promise<{ progress: boolean; pullAgain: boolean }> {
+    try {
+      return await this.pushPending();
+    } finally {
+      this.finishProgress();
+    }
+  }
+
+  private async pushPending(): Promise<{ progress: boolean; pullAgain: boolean }> {
     const state = await this.loadState();
     const blocked = new Set<string>();
     let progress = false;
     let pullAgain = false;
-    for (const queued of [...state.pending]) {
+    const queue = [...state.pending];
+    if (queue.length > 0) this.currentProgress = { phase: "push", done: 0, total: queue.length, path: undefined };
+    for (const [done, queued] of queue.entries()) {
+      if (this.currentProgress !== undefined) this.currentProgress = { ...this.currentProgress, done };
       if (blocked.has(queued.documentId)) continue;
+      this.working(queued.path);
       // P3: a refused name waits until the file is renamed.
       if (queued.refused !== undefined) {
         blocked.add(queued.documentId);
@@ -1337,6 +1481,7 @@ export class SyncEngine {
       await this.record(this.acknowledge(op, revision));
       progress = true;
     }
+    if (this.currentProgress !== undefined) this.currentProgress = { ...this.currentProgress, done: queue.length };
     return { progress, pullAgain };
   }
 
