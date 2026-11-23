@@ -5,6 +5,7 @@ import { VaultEncryption, VaultRole, type Vault } from "../gen/vaultsync/v1/type
 import { jwtDisplayName, jwtSubject } from "../core/auth/oidc";
 import type { AuthState } from "../core/auth/tokens";
 import type { ProtocolClient } from "../core/protocol/client";
+import { ActivityLog, type ActivityEntry } from "../core/sync/activity-log";
 import type { SyncJournal } from "../core/sync/journal";
 import type { VaultAdapter } from "../core/vault/adapter";
 import { v7 as uuidv7 } from "uuid";
@@ -383,6 +384,8 @@ export class SyncController {
   private role: { key: string; readOnly: boolean } | undefined;
   /** What onReadOnly last heard. */
   private reportedReadOnly = false;
+  /** The activity log of the vault sync last started for, and that vault's key; a new vault starts a new log. */
+  private log: { key: string; activity: ActivityLog } | undefined;
   /** The connected vault the device lost access to, and why; no session starts for it until another vault (or none) is connected. */
   private lost: { key: string; loss: AccessLoss } | undefined;
 
@@ -436,6 +439,16 @@ export class SyncController {
     const vault = connectedVault(this.options.data());
     const key = vault === undefined ? undefined : `${serverBaseUrl(this.options.data())}\n${vault.id}`;
     return this.role !== undefined && this.role.key === key && this.role.readOnly;
+  }
+
+  /**
+   * The recent sync events of the vault sync last ran for, newest first:
+   * uploads, downloads, deletions, conflict copies and connection problems.
+   * Kept in memory only, across session restarts, until another vault is
+   * connected.
+   */
+  activity(): ActivityEntry[] {
+    return this.log?.activity.entries() ?? [];
   }
 
   /** The running session, if any. */
@@ -509,7 +522,10 @@ export class SyncController {
       });
       return;
     }
+    const wasOffline = this.current.state === "offline";
     this.publish({ state: "starting", conflicts: 0, pending: 0 });
+    if (this.log?.key !== wanted.key) this.log = { key: wanted.key, activity: new ActivityLog() };
+    const activity = this.log.activity;
     const live = () => generation === this.generation;
     let journal: ClosableJournal | undefined;
     try {
@@ -558,6 +574,7 @@ export class SyncController {
         ...(this.options.maxDownloadBytes === undefined ? {} : { maxDownloadBytes: this.options.maxDownloadBytes }),
         readOnly: () => this.readRole(client, wanted.key, wanted.vault.id, generation),
         ...(this.options.keepLocalCopy === undefined ? {} : { keepLocalCopy: this.options.keepLocalCopy }),
+        activity,
         onStatus: (status) => {
           if (this.running?.session === session) this.publish(status);
         },
@@ -570,6 +587,8 @@ export class SyncController {
       // Signed out (or the session ended) meanwhile: the next update shows that instead.
       if (!live()) return;
       console.warn(`vault-sync: sync could not start: ${errorMessage(error)}`);
+      // One entry per offline spell: the retries below do not add more.
+      if (isOffline(error) && !wasOffline) activity.add({ kind: "connection-problem", time: Date.now() });
       this.publish({
         state: error instanceof DeviceRemovedError ? "device-removed" : isOffline(error) ? "offline" : "error",
         conflicts: 0,

@@ -969,6 +969,33 @@ describe("SyncController", () => {
     await f.controller.stop();
   });
 
+  it("keeps an activity log of the vault across restarts: one connection problem per offline spell, then the uploads", async () => {
+    vi.useFakeTimers();
+    const server = fakeServer();
+    let reachable = false;
+    const f = fixture(server, connected({ ...settings }, server.sync.vaultId), {
+      syncIntervalMs: 30_000,
+      openJournal: () => (reachable ? Promise.resolve(closable()) : Promise.reject(new ConnectError("network error", Code.Unavailable))),
+    });
+    await f.vault.write("note.md", bytes("written offline"));
+
+    await f.controller.update();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(f.statuses.at(-1)).toMatchObject({ state: "offline" });
+    expect(f.controller.activity().map((entry) => entry.kind)).toEqual(["connection-problem"]);
+
+    reachable = true;
+    await vi.advanceTimersByTimeAsync(30_000);
+    await vi.waitFor(() => {
+      expect(f.controller.activity().map((entry) => entry.kind)).toEqual(["uploaded", "connection-problem"]);
+    });
+    expect(f.controller.activity()[0]).toMatchObject({ path: "note.md" });
+
+    await f.controller.restart();
+    expect(f.controller.activity()).toHaveLength(2);
+    await f.controller.stop();
+  });
+
   it("subscribes the session to its vault on the configured server's realtime channel", async () => {
     const server = fakeServer();
     const realtime = new InMemoryRealtimeServer();
