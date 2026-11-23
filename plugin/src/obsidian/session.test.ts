@@ -238,4 +238,43 @@ describe("SyncSession", () => {
     });
     await session.stop();
   });
+
+  it("pushes a local change waiting for its debounce when the app goes to the background", async () => {
+    const { session, vault, server } = setup({ pushDebounceMs: 3_600_000 });
+    await session.start();
+    await vault.write("a.md", encoder.encode("typed just before switching apps"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(server.liveFiles()).toEqual(new Map());
+
+    session.background();
+
+    await vi.waitFor(() => {
+      expect(server.liveFiles()).toEqual(new Map([["a.md", "typed just before switching apps"]]));
+    });
+    await session.stop();
+  });
+
+  it("reconnects the realtime channel that dropped in the background and pulls at once when the app comes back", async () => {
+    const server = new InMemoryServer();
+    const realtime = new InMemoryRealtimeServer({ headSeq: () => server.currentHeadSeq });
+    const { session, vault } = setup(
+      { realtime: { connect: realtime.connect, accessToken: () => Promise.resolve("token"), timers: idleTimers, random: () => 0.5, log: () => undefined } },
+      server,
+    );
+    await session.start();
+    await vi.waitFor(() => {
+      expect(realtime.open).toHaveLength(1);
+    });
+    // Frozen: the connection drops, and the reconnect and fallback timers never fire.
+    realtime.closeAll(1006);
+    server.commit({ documentId: "from-a", path: "from-a.md", content: "written on the laptop" });
+
+    session.foreground();
+
+    await vi.waitFor(async () => {
+      expect(await files(vault)).toEqual({ "from-a.md": "written on the laptop" });
+      expect(realtime.open).toHaveLength(1);
+    });
+    await session.stop();
+  });
 });

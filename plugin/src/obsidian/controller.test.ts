@@ -1484,3 +1484,27 @@ describe("DeviceListLoads", () => {
     expect(errors).toEqual([]);
   });
 });
+
+describe("the app going to the background and coming back", () => {
+  it("pushes a local change waiting for its debounce on the way out, and pulls a remote change at once on the way back", async () => {
+    const server = fakeServer();
+    const f = fixture(server, connected({ ...settings }, server.sync.vaultId), { pushDebounceMs: 3_600_000 });
+    await f.controller.update();
+    await statusBecomes(f.statuses, "idle");
+
+    await f.vault.write("a.md", new TextEncoder().encode("typed just before switching apps"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(server.sync.liveFiles().get("a.md")).toBeUndefined();
+    f.controller.background();
+    await vi.waitFor(() => {
+      expect(server.sync.liveFiles().get("a.md")).toBe("typed just before switching apps");
+    });
+
+    server.sync.commit({ documentId: "remote", path: "b.md", content: "written on the laptop" });
+    f.controller.foreground();
+    await vi.waitFor(async () => {
+      expect(new TextDecoder().decode(await f.vault.read("b.md"))).toBe("written on the laptop");
+    });
+    await f.controller.stop();
+  });
+});
