@@ -462,6 +462,16 @@ export class SyncController {
     await this.running?.session.syncNow();
   }
 
+  /** The app is going to the background: pushes waiting local changes now, if a session runs (SyncSession.background). */
+  background(): void {
+    this.running?.session.background();
+  }
+
+  /** The app came back to the foreground: syncs and reconnects now, if a session runs (SyncSession.foreground). */
+  foreground(): void {
+    this.running?.session.foreground();
+  }
+
   /**
    * History browsing and restore, while a session runs. `canRestore` reads
    * the signed-in user's role in the connected vault from ListVaults: a

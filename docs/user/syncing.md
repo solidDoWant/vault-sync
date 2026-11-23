@@ -19,6 +19,10 @@ While you are signed in and a vault is connected, the plugin syncs on its own:
 - At once, when another device saves a change. The server tells the plugin over a live connection, so changes usually arrive within seconds.
 - Every 30 seconds. This retries anything that failed, and brings in changes when the live connection is down.
 - When you run the command **Vault Sync: Sync now**.
+- When you leave Obsidian: on a phone, when you switch to another app, and on a desktop, when you minimize the window. The plugin saves the note that you edit and sends changes that wait at once, without the 2-second wait.
+- When you come back to Obsidian. The plugin connects again at once and brings in the changes that other devices made in the meantime.
+
+On a phone, the plugin cannot sync while Obsidian is in the background or closed. Android and iOS stop an app soon after you leave it. If the device is online when you switch apps, your last edits reach the server before that. Changes from other devices arrive when you open Obsidian again.
 
 If a sync fails, the plugin tries again after a wait that grows with each failure, from about a second up to 5 minutes.
 

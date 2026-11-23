@@ -165,6 +165,19 @@ export class RealtimeClient {
     socket?.close();
   }
 
+  /**
+   * The app came back to the foreground: a reconnect waiting for its backoff
+   * (a connection that dropped while the app was frozen) connects now, and the
+   * backoff starts over. An open connection, or one being opened, is left alone.
+   */
+  reconnectNow(): void {
+    if (!this.started || this.stopped || this.retry === undefined) return;
+    this.timers.clearTimeout(this.retry);
+    this.retry = undefined;
+    this.failures = 0;
+    void this.connect();
+  }
+
   private async connect(): Promise<void> {
     const generation = ++this.generation;
     let token: string;

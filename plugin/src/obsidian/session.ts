@@ -163,6 +163,27 @@ export class SyncSession {
     }
   }
 
+  /**
+   * The app is going to the background, where a mobile WebView is soon
+   * frozen: a local change waiting for its debounce is pushed now
+   * (SyncEngine.flush). With none waiting, nothing is sent.
+   */
+  background(): void {
+    if (this.stopped) return;
+    this.engine?.flush();
+  }
+
+  /**
+   * The app came back to the foreground: syncs now and reconnects a dropped
+   * realtime channel now, instead of waiting for timers set before the app
+   * was frozen (SyncEngine.resume, RealtimeClient.reconnectNow).
+   */
+  foreground(): void {
+    if (this.stopped) return;
+    this.engine?.resume();
+    this.realtime?.reconnectNow();
+  }
+
   /** History browsing and restore for the session's vault, once its engine runs; undefined before that and after the stop. */
   history(): VaultHistory | undefined {
     const engine = this.engine;

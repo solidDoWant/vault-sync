@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ErrorCode, ServerFrameSchema } from "../../gen/vaultsync/v1/realtime_pb";
 import { TokenManager } from "../auth/tokens";
-import { bearerSubprotocolPrefix, RealtimeClient, realtimeUrl, reconnectDelay, type RealtimeClientOptions, type RealtimeTimers } from "./client";
+import { bearerSubprotocolPrefix, closeCodes, RealtimeClient, realtimeUrl, reconnectDelay, type RealtimeClientOptions, type RealtimeTimers } from "./client";
 import { InMemoryRealtimeServer } from "./memory";
 
 const vaultId = "vault-1";
@@ -401,6 +401,60 @@ describe("RealtimeClient", () => {
       await flush();
       expect(server.open).toEqual([]);
       expect(timers.pending.size).toBe(1);
+    });
+  });
+
+  describe("reconnectNow, when the app comes back to the foreground", () => {
+    it("reconnects at once instead of waiting for the backoff set before, and starts the backoff over", async () => {
+      const server = new InMemoryRealtimeServer();
+      const { client, timers, pulls } = setup({ server, options: { random: () => 1, backoff: { initialMs: 1000, maxMs: 60_000 } } });
+      client.start();
+      await flush();
+      server.refuseWith = 503;
+      server.closeAll(closeCodes.abnormal);
+      for (let attempt = 0; attempt < 5; attempt++) {
+        await flush();
+        timers.fire();
+      }
+      await flush();
+      expect(timers.delays).toEqual([1000, 2000, 4000, 8000, 16_000, 32_000]);
+
+      server.refuseWith = undefined;
+      client.reconnectNow();
+      await flush();
+      expect(timers.pending.size).toBe(0);
+      expect(server.open).toHaveLength(1);
+      expect(pulls()).toBe(2);
+
+      // The backoff starts over: the next drop waits for the first delay again.
+      server.closeAll(closeCodes.goingAway);
+      await flush();
+      expect(timers.delays.at(-1)).toBe(1000);
+    });
+
+    it("leaves an open subscription alone", async () => {
+      const { server, client, timers, pulls } = setup();
+      client.start();
+      await flush();
+      client.reconnectNow();
+      await flush();
+      expect(server.connections).toHaveLength(1);
+      expect(server.open).toHaveLength(1);
+      expect(timers.pending.size).toBe(0);
+      expect(pulls()).toBe(1);
+    });
+
+    it("does nothing once stopped", async () => {
+      const { server, client, timers } = setup();
+      client.start();
+      await flush();
+      server.closeAll(closeCodes.abnormal);
+      await flush();
+      client.stop();
+      client.reconnectNow();
+      await flush();
+      expect(server.connections).toHaveLength(1);
+      expect(timers.pending.size).toBe(0);
     });
   });
 
