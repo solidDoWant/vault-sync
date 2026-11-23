@@ -46,6 +46,7 @@ import { VaultKeyManager } from "./core/keys/vault-keys";
 import type { RekeyResult } from "./core/sync/rekey";
 import type { LogTrust } from "./core/keys/verified-log";
 import { SignInCancelledError, SignInModal } from "./obsidian/sign-in-modal";
+import { SyncView, syncViewType } from "./obsidian/sync-view";
 import { errorMessage, initialStatus, isStoppedState, statusDescription, statusIcon, statusText, type SyncStatus } from "./obsidian/status";
 import { ObsidianVaultAdapter } from "./obsidian/vault-adapter";
 import { keepLocalCopy } from "./obsidian/local-copies";
@@ -131,13 +132,13 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
     this.statusBar = this.addStatusBarItem();
     this.statusBar.addClass("vault-sync-status");
     this.statusBar.onClickEvent(() => {
-      this.noticeStatus();
+      void this.showSyncView();
     });
     // Mobile has no status bar: a ribbon icon shows the status there, and
-    // tapping it shows the details (#420).
+    // tapping it opens the sync view with the details.
     if (Platform.isMobile) {
       this.statusRibbon = this.addRibbonIcon(statusIcon(this.status), statusText(this.status), () => {
-        this.noticeStatus();
+        void this.showSyncView();
       });
       this.statusRibbon.addClass("vault-sync-status-ribbon");
     }
@@ -177,13 +178,20 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
     });
     this.registerView(conflictViewType, (leaf) => new ConflictView(leaf, { problems: () => this.controller?.session ?? this.session }));
     this.addCommand({ id: "show-conflicts", name: "Show conflicts", callback: () => void this.showConflicts() });
-    // The status bar is desktop-only; on mobile this and the ribbon icon show the status.
+    // The sync view in the right sidebar: its tab icon shows the status, and it holds the details and the activity log.
+    this.registerView(
+      syncViewType,
+      (leaf) =>
+        new SyncView(leaf, {
+          status: () => this.status,
+          activity: () => this.controller?.activity() ?? [],
+          syncNow: () => void this.controller?.syncNow(),
+        }),
+    );
     this.addCommand({
       id: "show-status",
       name: "Show sync status",
-      callback: () => {
-        this.noticeStatus();
-      },
+      callback: () => void this.showSyncView(),
     });
     this.addCommand({
       id: "browse-history",
@@ -225,6 +233,10 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
       };
       this.registerEvent(this.app.vault.on("create", warn));
       this.registerEvent(this.app.vault.on("rename", warn));
+      // Put the sync view in the right sidebar, as Obsidian Sync does, without showing it.
+      if (this.app.workspace.getLeavesOfType(syncViewType).length === 0) {
+        void this.app.workspace.ensureSideLeaf(syncViewType, "right", { active: false, reveal: false });
+      }
     });
     this.showStatus(this.status);
     // Not awaited: registering the device and opening the journal may wait
@@ -830,6 +842,7 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
     if (changed) this.settingTab?.render();
     else this.settingTab?.showStatus();
     this.refreshConflictViews();
+    for (const leaf of this.app.workspace.getLeavesOfType(syncViewType)) if (leaf.view instanceof SyncView) leaf.view.refresh();
     if (status.state === "idle" || status.state === "error") void this.noticeSkipped();
   }
 
@@ -846,24 +859,9 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
     for (const notice of this.skipNotices.fresh(skipped)) new Notice(notice, 0);
   }
 
-  /** The status details, opened by the user. While offline they offer "Sync now", which tries to reach the server at once. */
-  private noticeStatus(): void {
-    const text = `${statusText(this.status)}\n${statusDescription(this.status)}`;
-    if (this.status.state !== "offline") {
-      new Notice(text);
-      return;
-    }
-    const notice = new Notice(
-      createFragment((fragment) => {
-        fragment.createDiv({ text });
-        const button = fragment.createEl("button", { text: "Sync now", cls: "mod-cta" });
-        button.addEventListener("click", (event) => {
-          event.stopPropagation();
-          notice.hide();
-          void this.controller?.syncNow();
-        });
-      }),
-    );
+  /** Opens the sync view in the right sidebar, with the status details and the activity log. */
+  async showSyncView(): Promise<void> {
+    await this.app.workspace.ensureSideLeaf(syncViewType, "right", { active: true, reveal: true });
   }
 
   /**

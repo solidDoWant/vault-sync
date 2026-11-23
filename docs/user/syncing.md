@@ -44,7 +44,15 @@ A delete does not erase the file's history on the server. The server keeps the r
 
 ## The status
 
-On a desktop, the status bar shows the sync status. On a phone, an icon in the ribbon shows it: a check mark when everything is synced, a cloud with an arrow while changes wait to be pushed, a warning triangle while there are conflict copies, and its own icon for each other state. For details, click the status bar, tap the icon, or run **Vault Sync: Show sync status**.
+On a desktop, the status bar shows the sync status. On a phone, an icon in the ribbon shows it: a check mark when everything is synced, a cloud with an arrow while changes wait to be pushed, a warning triangle while there are conflict copies, and its own icon for each other state.
+
+The plugin also puts a sync view in the right sidebar, on desktops and phones. The icon on the tab of the sync view is the same status icon. For details, open the sync view. To open it, click the status bar, tap the ribbon icon, or run **Vault Sync: Show sync status**. The sync view shows:
+
+- The status, and what it means.
+- While the plugin is offline, the time of the next try and a **Sync now** button.
+- While a sync runs, how far it is and the file that the plugin sends or receives now.
+- The incoming files and the files that wait to be sent (see below).
+- The activity log: the recent uploads, downloads, deletions, conflict copies and connection problems, newest first, each with its time and file. The plugin keeps the log only in memory, so it starts empty when Obsidian starts.
 
 | Status | What it means |
 |---|---|
@@ -66,13 +74,13 @@ After the status, `N pending` counts your changes that the server did not confir
 
 While a sync runs, the status shows how far it is, for example `syncing 40/312`: 40 of 312 changes are done. When the plugin gets changes from the server, `N incoming` counts the files that the server changed and that are not updated on this device yet. The plugin learns about these changes in groups, so the count can grow while the sync runs. The icon on a phone shows a cloud with a down arrow while changes come in.
 
-The details show more:
+The sync view shows more:
 
 - The file that the plugin sends or receives now.
 - The files that wait to be sent to the server, each with what changed: created, edited, renamed or deleted.
-- The incoming files, each with what changed. If you also changed a file on this device, the details say "likely conflict". Do not edit that file until the sync is done, or you can get a conflict copy.
+- The incoming files, each with what changed. If you also changed a file on this device, the sync view says "likely conflict". Do not edit that file until the sync is done, or you can get a conflict copy.
 
-Each list names the first 10 files and then says how many more there are. The plugin never opens a window or a message for these changes. You see them only in the status and its details.
+Each list in the sync view names the first 100 files and then says how many more there are. The tooltip of the status bar names the first 10. The plugin never opens a window or a message for these changes. You see them only in the status bar, the status icons and the sync view.
 
 [Troubleshooting](troubleshooting.md) says what to do for each state that needs you to act.
 
