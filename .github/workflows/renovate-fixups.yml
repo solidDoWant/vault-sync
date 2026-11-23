@@ -109,10 +109,10 @@ jobs:
             while read -r id workflow; do
               [[ -n $id ]] || continue
               if [[ $workflow == "$GITHUB_WORKFLOW" ]]; then
-                if gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/runs/${id}"; then
+                if gh api --silent -X DELETE "repos/${GITHUB_REPOSITORY}/actions/runs/${id}"; then
                   echo "deleted held ${workflow} run ${id}"
                 fi
-              elif gh api -X POST "repos/${GITHUB_REPOSITORY}/actions/runs/${id}/approve"; then
+              elif gh api --silent -X POST "repos/${GITHUB_REPOSITORY}/actions/runs/${id}/approve"; then
                 echo "approved held ${workflow} run ${id}"
                 approved=$((approved + 1))
               fi
