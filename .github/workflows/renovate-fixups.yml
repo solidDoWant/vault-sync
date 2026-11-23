@@ -4,8 +4,11 @@ name: renovate-fixups
 # derived from them: vendorHash in nix/server.nix and the versitygw version and
 # checksums in scripts/with-native-s3.sh. This workflow regenerates both on
 # Renovate's PR branches and pushes the result. A push with GITHUB_TOKEN
-# triggers no workflows, so it then dispatches ci on the branch to run the
-# required checks on the new head commit.
+# starts no workflow runs that execute, so it then dispatches ci on the branch
+# to run the required checks on the new head commit. GitHub does create
+# pull_request runs of ci and this workflow for that push, but holds them as
+# "action required", and the PR page then shows "workflows awaiting approval".
+# They are duplicates of the dispatched run, so the job deletes them.
 # pull_request cannot filter on the head branch, so the job's condition limits
 # it to renovate/* branches of this repository; on every other PR it is skipped.
 on:
@@ -24,7 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write # push the fix-up commit to the PR branch
-      actions: write # dispatch ci on the PR branch
+      actions: write # dispatch ci on the PR branch and delete the held runs
     env:
       BRANCH: ${{ github.head_ref }}
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -57,7 +60,8 @@ jobs:
         run: |
           ./scripts/with-native-s3.sh --update-pin "$VERSITYGW_VERSION"
           ./scripts/with-native-s3.sh --check-pin
-      - name: Commit, push and dispatch ci
+      - id: push
+        name: Commit, push and dispatch ci
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -70,4 +74,32 @@ jobs:
           git add nix/server.nix scripts/with-native-s3.sh
           git commit -m 'chore(deps): regenerate pins derived from the Renovate update'
           git push origin "HEAD:refs/heads/${BRANCH}"
+          echo "sha=$(git rev-parse HEAD)" >>"$GITHUB_OUTPUT"
           gh workflow run ci.yml --ref "$BRANCH"
+      # The held pull_request runs are already completed, so they cannot be
+      # cancelled; deleting them clears the banner. They appear a few seconds
+      # after the push, so poll for a while, and stop once a poll after the
+      # first deletion finds nothing more.
+      - name: Delete the held pull_request runs of the fix-up commit
+        if: steps.push.outputs.sha != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.push.outputs.sha }}
+        run: |
+          deleted=0
+          for _ in $(seq 1 24); do
+            sleep 5
+            ids="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${SHA}&event=pull_request&status=action_required" --jq '.workflow_runs[].id')"
+            if [[ -z $ids ]]; then
+              if ((deleted > 0)); then
+                break
+              fi
+              continue
+            fi
+            for id in $ids; do
+              echo "deleting held run ${id}"
+              gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/runs/${id}"
+              deleted=$((deleted + 1))
+            done
+          done
+          echo "deleted ${deleted} held run(s) for ${SHA}"
