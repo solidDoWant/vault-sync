@@ -11,6 +11,7 @@ describe("statusText", () => {
     ["idle", "Vault Sync: idle"],
     ["syncing", "Vault Sync: syncing"],
     ["offline", "Vault Sync: offline"],
+    ["reconnecting", "Vault Sync: reconnecting"],
     ["error", "Vault Sync: error"],
     ["sign-in-required", "Vault Sync: sign-in needed"],
     ["not-connected", "Vault Sync: no vault connected"],
@@ -36,6 +37,25 @@ describe("statusDescription", () => {
     expect(text).toContain("The server sent key or membership data that doesn't verify, so sync of this vault is stopped. Your files stay in this vault.");
     expect(text).toContain("the membership log forks");
     expect(isStoppedState("verification-failed")).toBe(true);
+  });
+
+  it("says when the next attempt is while offline, and offers Sync now", () => {
+    const text = statusDescription({ state: "offline", conflicts: 0, pending: 0, nextAttemptAt: 1_234 }, (at) => `<${String(at)}>`);
+    expect(text).toContain("Next try at <1234>.");
+    expect(text).toContain('Use "Sync now" to try again at once.');
+  });
+
+  it("offers Sync now while offline even when no attempt is scheduled, and only while offline", () => {
+    const offline = statusDescription({ state: "offline", conflicts: 0, pending: 0 });
+    expect(offline).toContain('"Sync now"');
+    expect(offline).not.toContain("Next try");
+    expect(statusDescription({ state: "reconnecting", conflicts: 0, pending: 0, nextAttemptAt: 1 })).toBe("Trying to reach the server again.");
+    expect(statusDescription({ state: "error", conflicts: 0, pending: 0 })).not.toContain("Sync now");
+  });
+
+  it("writes the next attempt as a time of day", () => {
+    const at = new Date(2026, 0, 2, 13, 5, 9).getTime();
+    expect(statusDescription({ state: "offline", conflicts: 0, pending: 0, nextAttemptAt: at })).toMatch(/Next try at [^.]*\b0?1:05:09\b|Next try at [^.]*13:05:09/);
   });
 
   it("includes the error's message", () => {
@@ -132,6 +152,7 @@ describe("statusIcon", () => {
     ["idle", "check-circle"],
     ["syncing", "refresh-cw"],
     ["offline", "wifi-off"],
+    ["reconnecting", "wifi"],
     ["error", "alert-circle"],
     ["sign-in-required", "log-in"],
     ["signed-out", "log-in"],

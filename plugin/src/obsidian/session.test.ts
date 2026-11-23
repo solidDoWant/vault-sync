@@ -1,5 +1,5 @@
 import { Code, ConnectError } from "@connectrpc/connect";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createProtocolClient } from "../core/protocol/client";
 import type { RealtimeTimers } from "../core/realtime/client";
@@ -268,6 +268,163 @@ describe("SyncSession", () => {
     await vi.waitFor(async () => {
       expect(await files(vault)).toEqual({ "from-a.md": "written on the laptop" });
     });
+    await session.stop();
+  });
+
+  it("pushes a local change waiting for its debounce when the app goes to the background", async () => {
+    const { session, vault, server } = setup({ pushDebounceMs: 3_600_000 });
+    await session.start();
+    await vault.write("a.md", encoder.encode("typed just before switching apps"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(server.liveFiles()).toEqual(new Map());
+
+    session.background();
+
+    await vi.waitFor(() => {
+      expect(server.liveFiles()).toEqual(new Map([["a.md", "typed just before switching apps"]]));
+    });
+    await session.stop();
+  });
+
+  it("reconnects the realtime channel that dropped in the background and pulls at once when the app comes back", async () => {
+    const server = new InMemoryServer();
+    const realtime = new InMemoryRealtimeServer({ headSeq: () => server.currentHeadSeq });
+    const { session, vault } = setup(
+      { realtime: { connect: realtime.connect, accessToken: () => Promise.resolve("token"), timers: idleTimers, random: () => 0.5, log: () => undefined } },
+      server,
+    );
+    await session.start();
+    await vi.waitFor(() => {
+      expect(realtime.open).toHaveLength(1);
+    });
+    // Frozen: the connection drops, and the reconnect and fallback timers never fire.
+    realtime.closeAll(1006);
+    server.commit({ documentId: "from-a", path: "from-a.md", content: "written on the laptop" });
+
+    session.foreground();
+
+    await vi.waitFor(async () => {
+      expect(await files(vault)).toEqual({ "from-a.md": "written on the laptop" });
+      expect(realtime.open).toHaveLength(1);
+    });
+    await session.stop();
+  });
+});
+
+describe("SyncSession while offline", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** Lets the session's pending promises run without moving the fake clock. */
+  async function settle(): Promise<void> {
+    for (let round = 0; round < 20; round++) await vi.advanceTimersByTimeAsync(0);
+  }
+
+  function unreachable(): { server: InMemoryServer; reachable: () => void } {
+    const server = new InMemoryServer();
+    let down = true;
+    server.interceptor = () => {
+      if (down) throw new ConnectError("connection refused", Code.Unavailable);
+    };
+    return {
+      server,
+      reachable: () => {
+        down = false;
+      },
+    };
+  }
+
+  it("says when the next attempt is, and shows reconnecting while each retry runs", async () => {
+    vi.useFakeTimers({ now: 1_000_000 });
+    const { server } = unreachable();
+    const { session, statuses } = setup({ syncIntervalMs: 60_000 }, server);
+
+    await session.start();
+    await settle();
+
+    // The first attempt is a plain sync; it fails, and the engine's first retry waits 0.5 to 1 second.
+    expect(statuses.map((status) => status.state)).toEqual(["syncing", "offline"]);
+    const first = statuses.at(-1)?.nextAttemptAt ?? 0;
+    expect(first).toBeGreaterThanOrEqual(1_000_500);
+    expect(first).toBeLessThanOrEqual(1_001_000);
+
+    statuses.length = 0;
+    await vi.advanceTimersByTimeAsync(first - Date.now());
+    await settle();
+
+    expect(statuses.map((status) => status.state)).toEqual(["reconnecting", "offline"]);
+    // The second retry waits 1 to 2 seconds after the failed one.
+    const second = statuses.at(-1)?.nextAttemptAt ?? 0;
+    expect(second).toBeGreaterThanOrEqual(first + 1_000);
+    expect(second).toBeLessThanOrEqual(first + 2_000);
+    await session.stop();
+  });
+
+  it("names the fallback timer as the next attempt when it comes before the retry", async () => {
+    vi.useFakeTimers({ now: 0 });
+    const { server } = unreachable();
+    const { session, statuses } = setup({ syncIntervalMs: 300 }, server);
+
+    await session.start();
+    await settle();
+
+    expect(statuses.at(-1)).toMatchObject({ state: "offline", nextAttemptAt: 300 });
+    await session.stop();
+  });
+
+  it("moves the next attempt up when a local change while offline schedules a sync sooner", async () => {
+    vi.useFakeTimers({ now: 0 });
+    const { server } = unreachable();
+    const { session, vault, statuses } = setup({ pushDebounceMs: 100 }, server);
+    await session.start();
+    await settle();
+    expect(statuses.at(-1)?.nextAttemptAt ?? 0).toBeGreaterThanOrEqual(500);
+
+    await vi.advanceTimersByTimeAsync(10);
+    await vault.write("a.md", encoder.encode("offline edit"));
+    await settle();
+
+    expect(statuses.at(-1)).toMatchObject({ state: "offline", nextAttemptAt: 110 });
+    await session.stop();
+  });
+
+  it("shows reconnecting for a manual sync while offline, and idle once the server answers", async () => {
+    vi.useFakeTimers({ now: 0 });
+    const { server, reachable } = unreachable();
+    const { session, statuses } = setup({}, server);
+    await session.start();
+    await settle();
+    expect(statuses.at(-1)?.state).toBe("offline");
+
+    statuses.length = 0;
+    reachable();
+    await session.syncNow();
+    await settle();
+
+    expect(statuses.map((status) => status.state)).toEqual(["reconnecting", "idle"]);
+    expect(statuses.at(-1)).toEqual({ state: "idle", pending: 0, conflicts: 0 });
+    await session.stop();
+  });
+
+  it("shows syncing, not reconnecting, for a sync after an error that is not offline", async () => {
+    vi.useFakeTimers({ now: 0 });
+    const server = new InMemoryServer();
+    let failing = true;
+    server.interceptor = () => {
+      if (failing) throw new ConnectError("no", Code.Internal);
+    };
+    const { session, statuses } = setup({}, server);
+    await session.start();
+    await settle();
+    expect(statuses.at(-1)?.state).toBe("error");
+    expect(statuses.at(-1)?.nextAttemptAt).toBeUndefined();
+
+    statuses.length = 0;
+    failing = false;
+    await session.syncNow();
+    await settle();
+    expect(statuses.map((status) => status.state)).toEqual(["syncing", "idle"]);
     await session.stop();
   });
 });

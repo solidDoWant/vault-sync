@@ -316,8 +316,33 @@ export class SyncEngine {
     this.debounceTimer = this.intervalTimer = this.retryTimer = undefined;
   }
 
-  /** The realtime channel reported `vault_changed`, or the app came back to the foreground. */
+  /** The realtime channel reported `vault_changed`, or a restore committed a new head revision. */
   notifyRemoteChange(): void {
+    void this.sync().catch(() => undefined);
+  }
+
+  /**
+   * The app is going to the background, where it may soon be frozen (a
+   * mobile WebView): a local change waiting for its debounce is pushed now.
+   * With none waiting, nothing happens. Joins a running sync (sync()).
+   */
+  flush(): void {
+    if (this.stopped || this.debounceTimer === undefined) return;
+    this.timers.clearTimeout(this.debounceTimer);
+    this.debounceTimer = undefined;
+    void this.sync().catch(() => undefined);
+  }
+
+  /**
+   * The app came back to the foreground: syncs now instead of waiting for a
+   * retry, debounce or interval timer set before it was frozen, and starts
+   * the interval over. Joins a running sync (sync()).
+   */
+  resume(): void {
+    if (this.stopped) return;
+    for (const timer of [this.debounceTimer, this.intervalTimer, this.retryTimer]) if (timer !== undefined) this.timers.clearTimeout(timer);
+    this.debounceTimer = this.intervalTimer = this.retryTimer = undefined;
+    this.scheduleInterval();
     void this.sync().catch(() => undefined);
   }
 

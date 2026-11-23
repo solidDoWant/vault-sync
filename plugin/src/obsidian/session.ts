@@ -1,3 +1,4 @@
+import { globalTimers, type Timers } from "../core/backoff";
 import { RealtimeClient, type RealtimeClientOptions } from "../core/realtime/client";
 import type { ActivityLog } from "../core/sync/activity-log";
 import { SyncEngine, type RefusedName, type SyncApi, type TooLargeFile } from "../core/sync/engine";
@@ -68,15 +69,22 @@ export interface SyncSessionOptions {
    * notification of it. The fallback timer runs either way.
    */
   realtime?: Omit<RealtimeClientOptions, "vaultId" | "onChange">;
+  /** The timers of the engine's debounce, fallback interval and retry; tests pass fake ones. */
+  timers?: Timers;
+  /** The current time in milliseconds since the epoch, for `nextAttemptAt`. */
+  now?: () => number;
 }
 
 export interface SessionStatus {
-  state: "syncing" | "idle" | "offline" | "error" | "verification-failed";
+  /** `reconnecting`: a sync runs after the last one could not reach the server. */
+  state: "syncing" | "reconnecting" | "idle" | "offline" | "error" | "verification-failed";
   /** Local changes the server has not acknowledged: the journal's pending operations. */
   pending: number;
   /** Conflict copies this device created that are still on disk. */
   conflicts: number;
   message?: string;
+  /** While `offline`: when the engine next tries to reach the server by itself, in milliseconds since the epoch. */
+  nextAttemptAt?: number;
 }
 
 /** A conflict copy, with the document it was taken from, for the conflict view. */
@@ -150,9 +158,14 @@ export class SyncSession {
   private readonly onStatus: (status: SessionStatus) => void;
   /** Whether the activity log already has the connection problem of the current offline spell. */
   private offlineLogged = false;
+  /** When each timer the engine has scheduled fires: every one starts a sync, so the earliest is the next attempt. */
+  private readonly due = new Map<unknown, number>();
+  private readonly now: () => number;
+  private lastState: SessionStatus["state"] | undefined;
 
   constructor(private readonly options: SyncSessionOptions) {
     this.onStatus = options.onStatus ?? (() => undefined);
+    this.now = options.now ?? Date.now;
   }
 
   /** Starts syncing. Resolves once the first sync finished (or failed: the status says why, and the engine retries), or the session was stopped first. */
@@ -172,6 +185,27 @@ export class SyncSession {
     } catch (error) {
       return { error };
     }
+  }
+
+  /**
+   * The app is going to the background, where a mobile WebView is soon
+   * frozen: a local change waiting for its debounce is pushed now
+   * (SyncEngine.flush). With none waiting, nothing is sent.
+   */
+  background(): void {
+    if (this.stopped) return;
+    this.engine?.flush();
+  }
+
+  /**
+   * The app came back to the foreground: syncs now and reconnects a dropped
+   * realtime channel now, instead of waiting for timers set before the app
+   * was frozen (SyncEngine.resume, RealtimeClient.reconnectNow).
+   */
+  foreground(): void {
+    if (this.stopped) return;
+    this.engine?.resume();
+    this.realtime?.reconnectNow();
   }
 
   /** History browsing and restore for the session's vault, once its engine runs; undefined before that and after the stop. */
@@ -238,6 +272,7 @@ export class SyncSession {
       ...(options.keepLocalCopy === undefined ? {} : { keepLocalCopy: options.keepLocalCopy }),
       ...(options.keys === undefined ? {} : { keys: options.keys }),
       ...(options.activity === undefined ? {} : { onEvent: (event) => options.activity?.add(event) }),
+      timers: this.trackedTimers(options.timers ?? globalTimers),
       onChange: () => {
         this.logConnection(engine);
         void this.report();
@@ -277,7 +312,7 @@ export class SyncSession {
     if (engine === undefined) return;
     const report = ++this.reports;
     if (engine.status === "syncing") {
-      this.onStatus({ state: "syncing", ...this.counts });
+      this.emit(this.status(engine, undefined));
       return;
     }
     let problems: SyncProblemList | undefined;
@@ -289,7 +324,42 @@ export class SyncSession {
       // Stopped, or the journal is gone; keep the last counts.
     }
     if (this.isStopped() || report !== this.reports) return;
-    this.onStatus(this.status(engine, problems));
+    this.emit(this.status(engine, problems));
+  }
+
+  private emit(status: SessionStatus): void {
+    this.lastState = status.state;
+    this.onStatus(status);
+  }
+
+  /**
+   * `timers` that remember when each pending timer fires. A timer scheduled
+   * while offline (a local change's debounce, say) may be the new next
+   * attempt, so the status is reported again.
+   */
+  private trackedTimers(timers: Timers): Timers {
+    return {
+      setTimeout: (callback, ms) => {
+        const handle = timers.setTimeout(() => {
+          this.due.delete(handle);
+          callback();
+        }, ms);
+        this.due.set(handle, this.now() + ms);
+        if (this.lastState === "offline") void this.report();
+        return handle;
+      },
+      clearTimeout: (handle) => {
+        this.due.delete(handle);
+        timers.clearTimeout(handle);
+      },
+    };
+  }
+
+  /** When the engine's next sync starts by itself, if one is scheduled. */
+  private nextAttemptAt(): number | undefined {
+    let next: number | undefined;
+    for (const at of this.due.values()) if (next === undefined || at < next) next = at;
+    return next;
   }
 
   /** Read through a call, so a check after an await is not narrowed away by the one before it. */
@@ -298,11 +368,14 @@ export class SyncSession {
   }
 
   private status(engine: SyncEngine, problems: SyncProblemList | undefined): SessionStatus {
-    if (engine.status === "syncing") return { state: "syncing", ...this.counts };
+    // The engine keeps the last failure until a sync succeeds.
+    if (engine.status === "syncing") return { state: isOffline(engine.lastError) ? "reconnecting" : "syncing", ...this.counts };
     if (engine.status === "error") {
       const failure = engine.lastError;
       if (failure instanceof LogVerificationError) return { state: "verification-failed", ...this.counts, message: errorMessage(failure) };
-      return { state: isOffline(failure) ? "offline" : "error", ...this.counts, message: errorMessage(failure) };
+      if (!isOffline(failure)) return { state: "error", ...this.counts, message: errorMessage(failure) };
+      const nextAttemptAt = this.nextAttemptAt();
+      return { state: "offline", ...this.counts, message: errorMessage(failure), ...(nextAttemptAt === undefined ? {} : { nextAttemptAt }) };
     }
     const [first] = problems?.refused ?? [];
     if (first !== undefined) {
