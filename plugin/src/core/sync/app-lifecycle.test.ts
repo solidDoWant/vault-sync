@@ -9,23 +9,32 @@ import { Device, settle } from "./testing";
 
 const retryMs = 300_000;
 
-function setup(): { server: InMemoryServer; a: Device; b: Device; runs: { a: number; b: number } } {
+function setup(): { server: InMemoryServer; a: Device; b: Device } {
   const server = new InMemoryServer();
-  const runs = { a: 0, b: 0 };
   const options = { random: () => 1, backoff: { initialMs: retryMs, maxMs: retryMs } };
-  const devices: { a?: Device; b?: Device } = {};
-  // Counts the syncs started: the status turns to "syncing" once per sync, however many calls join it.
-  const counter = (name: "a" | "b") => {
-    let syncing = false;
-    return () => {
-      const now = devices[name]?.engine.status === "syncing";
-      if (now && !syncing) runs[name]++;
-      syncing = now;
-    };
+  return { server, a: new Device(server, "device-a", options), b: new Device(server, "device-b", options) };
+}
+
+/**
+ * Records how many of the device's syncs scan the vault at once. Every cycle
+ * lists the vault, and each listing here takes a few milliseconds, so two
+ * syncs running side by side overlap in it.
+ */
+function overlapOf(device: Device): { most: number } {
+  const seen = { most: 0 };
+  let now = 0;
+  const list = device.vault.list.bind(device.vault);
+  device.vault.list = async () => {
+    now++;
+    seen.most = Math.max(seen.most, now);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return await list();
+    } finally {
+      now--;
+    }
   };
-  devices.a = new Device(server, "device-a", { ...options, onChange: counter("a") });
-  devices.b = new Device(server, "device-b", { ...options, onChange: counter("b") });
-  return { server, a: devices.a, b: devices.b, runs };
+  return seen;
 }
 
 /** Counts the server calls. */
@@ -65,19 +74,19 @@ describe("flush, when the app goes to the background", () => {
   });
 
   it("joins a running sync instead of starting a second one", async () => {
-    const { server, a, runs } = setup();
+    const { server, a } = setup();
+    const overlap = overlapOf(a);
     await a.engine.start();
     await a.write("a.md", "one");
     await settle();
     await a.write("b.md", "two");
     await settle();
     expect(a.timers.delays()).toContain(2_000);
-    const before = runs.a;
     const running = a.engine.sync();
     a.engine.flush();
     await running;
     await a.engine.settled();
-    expect(runs.a - before).toBe(1);
+    expect(overlap.most).toBe(1);
     expect(server.liveFiles()).toEqual(
       new Map([
         ["a.md", "one"],
@@ -126,16 +135,16 @@ describe("resume, when the app comes back to the foreground", () => {
   });
 
   it("joins a running sync instead of starting a second one", async () => {
-    const { a, b, runs } = setup();
+    const { a, b } = setup();
+    const overlap = overlapOf(b);
     await b.engine.start();
     await a.write("a.md", "one");
     await a.sync();
-    const before = runs.b;
     const running = b.engine.sync();
     b.engine.resume();
     await running;
     await b.engine.settled();
-    expect(runs.b - before).toBe(1);
+    expect(overlap.most).toBe(1);
     expect(await b.files()).toEqual({ "a.md": "one" });
     b.engine.stop();
   });
