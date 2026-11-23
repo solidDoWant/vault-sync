@@ -24,7 +24,7 @@ If a sync fails, the plugin tries again after a wait that grows with each failur
 
 ## Offline use
 
-You can work offline. The status shows `offline`, and your edits sync when the device is back online. Nothing that you saved is lost when sync stops: when you sign out, disable the plugin, quit, or Obsidian crashes, the next sync finds the change.
+You can work offline. The status shows `offline`, and your edits sync when the device is back online. While the device is offline, the plugin tries to reach the server again from time to time. The status shows `reconnecting` during each try. The details of the status show the time of the next try. To try at once, click **Sync now** in the details, or run **Vault Sync: Sync now**. Nothing that you saved is lost when sync stops: when you sign out, disable the plugin, quit, or Obsidian crashes, the next sync finds the change.
 
 ## Renames, moves and deletes
 
@@ -48,7 +48,8 @@ On a desktop, the status bar shows the sync status. On a phone, an icon in the r
 | `waiting for another window` | Another Obsidian window with this vault open runs an older Vault Sync. |
 | `idle` | The last sync worked. |
 | `syncing` | A sync runs now. |
-| `offline` | The plugin cannot reach the server or the login service. |
+| `offline` | The plugin cannot reach the server or the login service. The details show the time of the next try. |
+| `reconnecting` | The plugin tries to reach the server again after it was `offline`. |
 | `error` | The last sync failed for another reason, or the server does not accept the names of some files. The details give the reason and the file. |
 | `sign-in needed` | Your session ended. Sign in again. |
 | `signed out` / `no vault connected` | Sync is off until you sign in and connect a vault. |

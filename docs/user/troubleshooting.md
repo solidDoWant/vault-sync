@@ -6,11 +6,11 @@ Find the status or the message that you see. In every case, your files and chang
 
 ## offline
 
-"Cannot reach the server. Local changes are kept and pushed once it is reachable again."
+"Cannot reach the server. Local changes are kept and pushed once it is reachable again. Next try at 10:15:30 PM. Use "Sync now" to try again at once."
 
 The plugin cannot reach the server or your organization's login service, or one of them did not answer within 30 seconds. Large file transfers get more time.
 
-Make sure that the device is online and that **Server URL** is correct. The plugin tries again on its own. If the status stays `offline` while other sites work, ask your admin.
+Make sure that the device is online and that **Server URL** is correct. The plugin tries again on its own, and the status shows `reconnecting` during each try. To try at once, click **Sync now** in the details. If the status stays `offline` while other sites work, ask your admin.
 
 ## sign-in needed
 

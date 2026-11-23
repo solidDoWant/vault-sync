@@ -806,8 +806,24 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
     for (const notice of this.skipNotices.fresh(skipped)) new Notice(notice, 0);
   }
 
+  /** The status details, opened by the user. While offline they offer "Sync now", which tries to reach the server at once. */
   private noticeStatus(): void {
-    new Notice(`${statusText(this.status)}\n${statusDescription(this.status)}`);
+    const text = `${statusText(this.status)}\n${statusDescription(this.status)}`;
+    if (this.status.state !== "offline") {
+      new Notice(text);
+      return;
+    }
+    const notice = new Notice(
+      createFragment((fragment) => {
+        fragment.createDiv({ text });
+        const button = fragment.createEl("button", { text: "Sync now", cls: "mod-cta" });
+        button.addEventListener("click", (event) => {
+          event.stopPropagation();
+          notice.hide();
+          void this.controller?.syncNow();
+        });
+      }),
+    );
   }
 
   /**

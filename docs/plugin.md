@@ -146,7 +146,7 @@ The realtime channel only makes changes arrive sooner; sync never depends on it 
 
 ### Status
 
-The status bar (desktop) shows the sync status. Mobile has no status bar, so there a ribbon icon shows it instead: a check mark when idle, an upload cloud while local changes wait to be pushed, a warning triangle while conflicts are unresolved, and its own icon for syncing, offline, error, sign-in needed, device removed, no longer a member, vault deleted, key data that doesn't verify and no vault connected. Click the status bar or tap the icon, or run **Vault Sync: Show sync status**, for details. The settings show it too.
+The status bar (desktop) shows the sync status. Mobile has no status bar, so there a ribbon icon shows it instead: a check mark when idle, an upload cloud while local changes wait to be pushed, a warning triangle while conflicts are unresolved, and its own icon for syncing, reconnecting, offline, error, sign-in needed, device removed, no longer a member, vault deleted, key data that doesn't verify and no vault connected. Click the status bar or tap the icon, or run **Vault Sync: Show sync status**, for details. The settings show it too. While offline, the details say when the plugin next tries to reach the server by itself, and offer **Sync now** to try at once. During each try the status shows **reconnecting**. Nothing opens a notice by itself for this.
 
 | Status | Meaning |
 |---|---|

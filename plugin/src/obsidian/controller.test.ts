@@ -969,6 +969,51 @@ describe("SyncController", () => {
     await f.controller.stop();
   });
 
+  it("says when it retries a start that failed because the server was unreachable, and shows reconnecting while it retries", async () => {
+    vi.useFakeTimers({ now: 5_000 });
+    const server = fakeServer();
+    let reachable = false;
+    const f = fixture(server, connected({ ...settings }, server.sync.vaultId), {
+      syncIntervalMs: 30_000,
+      openJournal: () => (reachable ? Promise.resolve(closable()) : Promise.reject(new ConnectError("network error", Code.Unavailable))),
+    });
+
+    await f.controller.update();
+    expect(f.statuses.at(-1)).toMatchObject({ state: "offline", nextAttemptAt: 35_000 });
+    expect(f.statuses.map((status) => status.state)).not.toContain("reconnecting");
+    f.statuses.length = 0;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(f.statuses.map((status) => status.state)).toEqual(["reconnecting", "offline"]);
+    expect(f.statuses.at(-1)).toMatchObject({ nextAttemptAt: 65_000 });
+
+    reachable = true;
+    f.statuses.length = 0;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(f.statuses[0]?.state).toBe("reconnecting");
+    expect(f.events).toEqual([`start ${server.sync.vaultId} as device-1`]);
+    await f.controller.stop();
+  });
+
+  it("tries a start that failed because the server was unreachable again at once on Sync now", async () => {
+    vi.useFakeTimers({ now: 0 });
+    const server = fakeServer();
+    let reachable = false;
+    const f = fixture(server, connected({ ...settings }, server.sync.vaultId), {
+      syncIntervalMs: 30_000,
+      openJournal: () => (reachable ? Promise.resolve(closable()) : Promise.reject(new ConnectError("network error", Code.Unavailable))),
+    });
+    await f.controller.update();
+    expect(f.statuses.at(-1)?.state).toBe("offline");
+
+    reachable = true;
+    f.statuses.length = 0;
+    await f.controller.syncNow();
+
+    expect(f.statuses[0]?.state).toBe("reconnecting");
+    expect(f.events).toEqual([`start ${server.sync.vaultId} as device-1`]);
+    await f.controller.stop();
+  });
+
   it("subscribes the session to its vault on the configured server's realtime channel", async () => {
     const server = fakeServer();
     const realtime = new InMemoryRealtimeServer();
