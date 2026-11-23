@@ -14,7 +14,8 @@ import { visiblePath } from "./display-text";
  * - `waiting-for-journal`: the journal's upgrade waits for another Obsidian window to close it.
  * - `syncing`: a pull or push is running.
  * - `idle`: the last pull or push succeeded.
- * - `offline`: the last one could not reach the server.
+ * - `reconnecting`: a pull or push is running after the last one could not reach the server.
+ * - `offline`: the last one could not reach the server (`nextAttemptAt` says when sync tries again).
  * - `error`: the last one failed for another reason (`message` says why).
  * - `device-removed`: this device was removed from the account; sync waits until the user registers it again.
  * - `not-member`: the user is no longer a member of the connected vault (removed or left); sync is stopped and the files are kept.
@@ -28,6 +29,7 @@ export type SyncState =
   | "starting"
   | "waiting-for-journal"
   | "syncing"
+  | "reconnecting"
   | "idle"
   | "offline"
   | "error"
@@ -55,6 +57,8 @@ export interface SyncStatus {
   incoming?: readonly IncomingChange[];
   /** How far the current pull or push is; absent when neither runs. */
   progress?: SyncProgress;
+  /** While `offline`: when sync next tries to reach the server by itself, in milliseconds since the epoch. */
+  nextAttemptAt?: number;
 }
 
 export const initialStatus: SyncStatus = {
@@ -87,6 +91,7 @@ const labels: Record<SyncState, string> = {
   starting: "starting",
   "waiting-for-journal": "waiting for another window",
   syncing: "syncing",
+  reconnecting: "reconnecting",
   idle: "idle",
   offline: "offline",
   error: "error",
@@ -114,6 +119,7 @@ const icons: Record<SyncState, string> = {
   starting: "loader",
   "waiting-for-journal": "loader",
   syncing: "refresh-cw",
+  reconnecting: "wifi",
   idle: "check-circle",
   offline: "wifi-off",
   error: "alert-circle",
@@ -137,8 +143,13 @@ export function statusIcon(status: SyncStatus): string {
   return icons[status.state];
 }
 
-/** A longer description, for the status bar's tooltip and the settings. */
-export function statusDescription(status: SyncStatus): string {
+/** A time of day in the user's locale, e.g. `10:15:30 PM`. */
+export function clockTime(at: number): string {
+  return new Date(at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", second: "2-digit" });
+}
+
+/** A longer description, for the status bar's tooltip and the settings. `formatTime` writes the next attempt's time. */
+export function statusDescription(status: SyncStatus, formatTime: (at: number) => string = clockTime): string {
   const detail: Record<SyncState, string> = {
     "signed-out": "Not signed in. Sign in to sync this vault.",
     "sign-in-required": "Your session ended. Sync is paused until you sign in again; local changes are kept and pushed afterwards.",
@@ -147,6 +158,7 @@ export function statusDescription(status: SyncStatus): string {
     "waiting-for-journal":
       "Sync is waiting for another Obsidian window with this vault open, which runs an older Vault Sync, to close its sync journal. Close that window or update Vault Sync there.",
     syncing: "Syncing.",
+    reconnecting: "Trying to reach the server again.",
     idle: "Up to date with the server.",
     offline: "Cannot reach the server. Local changes are kept and pushed once it is reachable again.",
     error: "Sync failed. Local changes are kept and pushed by a later sync.",
@@ -157,6 +169,10 @@ export function statusDescription(status: SyncStatus): string {
   };
   const lines = [detail[status.state]];
   if (status.message !== undefined && status.message !== "") lines.push(status.message);
+  if (status.state === "offline") {
+    const next = status.nextAttemptAt === undefined ? "" : `Next try at ${formatTime(status.nextAttemptAt)}. `;
+    lines.push(`${next}Use "Sync now" to try again at once.`);
+  }
   if (status.pending > 0) lines.push(`${String(status.pending)} local ${status.pending === 1 ? "change is" : "changes are"} waiting to be pushed.`);
   if (status.conflicts > 0) lines.push(`${String(status.conflicts)} ${status.conflicts === 1 ? "conflict needs" : "conflicts need"} your attention.`);
   const progress = status.state === "syncing" ? status.progress : undefined;

@@ -58,7 +58,8 @@ Automated: the plugin stops and starts cleanly ([`lifecycle.e2e.ts`](../../plugi
 
 | Manual check | Expected result | Why manual |
 |---|---|---|
-| Make a change on desktop. Leave the phone's Obsidian in the background (screen off) for at least 30 minutes, then open it. | Within 30 seconds of opening, the desktop change arrived and the status is `idle`. No error notice is shown. | Only Android decides if a backgrounded app is paused, killed or restarted. |
+| Make a change on desktop. Leave the phone's Obsidian in the background (screen off) for at least 30 minutes, then open it. | Within a few seconds of opening, the desktop change arrived and the status is `idle`. No error notice is shown. | Only Android decides if a backgrounded app is paused, killed or restarted. |
+| On the phone, edit a note, and switch to another app within 1 second. Do not open Obsidian again. | Within a minute, the edit is on the server and another device shows it. | The time that Android lets the app run in the background is known only on a device. |
 
 ## 7. Conflicts
 

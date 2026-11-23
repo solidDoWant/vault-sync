@@ -1,4 +1,4 @@
-import { FileSystemAdapter, Notice, Platform, Plugin, setIcon, TFile, type App, type TAbstractFile } from "obsidian";
+import { FileSystemAdapter, Notice, Platform, Plugin, setIcon, TextFileView, TFile, type App, type TAbstractFile } from "obsidian";
 
 import { VaultEncryption, VaultRole, type Vault } from "./gen/vaultsync/v1/types_pb";
 import { oidcRefresher, signInWithDeviceFlow } from "./core/auth/oidc";
@@ -163,6 +163,18 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
       },
     });
     this.addCommand({ id: "sync-now", name: "Sync now", callback: () => void this.controller?.syncNow() });
+    // A mobile app in the background is frozen within seconds, and nothing
+    // runs once it is closed: push what waits when it goes to the background,
+    // and catch up at once when it comes back. On desktop this fires only when
+    // the window is minimized or restored, not when it loses focus.
+    this.registerDomEvent(document, "visibilitychange", () => {
+      if (document.visibilityState === "hidden") {
+        void this.toBackground();
+        return;
+      }
+      this.controller?.foreground();
+      this.session?.foreground();
+    });
     this.registerView(conflictViewType, (leaf) => new ConflictView(leaf, { problems: () => this.controller?.session ?? this.session }));
     this.addCommand({ id: "show-conflicts", name: "Show conflicts", callback: () => void this.showConflicts() });
     // The status bar is desktop-only; on mobile this and the ribbon icon show the status.
@@ -218,6 +230,34 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
     // Not awaited: registering the device and opening the journal may wait
     // for the network, and Obsidian waits for onload.
     void this.controller.update();
+  }
+
+  /**
+   * Saves the open editors with unsaved edits (Obsidian saves an edit only
+   * after a pause in typing), then pushes what waits: a sync now if an editor
+   * was saved, else only a local change waiting for its debounce.
+   */
+  private async toBackground(): Promise<void> {
+    const unsaved: TextFileView[] = [];
+    this.app.workspace.iterateAllLeaves((leaf) => {
+      const { view } = leaf;
+      if (view instanceof TextFileView && view.file !== null && view.getViewData() !== view.data) unsaved.push(view);
+    });
+    for (const view of unsaved) {
+      try {
+        await view.save();
+      } catch {
+        // Not logged: the error may name the note. The edit stays in the editor, which saves it later.
+        console.warn("vault-sync: could not save an open note before going to the background");
+      }
+    }
+    if (unsaved.length > 0) {
+      void this.controller?.syncNow();
+      void this.session?.syncNow();
+      return;
+    }
+    this.controller?.background();
+    this.session?.background();
   }
 
   override onunload(): void {
@@ -806,8 +846,24 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
     for (const notice of this.skipNotices.fresh(skipped)) new Notice(notice, 0);
   }
 
+  /** The status details, opened by the user. While offline they offer "Sync now", which tries to reach the server at once. */
   private noticeStatus(): void {
-    new Notice(`${statusText(this.status)}\n${statusDescription(this.status)}`);
+    const text = `${statusText(this.status)}\n${statusDescription(this.status)}`;
+    if (this.status.state !== "offline") {
+      new Notice(text);
+      return;
+    }
+    const notice = new Notice(
+      createFragment((fragment) => {
+        fragment.createDiv({ text });
+        const button = fragment.createEl("button", { text: "Sync now", cls: "mod-cta" });
+        button.addEventListener("click", (event) => {
+          event.stopPropagation();
+          notice.hide();
+          void this.controller?.syncNow();
+        });
+      }),
+    );
   }
 
   /**

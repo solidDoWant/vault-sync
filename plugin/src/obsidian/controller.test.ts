@@ -969,6 +969,51 @@ describe("SyncController", () => {
     await f.controller.stop();
   });
 
+  it("says when it retries a start that failed because the server was unreachable, and shows reconnecting while it retries", async () => {
+    vi.useFakeTimers({ now: 5_000 });
+    const server = fakeServer();
+    let reachable = false;
+    const f = fixture(server, connected({ ...settings }, server.sync.vaultId), {
+      syncIntervalMs: 30_000,
+      openJournal: () => (reachable ? Promise.resolve(closable()) : Promise.reject(new ConnectError("network error", Code.Unavailable))),
+    });
+
+    await f.controller.update();
+    expect(f.statuses.at(-1)).toMatchObject({ state: "offline", nextAttemptAt: 35_000 });
+    expect(f.statuses.map((status) => status.state)).not.toContain("reconnecting");
+    f.statuses.length = 0;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(f.statuses.map((status) => status.state)).toEqual(["reconnecting", "offline"]);
+    expect(f.statuses.at(-1)).toMatchObject({ nextAttemptAt: 65_000 });
+
+    reachable = true;
+    f.statuses.length = 0;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(f.statuses[0]?.state).toBe("reconnecting");
+    expect(f.events).toEqual([`start ${server.sync.vaultId} as device-1`]);
+    await f.controller.stop();
+  });
+
+  it("tries a start that failed because the server was unreachable again at once on Sync now", async () => {
+    vi.useFakeTimers({ now: 0 });
+    const server = fakeServer();
+    let reachable = false;
+    const f = fixture(server, connected({ ...settings }, server.sync.vaultId), {
+      syncIntervalMs: 30_000,
+      openJournal: () => (reachable ? Promise.resolve(closable()) : Promise.reject(new ConnectError("network error", Code.Unavailable))),
+    });
+    await f.controller.update();
+    expect(f.statuses.at(-1)?.state).toBe("offline");
+
+    reachable = true;
+    f.statuses.length = 0;
+    await f.controller.syncNow();
+
+    expect(f.statuses[0]?.state).toBe("reconnecting");
+    expect(f.events).toEqual([`start ${server.sync.vaultId} as device-1`]);
+    await f.controller.stop();
+  });
+
   it("subscribes the session to its vault on the configured server's realtime channel", async () => {
     const server = fakeServer();
     const realtime = new InMemoryRealtimeServer();
@@ -1482,5 +1527,29 @@ describe("DeviceListLoads", () => {
     expect(calls).toHaveLength(1);
     expect(painted).toEqual([]);
     expect(errors).toEqual([]);
+  });
+});
+
+describe("the app going to the background and coming back", () => {
+  it("pushes a local change waiting for its debounce on the way out, and pulls a remote change at once on the way back", async () => {
+    const server = fakeServer();
+    const f = fixture(server, connected({ ...settings }, server.sync.vaultId), { pushDebounceMs: 3_600_000 });
+    await f.controller.update();
+    await statusBecomes(f.statuses, "idle");
+
+    await f.vault.write("a.md", new TextEncoder().encode("typed just before switching apps"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(server.sync.liveFiles().get("a.md")).toBeUndefined();
+    f.controller.background();
+    await vi.waitFor(() => {
+      expect(server.sync.liveFiles().get("a.md")).toBe("typed just before switching apps");
+    });
+
+    server.sync.commit({ documentId: "remote", path: "b.md", content: "written on the laptop" });
+    f.controller.foreground();
+    await vi.waitFor(async () => {
+      expect(new TextDecoder().decode(await f.vault.read("b.md"))).toBe("written on the laptop");
+    });
+    await f.controller.stop();
   });
 });
