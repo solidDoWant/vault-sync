@@ -131,7 +131,7 @@ Do: Fix the error that the log names, usually PostgreSQL or S3.
 
 ### VaultSyncBlobGCStalled
 
-`warning`, after 24 hours. Blobs wait for garbage collection (`vault_sync_service_gc_pending_blobs` above 0), and no replica collected one in the 6 hours before. A blob waits `VAULT_SYNC_BLOB_GC_GRACE` (24 hours), plus at most an hour for the next retention run. So 30 hours with no collection while blobs wait means that the collector is stuck, and released storage is not freed. If you raise the grace period, raise the `for` with it.
+`warning`, after 30 minutes. The oldest blob that waits for garbage collection was released more than 26 hours ago (threshold `93600` seconds, from `vault_sync_service_gc_oldest_pending_blob_age_seconds`). A released blob waits `VAULT_SYNC_BLOB_GC_GRACE` (24 hours). Then the next retention run collects it, and retention runs every hour. The 26 hours are the grace period plus two retention runs. An older blob means that the collector is stuck, and released storage is not freed. The number of waiting blobs alone does not mean a problem. Blobs are released and used again all the time, so some blobs can wait for days while none of them gets older than the grace period. If you raise the grace period, raise the threshold with it.
 
 Check: The collector runs inside the retention job, so read the server logs for retention errors and look at `VaultSyncRetentionNotSucceeding`. Look at `vault_sync_retention_blobs_collected_total`.
 
