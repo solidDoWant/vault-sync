@@ -49,8 +49,6 @@ export interface SyncSessionOptions {
    * It stays in memory, on this device.
    */
   activity?: ActivityLog;
-  /** The clock for the activity log's connection problems. Defaults to Date.now. */
-  now?: () => number;
   /** Receives every change of the session's status. */
   onStatus?: (status: SessionStatus) => void;
   /** Whether the device may only pull, read at the start of every sync cycle (SyncEngineOptions.readOnly). */
@@ -71,7 +69,7 @@ export interface SyncSessionOptions {
   realtime?: Omit<RealtimeClientOptions, "vaultId" | "onChange">;
   /** The timers of the engine's debounce, fallback interval and retry; tests pass fake ones. */
   timers?: Timers;
-  /** The current time in milliseconds since the epoch, for `nextAttemptAt`. */
+  /** The current time in milliseconds since the epoch, for `nextAttemptAt` and the activity log's connection problems. */
   now?: () => number;
 }
 
@@ -296,7 +294,7 @@ export class SyncSession {
     if (engine.status === "idle") this.offlineLogged = false;
     if (engine.status !== "error" || this.stopped || !isOffline(engine.lastError) || this.offlineLogged) return;
     this.offlineLogged = true;
-    this.options.activity?.add({ kind: "connection-problem", time: (this.options.now ?? Date.now)() });
+    this.options.activity?.add({ kind: "connection-problem", time: this.now() });
   }
 
   /** The server client, refused once the session stopped (gateNetwork). */
