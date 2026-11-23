@@ -457,8 +457,12 @@ export class SyncController {
     return this.options.save().then(() => this.restart());
   }
 
-  /** Pulls and pushes now, if a session runs. */
+  /** Pulls and pushes now, if a session runs; tries to start one at once if the last start is waiting to be retried. */
   async syncNow(): Promise<void> {
+    if (this.running === undefined && this.retry !== undefined) {
+      await this.update();
+      return;
+    }
     await this.running?.session.syncNow();
   }
 
@@ -519,7 +523,8 @@ export class SyncController {
       });
       return;
     }
-    this.publish({ state: "starting", conflicts: 0, pending: 0 });
+    // A start after one that could not reach the server tries to reach it again.
+    this.publish({ state: this.current.state === "offline" ? "reconnecting" : "starting", conflicts: 0, pending: 0 });
     const live = () => generation === this.generation;
     let journal: ClosableJournal | undefined;
     try {
@@ -580,20 +585,23 @@ export class SyncController {
       // Signed out (or the session ended) meanwhile: the next update shows that instead.
       if (!live()) return;
       console.warn(`vault-sync: sync could not start: ${errorMessage(error)}`);
-      this.publish({
-        state: error instanceof DeviceRemovedError ? "device-removed" : isOffline(error) ? "offline" : "error",
-        conflicts: 0,
-        pending: 0,
-        message: errorMessage(error),
-      });
       // Offline at startup, say: try again later. The device limit does not
       // lift by itself, so that waits for the user (a restart or reconnect),
       // and a removed device waits for the user to register it again.
-      if (!(error instanceof DeviceLimitError) && !(error instanceof DeviceRemovedError) && this.options.syncIntervalMs !== null) {
+      const retryMs = error instanceof DeviceLimitError || error instanceof DeviceRemovedError ? null : this.options.syncIntervalMs;
+      const offline = !(error instanceof DeviceRemovedError) && isOffline(error);
+      this.publish({
+        state: error instanceof DeviceRemovedError ? "device-removed" : offline ? "offline" : "error",
+        conflicts: 0,
+        pending: 0,
+        message: errorMessage(error),
+        ...(offline && retryMs !== null ? { nextAttemptAt: Date.now() + retryMs } : {}),
+      });
+      if (retryMs !== null) {
         this.retry = setTimeout(() => {
           this.retry = undefined;
           if (live()) void this.update();
-        }, this.options.syncIntervalMs);
+        }, retryMs);
       }
     }
   }
