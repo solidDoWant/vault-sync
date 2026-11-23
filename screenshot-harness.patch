@@ -1,0 +1,204 @@
+diff --git i/plugin/test/e2e/harness/main.ts w/plugin/test/e2e/harness/main.ts
+index f770b69b3..8514f17aa 100644
+--- i/plugin/test/e2e/harness/main.ts
++++ w/plugin/test/e2e/harness/main.ts
+@@ -1250,6 +1250,76 @@ export default class VaultSyncE2EHarness extends Plugin {
+     };
+   }
+ 
++  /**
++   * Commits a new revision of the note at `path` with `text`, as another
++   * device of the signed-in user would, over `serverUrl` (past the server
++   * switch): the status screenshots use it for a change made on both sides.
++   */
++  async commitEditFromAnotherDevice(path: string, text: string, serverUrl: string): Promise<void> {
++    const plugin = this.vaultSync();
++    const vaultId = plugin.connectedVault?.id;
++    if (vaultId === undefined) throw new Error("vault-sync is not connected");
++    const client = this.clientAt(plugin, serverUrl);
++    let head: { documentId: string; revisionId: string } | undefined;
++    for (let sinceSeq = 0n; ; ) {
++      const page = await client.sync.listChanges({ vaultId, sinceSeq });
++      for (const revision of page.revisions) {
++        sinceSeq = revision.seq;
++        if (decoder.decode(revision.path) === path) head = { documentId: revision.documentId, revisionId: revision.id };
++      }
++      if (!page.hasMore) break;
++    }
++    if (head === undefined) throw new Error(`no document at ${path} on the server`);
++    this.otherDeviceId ??= (await client.devices.registerDevice({ name: "e2e other device" })).device?.id;
++    if (this.otherDeviceId === undefined) throw new Error("the server registered no device");
++    const content = encoder.encode(text);
++    const blobId = hexToBytes(sha256Hex(content));
++    const size = BigInt(content.length);
++    await client.blobs.beginBlob({ vaultId, blobId, size });
++    await client.blobs.putBlobChunk({ vaultId, blobId, offset: 0n, data: content });
++    await client.blobs.commitBlob({ vaultId, blobId });
++    await client.sync.commitRevision({
++      vaultId,
++      documentId: head.documentId,
++      revisionId: uuidv7(),
++      baseRevId: head.revisionId,
++      kind: DocumentKind.TEXT,
++      contentRef: { blobId, size },
++      path: encoder.encode(path),
++      deviceId: this.otherDeviceId,
++    });
++  }
++
++  /**
++   * Holds every DownloadBlob call for the blob `blobIdHex`, from its first
++   * range, then makes the server reachable and restarts vault-sync's sync
++   * session in the same task, so the new session's first pull stops at that
++   * blob with the rest of the pull learned (status screenshots).
++   */
++  async holdAllDownloadsOfThenReconnect(blobIdHex: string): Promise<void> {
++    const plugin = this.vaultSync();
++    const original = plugin.protocolClient.bind(plugin);
++    plugin.protocolClient = () => {
++      const client = original();
++      const blobs = client.blobs;
++      return {
++        ...client,
++        blobs: {
++          ...blobs,
++          downloadBlob: async (request, options) => {
++            if (bytesToHex(request.blobId ?? new Uint8Array()) === blobIdHex) return await new Promise<never>(() => undefined);
++            return await blobs.downloadBlob(request, options);
++          },
++        },
++      };
++    };
++    const controller = (plugin as unknown as { controller?: { stop(): Promise<void>; restart(): Promise<void> } }).controller;
++    if (controller === undefined) throw new Error("vault-sync has no sync controller");
++    await controller.stop();
++    this.serverReachable = true;
++    void controller.restart();
++  }
++
+   /** How many DownloadBlob calls `holdDownloadOf` holds. */
+   heldDownloads(): number {
+     if (this.heldDownloadCalls === undefined) throw new Error("holdDownloadOf() first");
+diff --git i/plugin/wdio.conf.mts w/plugin/wdio.conf.mts
+index 517e06445..364e86089 100644
+--- i/plugin/wdio.conf.mts
++++ w/plugin/wdio.conf.mts
+@@ -61,7 +61,7 @@ const acceptanceSpecs = readdirSync(specDir)
+ // guide's screenshots of the settings tab, and writes them to that directory.
+ // Without it, that spec skips itself.
+ const screenshotsDir = process.env.VAULT_SYNC_E2E_SCREENSHOTS_DIR;
+-const screenshotSpecs = ["./test/e2e/specs/docs-screenshots.e2e.ts"];
++const screenshotSpecs = ["./test/e2e/specs/status-screenshots.e2e.ts"];
+ 
+ // Windows: render in software inside Obsidian's main process. On a loaded
+ // Windows runner (no GPU) Electron's separate GPU process kept dying until
+diff --git 1/plugin/test/e2e/specs/status-screenshots.e2e.ts 2/plugin/test/e2e/specs/status-screenshots.e2e.ts
+new file mode 100644
+index 000000000..851f1ab55
+--- /dev/null
++++ 2/plugin/test/e2e/specs/status-screenshots.e2e.ts
+@@ -0,0 +1,104 @@
++import { createHash } from "node:crypto";
++import path from "node:path";
++
++import { browser } from "@wdio/globals";
++
++import { syncStatus, writeNote } from "../devices";
++import { e2eEnvironment, pluginId } from "../environment";
++import { callHarness } from "../obsidian";
++import { configure, signInAs } from "../signin";
++
++// Screenshots of the sync status details (the notice "Show sync status"
++// opens; on mobile also the ribbon icon) in each state, for a review on a
++// phone-sized screen. Runs only when VAULT_SYNC_E2E_SCREENSHOTS_DIR names the
++// output directory. It checks nothing: it only takes pictures. Every state is
++// set up through the harness; nothing edits the page.
++
++const outputDir = process.env.VAULT_SYNC_E2E_SCREENSHOTS_DIR ?? "";
++const subject = "plugin-e2e-status-screenshots-user";
++
++type Status = NonNullable<Awaited<ReturnType<typeof syncStatus>>>;
++
++async function waitForStatus(check: (status: Status) => boolean, what: string) {
++  let last: Status | null = null;
++  await browser
++    .waitUntil(async () => (last = await syncStatus()) !== null && check(last), { timeout: 90_000, interval: 250 })
++    .catch(() => {
++      throw new Error(`${what}; last status: ${JSON.stringify(last)}`);
++    });
++}
++
++async function noNotices() {
++  await browser.waitUntil(() => browser.execute(() => document.querySelectorAll(".notice").length === 0), { timeout: 30_000, interval: 250, timeoutMsg: "notices never closed" });
++}
++
++/** Opens the status details the way the user does (the command; the ribbon icon runs the same) and saves a screenshot. */
++async function capture(name: string) {
++  await noNotices();
++  await browser.executeObsidian(({ app }, id) => {
++    (app as unknown as { commands: { executeCommandById(command: string): boolean } }).commands.executeCommandById(`${id}:show-status`);
++  }, pluginId);
++  await browser.pause(700);
++  await browser.saveScreenshot(path.join(outputDir, `${name}.png`));
++  const status = await syncStatus();
++  console.log(`status-screenshot ${name}: ${JSON.stringify(status)}`);
++}
++
++describe("sync status screenshots", function () {
++  before(function () {
++    if (outputDir === "") this.skip();
++  });
++
++  it("captures the status details while idle, offline with local changes, and pulling with incoming changes", async function () {
++    await configure();
++    if ((await signInAs(subject)) !== true) throw new Error("sign-in failed");
++    await browser.executeObsidian(async ({ app }, id) => {
++      const target = (app as unknown as { plugins: { plugins: Record<string, { createRemoteVault(name: string): Promise<unknown>; connectVault(vault: unknown): Promise<string> }> } }).plugins.plugins[id];
++      if (target === undefined) throw new Error("vault-sync is not loaded");
++      const vault = await target.createRemoteVault("Notes");
++      if ((await target.connectVault(vault)) !== "connected") throw new Error("the new vault was not connected");
++    }, pluginId);
++
++    await writeNote("Plan.md", "# Plan\n\n- pack\n");
++    await writeNote("Ideas.md", "# Ideas\n");
++    await writeNote("Reading list.md", "# Reading list\n");
++    await waitForStatus((status) => status.state === "idle" && status.pending === 0, "sync never became idle");
++    await capture("status-1-idle");
++
++    // Offline: the server can't be reached, and local edits wait.
++    await callHarness("installServerSwitch");
++    await waitForStatus((status) => status.state === "idle", "sync was not idle after the switch");
++    await callHarness("setServerReachable", false);
++    await writeNote("Plan.md", "# Plan\n\n- pack\n- book the train\n");
++    await writeNote("Draft.md", "A draft written on the train.\n");
++    await writeNote("Recipes/Soup.md", "# Soup\n");
++    await waitForStatus((status) => status.state === "offline" && (status.pendingFiles?.length ?? 0) >= 3, "the status never went offline with the local changes");
++    await capture("status-2-offline-local-changes");
++
++    // Another device changes files, Plan.md among them; this device then
++    // reaches the server again and its pull stops at one download.
++    const serverUrl = e2eEnvironment.serverUrl;
++    for (const note of ["Inbox/Call the bank.md", "Inbox/Groceries.md", "Inbox/Birthday.md"]) await callHarness("commitFromAnotherDevice", note, `${note} from the laptop\n`, serverUrl);
++    const held = "Meeting notes.md";
++    const heldText = "# Meeting notes\n\nfrom the laptop\n";
++    await callHarness("commitFromAnotherDevice", held, heldText, serverUrl);
++    for (const note of ["Journal/2026-11-23.md", "Journal/2026-11-24.md", "Photos to sort.md"]) await callHarness("commitFromAnotherDevice", note, `${note} from the laptop\n`, serverUrl);
++    await callHarness("commitEditFromAnotherDevice", "Plan.md", "# Plan\n\n- pack\n- buy the tickets\n", serverUrl);
++    await callHarness("holdAllDownloadsOfThenReconnect", createHash("sha256").update(heldText).digest("hex"));
++    await waitForStatus(
++      (status) => status.state === "syncing" && (status.incoming?.length ?? 0) > 0 && status.progress !== undefined && status.progress.done >= 3,
++      "the pull never stopped at the held download",
++    );
++    // Lets the status settle (it is reported at most every 250 ms).
++    await browser.pause(1500);
++    await capture("status-3-syncing-incoming");
++
++    // The ribbon icon (mobile has no status bar): the left sidebar open.
++    await noNotices();
++    await browser.executeObsidian(({ app }) => {
++      (app as unknown as { workspace: { leftSplit: { expand(): void } } }).workspace.leftSplit.expand();
++    });
++    await browser.pause(1000);
++    await browser.saveScreenshot(path.join(outputDir, "status-4-ribbon-icon.png"));
++  });
++});
