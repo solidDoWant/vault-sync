@@ -1,6 +1,8 @@
 import { Code, ConnectError } from "@connectrpc/connect";
 
 import { IdentityProviderError } from "../core/auth/oidc";
+import type { ChangeKind, IncomingChange, PendingChange, SyncProgress } from "../core/sync/engine";
+import { visiblePath } from "./display-text";
 
 // The plugin's sync status (docs/plugin.md, "Status"), shown in the status
 // bar and the settings. No Obsidian import, so it is unit-tested directly.
@@ -47,6 +49,12 @@ export interface SyncStatus {
   pending: number;
   /** Why, for `error` (and `offline`). Never contains tokens or note content. */
   message?: string;
+  /** The local changes waiting to be pushed, one per file; absent when there are none. */
+  pendingFiles?: readonly PendingChange[];
+  /** The remote changes the current pull learned and has not applied yet; absent when there are none. */
+  incoming?: readonly IncomingChange[];
+  /** How far the current pull or push is; absent when neither runs. */
+  progress?: SyncProgress;
 }
 
 export const initialStatus: SyncStatus = {
@@ -88,10 +96,13 @@ const labels: Record<SyncState, string> = {
   "verification-failed": "stopped: key data doesn't verify",
 };
 
-/** The status bar's text, e.g. `Vault Sync: idle · 2 conflicts`. */
+/** The status bar's text, e.g. `Vault Sync: syncing 40/312 · 12 incoming · 2 conflicts`. */
 export function statusText(status: SyncStatus): string {
-  const parts = [`Vault Sync: ${labels[status.state]}`];
+  const progress = status.state === "syncing" && status.progress !== undefined ? ` ${String(status.progress.done)}/${String(status.progress.total)}` : "";
+  const parts = [`Vault Sync: ${labels[status.state]}${progress}`];
   if (status.pending > 0) parts.push(`${String(status.pending)} pending`);
+  const incoming = status.incoming?.length ?? 0;
+  if (incoming > 0) parts.push(`${String(incoming)} incoming`);
   if (status.conflicts > 0) parts.push(`${String(status.conflicts)} ${status.conflicts === 1 ? "conflict" : "conflicts"}`);
   return parts.join(" · ");
 }
@@ -114,12 +125,14 @@ const icons: Record<SyncState, string> = {
 
 /**
  * The status as an icon (a Lucide icon id), for the ribbon on mobile, which
- * has no status bar (#420). Unresolved conflicts show over `idle` and
- * `syncing`, and local changes waiting to be pushed over `idle`.
+ * has no status bar. Unresolved conflicts show over `idle` and `syncing`,
+ * incoming changes over `syncing`, and local changes waiting to be pushed
+ * over `idle`.
  */
 export function statusIcon(status: SyncStatus): string {
   const running = status.state === "idle" || status.state === "syncing";
   if (running && status.conflicts > 0) return "alert-triangle";
+  if (status.state === "syncing" && (status.incoming?.length ?? 0) > 0) return "download-cloud";
   if (status.state === "idle" && status.pending > 0) return "upload-cloud";
   return icons[status.state];
 }
@@ -146,5 +159,33 @@ export function statusDescription(status: SyncStatus): string {
   if (status.message !== undefined && status.message !== "") lines.push(status.message);
   if (status.pending > 0) lines.push(`${String(status.pending)} local ${status.pending === 1 ? "change is" : "changes are"} waiting to be pushed.`);
   if (status.conflicts > 0) lines.push(`${String(status.conflicts)} ${status.conflicts === 1 ? "conflict needs" : "conflicts need"} your attention.`);
+  const progress = status.state === "syncing" ? status.progress : undefined;
+  if (progress !== undefined) {
+    const what = progress.phase === "pull" ? "Receiving" : "Sending";
+    const file = progress.path === undefined ? "" : `: ${visiblePath(progress.path)}`;
+    lines.push(`${what} ${String(progress.done)} of ${String(progress.total)} ${progress.total === 1 ? "change" : "changes"}${file}.`);
+  }
+  if (status.pendingFiles !== undefined && status.pendingFiles.length > 0) {
+    lines.push(`Waiting to be sent: ${fileList(status.pendingFiles.map((change) => changeText(change.path, change.folder, change.kind)))}.`);
+  }
+  if (status.incoming !== undefined && status.incoming.length > 0) {
+    const entries = status.incoming.map((change) => changeText(change.path, change.folder, change.kind, change.conflict));
+    lines.push(`Incoming: ${fileList(entries)}.`);
+  }
   return lines.join(" ");
+}
+
+/** How many files a list in the status details names before it says how many more there are. */
+export const listedFiles = 10;
+
+function fileList(entries: readonly string[]): string {
+  const shown = entries.slice(0, listedFiles).join("; ");
+  const more = entries.length - listedFiles;
+  return more > 0 ? `${shown}; and ${String(more)} more` : shown;
+}
+
+/** A changed file with its kind, e.g. `"notes/a.md" (edited)`; a folder's path ends in a slash. */
+function changeText(path: string | undefined, folder: boolean, kind: ChangeKind, conflict = false): string {
+  const name = path === undefined ? "a file not yet decrypted" : `"${visiblePath(path)}${folder ? "/" : ""}"`;
+  return `${name} (${kind}${conflict ? ", also changed here: likely conflict" : ""})`;
 }

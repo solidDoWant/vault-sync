@@ -1,5 +1,5 @@
 import { RealtimeClient, type RealtimeClientOptions } from "../core/realtime/client";
-import { SyncEngine, type RefusedName, type SyncApi, type TooLargeFile } from "../core/sync/engine";
+import { SyncEngine, type IncomingChange, type PendingChange, type RefusedName, type SyncApi, type SyncProgress, type TooLargeFile } from "../core/sync/engine";
 import { commitRestore, documentHistory, readRevision, type HistoryDocument, type HistoryEntry, type HistoryPage } from "../core/sync/history";
 import type { SkippedEntry, SyncJournal } from "../core/sync/journal";
 import type { VaultKeyring } from "../core/sync/codec";
@@ -68,7 +68,19 @@ export interface SessionStatus {
   /** Conflict copies this device created that are still on disk. */
   conflicts: number;
   message?: string;
+  /** The local changes waiting to be pushed, one per file; absent when there are none. */
+  pendingFiles?: PendingChange[];
+  /** The remote changes the current pull learned and has not applied yet; absent when there are none. */
+  incoming?: IncomingChange[];
+  /** How far the current pull or push is; absent when neither runs. */
+  progress?: SyncProgress;
 }
+
+/** The engine's activity in a status: the pending and incoming files and the progress, each only when there is any. */
+type SessionActivity = Pick<SessionStatus, "pendingFiles" | "incoming" | "progress">;
+
+/** How long the session gathers the engine's activity reports before it emits a status, so a long sync doesn't redraw for every file. */
+export const activityReportMs = 250;
 
 /** A conflict copy, with the document it was taken from, for the conflict view. */
 export interface ListedConflict {
@@ -136,6 +148,8 @@ export class SyncSession {
   private readonly abort = new AbortController();
   private realtime: RealtimeClient | undefined;
   private counts = { pending: 0, conflicts: 0 };
+  private activity: SessionActivity = {};
+  private activityTimer: ReturnType<typeof setTimeout> | undefined;
   /** Bumped by every report, so only the latest one's counts are kept. */
   private reports = 0;
   private readonly onStatus: (status: SessionStatus) => void;
@@ -192,6 +206,7 @@ export class SyncSession {
   stop(): Promise<void> {
     if (this.stopping !== undefined) return this.stopping;
     this.stopped = true;
+    clearTimeout(this.activityTimer);
     this.abort.abort(new SessionStoppedError());
     this.realtime?.stop();
     this.engine?.stop();
@@ -229,6 +244,12 @@ export class SyncSession {
       onChange: () => {
         void this.report();
       },
+      onActivity: () => {
+        this.activityTimer ??= setTimeout(() => {
+          this.activityTimer = undefined;
+          void this.report();
+        }, activityReportMs);
+      },
     });
     this.engine = engine;
     const first = engine.start();
@@ -255,8 +276,15 @@ export class SyncSession {
     const engine = this.engine;
     if (engine === undefined) return;
     const report = ++this.reports;
+    try {
+      const activity = await readActivity(engine);
+      if (report === this.reports) this.activity = activity;
+    } catch {
+      // Stopped, or the journal is gone; keep the last activity.
+    }
+    if (this.isStopped() || report !== this.reports) return;
     if (engine.status === "syncing") {
-      this.onStatus({ state: "syncing", ...this.counts });
+      this.onStatus({ state: "syncing", ...this.counts, ...this.activity });
       return;
     }
     let problems: SyncProblemList | undefined;
@@ -277,11 +305,11 @@ export class SyncSession {
   }
 
   private status(engine: SyncEngine, problems: SyncProblemList | undefined): SessionStatus {
-    if (engine.status === "syncing") return { state: "syncing", ...this.counts };
+    if (engine.status === "syncing") return { state: "syncing", ...this.counts, ...this.activity };
     if (engine.status === "error") {
       const failure = engine.lastError;
-      if (failure instanceof LogVerificationError) return { state: "verification-failed", ...this.counts, message: errorMessage(failure) };
-      return { state: isOffline(failure) ? "offline" : "error", ...this.counts, message: errorMessage(failure) };
+      if (failure instanceof LogVerificationError) return { state: "verification-failed", ...this.counts, ...this.activity, message: errorMessage(failure) };
+      return { state: isOffline(failure) ? "offline" : "error", ...this.counts, ...this.activity, message: errorMessage(failure) };
     }
     const [first] = problems?.refused ?? [];
     if (first !== undefined) {
@@ -291,9 +319,9 @@ export class SyncSession {
         refused === 1
           ? `Cannot sync "${path}": the server refused its name (${first.reason}). Rename or move it to sync it.`
           : `Cannot sync ${String(refused)} local files, among them "${path}": the server refused their names. The Sync conflicts view lists them all.`;
-      return { state: "error", ...this.counts, message };
+      return { state: "error", ...this.counts, ...this.activity, message };
     }
-    return { state: "idle", ...this.counts };
+    return { state: "idle", ...this.counts, ...this.activity };
   }
 
   /** What the conflict view lists. Empty before the session started and once it is stopped (its journal may be closed). */
@@ -356,4 +384,16 @@ export class SyncSession {
       },
     });
   }
+}
+
+/** The engine's activity now, leaving out what is empty. */
+async function readActivity(engine: SyncEngine): Promise<SessionActivity> {
+  const pendingFiles = await engine.pendingChanges();
+  const incoming = engine.incoming();
+  const progress = engine.progress();
+  return {
+    ...(pendingFiles.length === 0 ? {} : { pendingFiles }),
+    ...(incoming.length === 0 ? {} : { incoming }),
+    ...(progress === undefined ? {} : { progress }),
+  };
 }

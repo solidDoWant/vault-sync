@@ -127,6 +127,47 @@ describe("SyncSession", () => {
     await session.stop();
   });
 
+  it("reports the pending files, and the incoming files and the progress of a running pull", async () => {
+    const server = new InMemoryServer();
+    server.commit({ documentId: "one", path: "one.md", content: "1" });
+    server.commit({ documentId: "two", path: "two.md", content: "2" });
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    /** Holds every write of a pulled file until released, so the pull is seen running. */
+    class HeldVault extends InMemoryVault {
+      override async write(...args: Parameters<InMemoryVault["write"]>): Promise<void> {
+        await held;
+        return super.write(...args);
+      }
+    }
+    const { session, vault, statuses } = setup({}, server, new MemorySyncJournal(), new HeldVault());
+    const started = session.start();
+
+    await vi.waitFor(() => {
+      expect(statuses.at(-1)?.incoming?.length).toBe(2);
+    });
+    const pulling = statuses.at(-1);
+    expect(pulling?.state).toBe("syncing");
+    expect(pulling?.incoming).toEqual([
+      { documentId: "one", path: "one.md", kind: "created", folder: false, conflict: false },
+      { documentId: "two", path: "two.md", kind: "created", folder: false, conflict: false },
+    ]);
+    expect(pulling?.progress).toEqual({ phase: "pull", done: 0, total: 2, path: "one.md" });
+    release();
+    await started;
+    expect(await statusBecomes(statuses, "idle")).toEqual({ state: "idle", pending: 0, conflicts: 0 });
+
+    server.interceptor = () => {
+      throw new ConnectError("connection refused", Code.Unavailable);
+    };
+    await vault.write("local.md", encoder.encode("offline edit"));
+    await session.syncNow();
+    await vi.waitFor(() => {
+      expect(statuses.at(-1)).toMatchObject({ state: "offline", pendingFiles: [{ path: "local.md", kind: "created", folder: false }] });
+    });
+    await session.stop();
+  });
+
   it("calls neither the server nor the vault once stopped, and a new session over the same journal resumes", async () => {
     const server = new InMemoryServer();
     server.commit({ documentId: "remote", path: "remote.md", content: "one" });

@@ -59,6 +59,16 @@ On a desktop, the status bar shows the sync status. On a phone, an icon in the r
 
 After the status, `N pending` counts your changes that the server did not confirm yet. `N conflicts` counts the conflict copies this device made that still exist.
 
+While a sync runs, the status shows how far it is, for example `syncing 40/312`: 40 of 312 changes are done. When the plugin gets changes from the server, `N incoming` counts the files that the server changed and that are not updated on this device yet. The plugin learns about these changes in groups, so the count can grow while the sync runs. The icon on a phone shows a cloud with a down arrow while changes come in.
+
+The details show more:
+
+- The file that the plugin sends or receives now.
+- The files that wait to be sent to the server, each with what changed: created, edited, renamed or deleted.
+- The incoming files, each with what changed. If you also changed a file on this device, the details say "likely conflict". Do not edit that file until the sync is done, or you can get a conflict copy.
+
+Each list names the first 10 files and then says how many more there are. The plugin never opens a window or a message for these changes. You see them only in the status and its details.
+
 [Troubleshooting](troubleshooting.md) says what to do for each state that needs you to act.
 
 ## Files that do not sync
