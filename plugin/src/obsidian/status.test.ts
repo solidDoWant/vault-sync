@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { discoverOidc, IdentityProviderError, refreshAccessToken, type HttpClient, type OidcEndpoints } from "../core/auth/oidc";
 import { createProtocolClient } from "../core/protocol/client";
 import { InMemoryServer } from "../core/sync/memory-server";
+import type { IncomingChange, PendingChange } from "../core/sync/engine";
 import { isOffline, isStoppedState, statusDescription, statusIcon, statusText, type SyncState } from "./status";
 
 describe("statusText", () => {
@@ -172,5 +173,60 @@ describe("statusIcon", () => {
 
   it("shows changes waiting to be pushed while idle", () => {
     expect(statusIcon({ state: "idle", conflicts: 0, pending: 3 })).toBe("upload-cloud");
+  });
+});
+
+describe("sync activity in the status", () => {
+  const incoming: IncomingChange[] = [
+    { documentId: "d1", path: "notes/a.md", kind: "edited", folder: false, conflict: true },
+    { documentId: "d2", path: "new", kind: "created", folder: true, conflict: false },
+    { documentId: "d3", path: undefined, kind: "created", folder: false, conflict: false },
+  ];
+
+  it("shows the progress as files done out of the total while syncing", () => {
+    expect(statusText({ state: "syncing", conflicts: 0, pending: 0, progress: { phase: "pull", done: 40, total: 312, path: "a.md" } })).toBe("Vault Sync: syncing 40/312");
+    expect(statusText({ state: "syncing", conflicts: 0, pending: 5, progress: { phase: "push", done: 0, total: 5, path: undefined } })).toBe("Vault Sync: syncing 0/5 · 5 pending");
+  });
+
+  it("shows no progress once sync no longer runs", () => {
+    expect(statusText({ state: "offline", conflicts: 0, pending: 0, progress: { phase: "pull", done: 1, total: 2, path: undefined } })).toBe("Vault Sync: offline");
+  });
+
+  it("counts the incoming files in the status bar and shows them on the icon while syncing", () => {
+    const status = { state: "syncing" as const, conflicts: 1, pending: 1, incoming, progress: { phase: "pull" as const, done: 0, total: 3, path: undefined } };
+    expect(statusText(status)).toBe("Vault Sync: syncing 0/3 · 1 pending · 3 incoming · 1 conflict");
+    expect(statusIcon({ ...status, conflicts: 0 })).toBe("download-cloud");
+    expect(statusIcon({ state: "syncing", conflicts: 0, pending: 0, incoming: [] })).toBe("refresh-cw");
+  });
+
+  it("names the file being worked on in the details", () => {
+    expect(statusDescription({ state: "syncing", conflicts: 0, pending: 0, progress: { phase: "pull", done: 40, total: 312, path: "notes/a.md" } })).toBe(
+      'Syncing. Receiving 40 of 312 changes: notes/a.md.',
+    );
+    expect(statusDescription({ state: "syncing", conflicts: 0, pending: 1, progress: { phase: "push", done: 0, total: 1, path: undefined } })).toBe(
+      "Syncing. 1 local change is waiting to be pushed. Sending 0 of 1 change.",
+    );
+  });
+
+  it("lists the pending files and the incoming files with their kinds, and marks likely conflicts", () => {
+    const pendingFiles: PendingChange[] = [
+      { documentId: "d1", path: "notes/a.md", kind: "edited", folder: false },
+      { documentId: "d4", path: "old.md", kind: "deleted", folder: false },
+    ];
+    expect(statusDescription({ state: "syncing", conflicts: 0, pending: 2, pendingFiles, incoming })).toBe(
+      "Syncing. 2 local changes are waiting to be pushed." +
+        ' Waiting to be sent: "notes/a.md" (edited); "old.md" (deleted).' +
+        ' Incoming: "notes/a.md" (edited, also changed here: likely conflict); "new/" (created); a file not yet decrypted (created).',
+    );
+  });
+
+  it("lists at most ten files and says how many more there are", () => {
+    const changes = (count: number): PendingChange[] => Array.from({ length: count }, (_, index) => ({ documentId: `d${String(index)}`, path: `${String(index)}.md`, kind: "created", folder: false }));
+    const ten = statusDescription({ state: "idle", conflicts: 0, pending: 10, pendingFiles: changes(10) });
+    expect(ten).toContain('"9.md" (created).');
+    expect(ten).not.toContain("more");
+    const eleven = statusDescription({ state: "idle", conflicts: 0, pending: 11, pendingFiles: changes(11) });
+    expect(eleven).toContain('"9.md" (created); and 1 more.');
+    expect(eleven).not.toContain('"10.md"');
   });
 });
