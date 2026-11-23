@@ -28,6 +28,7 @@ jobs:
     permissions:
       contents: write # push the fix-up commit to the PR branch
       actions: write # dispatch ci on the PR branch and delete the held runs
+      checks: read # find the held runs through the commit's check suites
     env:
       BRANCH: ${{ github.head_ref }}
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -77,29 +78,39 @@ jobs:
           echo "sha=$(git rev-parse HEAD)" >>"$GITHUB_OUTPUT"
           gh workflow run ci.yml --ref "$BRANCH"
       # The held pull_request runs are already completed, so they cannot be
-      # cancelled; deleting them clears the banner. They appear a few seconds
-      # after the push, so poll for a while, and stop once a poll after the
-      # first deletion finds nothing more.
+      # cancelled; deleting them clears the banner. They are found through the
+      # commit's check suites, because the REST run list leaves some of them
+      # out. They appear a few seconds after the push, so the step polls for a
+      # minute and deletes each one as it appears.
       - name: Delete the held pull_request runs of the fix-up commit
         if: steps.push.outputs.sha != ''
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ steps.push.outputs.sha }}
         run: |
+          query='query($owner: String!, $name: String!, $sha: GitObjectID!) {
+            repository(owner: $owner, name: $name) {
+              object(oid: $sha) {
+                ... on Commit {
+                  checkSuites(first: 100) { nodes { conclusion workflowRun { databaseId event } } }
+                }
+              }
+            }
+          }'
+          filter='.data.repository.object.checkSuites.nodes[]
+            | select(.conclusion == "ACTION_REQUIRED" and .workflowRun.event == "pull_request")
+            | .workflowRun.databaseId'
           deleted=0
-          for _ in $(seq 1 24); do
+          for _ in $(seq 1 12); do
             sleep 5
-            ids="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${SHA}&event=pull_request&status=action_required" --jq '.workflow_runs[].id')"
-            if [[ -z $ids ]]; then
-              if ((deleted > 0)); then
-                break
-              fi
-              continue
-            fi
+            ids="$(gh api graphql -f query="$query" -f owner="${GITHUB_REPOSITORY%/*}" -f name="${GITHUB_REPOSITORY#*/}" -f sha="$SHA" --jq "$filter")"
             for id in $ids; do
-              echo "deleting held run ${id}"
-              gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/runs/${id}"
-              deleted=$((deleted + 1))
+              # A deleted run can still be listed for a few seconds; the
+              # repeated delete then fails, so only count the ones that work.
+              if gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/runs/${id}"; then
+                echo "deleted held run ${id}"
+                deleted=$((deleted + 1))
+              fi
             done
           done
           echo "deleted ${deleted} held run(s) for ${SHA}"
