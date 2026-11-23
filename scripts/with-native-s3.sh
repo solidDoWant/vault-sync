@@ -64,7 +64,7 @@ fi
 # Must match the versitygw image tag in compose.test.yaml (checked
 # below). The SHA-256 of each release asset (from the release's checksums.txt)
 # is pinned further down; --update-pin updates them together with the version.
-version=v1.10.0
+version=v1.9.0
 compose_file=deploy/compose/compose.test.yaml
 if ! grep -q "image: mirror.gcr.io/versity/versitygw:${version}@" "$compose_file"; then
 	die "versitygw ${version} is not the image in ${compose_file}; update the version and checksums in scripts/with-native-s3.sh to match it"
