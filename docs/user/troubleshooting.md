@@ -2,7 +2,7 @@
 
 For: people who use the Obsidian plugin. You know where the [sync status](syncing.md#the-status) shows.
 
-Find the status or the message that you see. In every case, your files and changes stay on your device. To see the full message, click the status bar, tap the status icon, or run **Vault Sync: Show sync status**.
+Find the status or the message that you see. In every case, your files and changes stay on your device. To see the full message, open the sync view in the right sidebar: click the status bar, tap the status icon, or run **Vault Sync: Show sync status**.
 
 ## offline
 

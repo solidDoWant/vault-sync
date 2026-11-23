@@ -81,6 +81,24 @@ describe("vault-sync in Obsidian", function () {
     }
   });
 
+  it("puts the sync view in the right sidebar, with the status as its tab icon and the activity log inside", async function () {
+    const view = await browser.executeObsidian(async ({ app }) => {
+      const leaf = app.workspace.getLeavesOfType("vault-sync-status")[0];
+      if (leaf === undefined) return null;
+      await leaf.loadIfDeferred();
+      return {
+        inRightSidebar: leaf.getRoot() === app.workspace.rightSplit,
+        icon: leaf.view.getIcon(),
+        headings: [...leaf.view.containerEl.querySelectorAll(".vault-sync-view h4")].map((element) => element.textContent),
+      };
+    });
+    expect(view).not.toBeNull();
+    expect(view?.inRightSidebar).toBe(true);
+    expect(view?.icon).not.toBe("");
+    expect(view?.headings[0]).toMatch(/^Vault Sync: /);
+    expect(view?.headings).toContain("Activity");
+  });
+
   it("loads and enables the built plugin", async function () {
     expect(await pluginState()).toEqual({ enabled: true, loaded: true, version: manifest.version });
     // Its onload completes without throwing.
