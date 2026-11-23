@@ -137,7 +137,20 @@ func TestCountReleasedBlobsCountsBlobsAwaitingCollection(t *testing.T) {
 
 	counts, err := store.New(pool).CountReleasedBlobs(t.Context())
 	require.NoError(t, err)
-	assert.Equal(t, store.ReleasedBlobCounts{Blobs: 2, Bytes: 12}, counts)
+	assert.Equal(t, int64(2), counts.Blobs)
+	assert.Equal(t, int64(12), counts.Bytes)
+	assert.WithinDuration(t, time.Now().Add(-30*24*time.Hour), counts.OldestReleasedAt, 5*time.Minute)
+}
+
+func TestCountReleasedBlobsWithoutReleasedBlobs(t *testing.T) {
+	pool := migratedPool(t)
+
+	execAll(t, pool, `INSERT INTO vaults (id, name, encryption) VALUES ('`+metricsVault+`01', 'v', 'none')`)
+	insertBlob(t, pool, metricsVault+"01", "c", 11, "NULL")
+
+	counts, err := store.New(pool).CountReleasedBlobs(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, store.ReleasedBlobCounts{}, counts)
 }
 
 func TestCountDeletedVaultsCountsVaultsNotYetPurged(t *testing.T) {

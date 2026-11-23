@@ -257,19 +257,31 @@ func (store *Store) CountUploadSessions(ctx context.Context) (UploadSessions, er
 type ReleasedBlobCounts struct {
 	Blobs int64
 	Bytes int64
+	// OldestReleasedAt is the release time of the blob released longest
+	// ago; zero without one.
+	OldestReleasedAt time.Time
 }
 
 // CountReleasedBlobs counts the blobs a purge released and the collector
-// has not deleted (or found referenced again) yet, and their recorded
-// sizes, through blobs_released_at_idx, which holds exactly those.
+// has not deleted (or found referenced again) yet, their recorded sizes
+// and the oldest release time, through blobs_released_at_idx, which holds
+// exactly those.
 func (store *Store) CountReleasedBlobs(ctx context.Context) (ReleasedBlobCounts, error) {
-	var counts ReleasedBlobCounts
+	var (
+		counts ReleasedBlobCounts
+		oldest *time.Time
+	)
 
 	err := store.pool.QueryRow(ctx, `
-		SELECT count(*), coalesce(sum(size), 0)::bigint FROM blobs WHERE released_at IS NOT NULL`).
-		Scan(&counts.Blobs, &counts.Bytes)
+		SELECT count(*), coalesce(sum(size), 0)::bigint, min(released_at)
+		FROM blobs WHERE released_at IS NOT NULL`).
+		Scan(&counts.Blobs, &counts.Bytes, &oldest)
 	if err != nil {
 		return ReleasedBlobCounts{}, fmt.Errorf("count released blobs: %w", err)
+	}
+
+	if oldest != nil {
+		counts.OldestReleasedAt = *oldest
 	}
 
 	return counts, nil

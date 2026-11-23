@@ -64,6 +64,7 @@ These describe the whole deployment. Every replica serves the same values, only 
 | `vault_sync_service_upload_session_oldest_age_seconds` | gauge |  | Age in seconds of the oldest open blob upload session at the last refresh; 0 without one. |
 | `vault_sync_service_gc_pending_blobs` | gauge |  | Blobs released by a retention purge that the garbage collector has not deleted yet (still inside the grace period, or not yet collected). |
 | `vault_sync_service_gc_pending_blob_bytes` | gauge |  | Recorded size in bytes of the blobs awaiting garbage collection. |
+| `vault_sync_service_gc_oldest_pending_blob_age_seconds` | gauge |  | Age in seconds of the blob released longest ago that the garbage collector has not deleted yet, at the last refresh; 0 without one. It stays below the grace period (VAULT_SYNC_BLOB_GC_GRACE) plus about one retention interval while the collector works. |
 | `vault_sync_service_deleted_vaults` | gauge |  | Deleted vaults the vault purge has not removed yet (restorable, or waiting for the purge). |
 | `vault_sync_service_rekey_vaults` | gauge |  | Encrypted vaults not deleted with at least one revision not on the vault's current epoch: a re-key in progress. |
 | `vault_sync_service_stale_epoch_revisions` | gauge |  | Revisions of encrypted vaults not deleted that are not on their vault's current epoch: the re-encryption backlog (ListStaleRevisions), summed over every vault. |

@@ -69,6 +69,7 @@ type Metrics struct {
 	uploadOldestAge    prometheus.Gauge
 	gcPendingBlobs     prometheus.Gauge
 	gcPendingBytes     prometheus.Gauge
+	gcOldestAge        prometheus.Gauge
 	deletedVaults      prometheus.Gauge
 	rekeyVaults        prometheus.Gauge
 	staleRevisions     prometheus.Gauge
@@ -112,7 +113,9 @@ func NewMetrics() *Metrics {
 		gcPendingBlobs: gauge("vault_sync_service_gc_pending_blobs",
 			"Blobs released by a retention purge that the garbage collector has not deleted yet (still inside the grace period, or not yet collected)."),
 		gcPendingBytes: gauge("vault_sync_service_gc_pending_blob_bytes", "Recorded size in bytes of the blobs awaiting garbage collection."),
-		deletedVaults:  gauge("vault_sync_service_deleted_vaults", "Deleted vaults the vault purge has not removed yet (restorable, or waiting for the purge)."),
+		gcOldestAge: gauge("vault_sync_service_gc_oldest_pending_blob_age_seconds",
+			"Age in seconds of the blob released longest ago that the garbage collector has not deleted yet, at the last refresh; 0 without one. It stays below the grace period (VAULT_SYNC_BLOB_GC_GRACE) plus about one retention interval while the collector works."),
+		deletedVaults: gauge("vault_sync_service_deleted_vaults", "Deleted vaults the vault purge has not removed yet (restorable, or waiting for the purge)."),
 		rekeyVaults: gauge("vault_sync_service_rekey_vaults",
 			"Encrypted vaults not deleted with at least one revision not on the vault's current epoch: a re-key in progress."),
 		staleRevisions: gauge("vault_sync_service_stale_epoch_revisions",
@@ -153,7 +156,7 @@ func (metrics *Metrics) Collectors() []prometheus.Collector {
 		metrics.vaults, metrics.memberships, metrics.pendingInvitations,
 		metrics.documents, metrics.revisions, metrics.schemaVersion,
 		metrics.blobs, metrics.blobBytes, metrics.uploadSessions, metrics.uploadReserved, metrics.uploadOldestAge,
-		metrics.gcPendingBlobs, metrics.gcPendingBytes, metrics.deletedVaults,
+		metrics.gcPendingBlobs, metrics.gcPendingBytes, metrics.gcOldestAge, metrics.deletedVaults,
 		metrics.rekeyVaults, metrics.staleRevisions, metrics.escrowVaults, metrics.escrowRewrapSlots,
 		metrics.lastRetention, metrics.lastExport, metrics.lastSuccess,
 	}
@@ -319,12 +322,21 @@ func (refresher *Refresher) Refresh(ctx context.Context) bool {
 		}},
 		{"gc_pending_blobs", func(ctx context.Context) error {
 			counts, err := refresher.Store.CountReleasedBlobs(ctx)
-			if err == nil {
-				metrics.gcPendingBlobs.Set(float64(counts.Blobs))
-				metrics.gcPendingBytes.Set(float64(counts.Bytes))
+			if err != nil {
+				return err
 			}
 
-			return err
+			metrics.gcPendingBlobs.Set(float64(counts.Blobs))
+			metrics.gcPendingBytes.Set(float64(counts.Bytes))
+
+			age := 0.0
+			if !counts.OldestReleasedAt.IsZero() {
+				age = max(now().Sub(counts.OldestReleasedAt).Seconds(), 0)
+			}
+
+			metrics.gcOldestAge.Set(age)
+
+			return nil
 		}},
 		{"deleted_vaults", func(ctx context.Context) error {
 			count, err := refresher.Store.CountDeletedVaults(ctx)

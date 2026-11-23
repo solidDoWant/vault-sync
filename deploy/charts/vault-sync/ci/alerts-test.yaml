@@ -324,27 +324,42 @@ tests:
         alertname: VaultSyncUploadSessionsNotExpiring
         exp_alerts: []
 
-  - name: VaultSyncBlobGCStalled fires when pending blobs are never collected
+  - name: VaultSyncBlobGCStalled fires on a blob released just over 26 hours ago
     interval: 1m
     input_series:
-      - series: vault_sync_service_gc_pending_blobs{instance="a"}
-        values: 5x1560
-      - series: vault_sync_retention_blobs_collected_total{instance="a"}
-        values: 0x1560
+      - series: vault_sync_service_gc_oldest_pending_blob_age_seconds{instance="a"}
+        values: 93601x90
     alert_rule_test:
-      - eval_time: 26h
+      - eval_time: 90m
         alertname: VaultSyncBlobGCStalled
         exp_alerts:
           - exp_labels: {severity: warning}
-  - name: VaultSyncBlobGCStalled stays quiet while blobs are collected
+  - name: VaultSyncBlobGCStalled stays quiet on a blob released exactly 26 hours ago
+    interval: 1m
+    input_series:
+      - series: vault_sync_service_gc_oldest_pending_blob_age_seconds{instance="a"}
+        values: 93600x90
+    alert_rule_test:
+      - eval_time: 90m
+        alertname: VaultSyncBlobGCStalled
+        exp_alerts: []
+  - name: VaultSyncBlobGCStalled stays quiet on churn that keeps blobs pending for days without a collection
+    # Blobs are released all the time and referenced again before their
+    # grace period ends: some are always pending and none is ever collected,
+    # but the oldest is never older than 23 hours.
     interval: 1m
     input_series:
       - series: vault_sync_service_gc_pending_blobs{instance="a"}
-        values: 5x1560
+        values: 35x4320
       - series: vault_sync_retention_blobs_collected_total{instance="a"}
-        values: 0+1x1560
+        values: 0x4320
+      - series: vault_sync_service_gc_oldest_pending_blob_age_seconds{instance="a"}
+        values: 0+60x1380 3600+60x1320 0+60x1380 3600+60x235
     alert_rule_test:
-      - eval_time: 26h
+      - eval_time: 72h
+        alertname: VaultSyncBlobGCStalled
+        exp_alerts: []
+      - eval_time: 48h
         alertname: VaultSyncBlobGCStalled
         exp_alerts: []
 
