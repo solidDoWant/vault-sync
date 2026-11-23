@@ -6,6 +6,7 @@ import type { RealtimeTimers } from "../core/realtime/client";
 import { InMemoryRealtimeServer } from "../core/realtime/memory";
 import { LogVerificationError } from "../core/keys/verified-log";
 import type { VaultKeyring } from "../core/sync/codec";
+import { ActivityLog } from "../core/sync/activity-log";
 import { MemorySyncJournal } from "../core/sync/journal";
 import { InMemoryServer } from "../core/sync/memory-server";
 import { InMemoryVault } from "../core/vault/memory";
@@ -124,6 +125,37 @@ describe("SyncSession", () => {
     await session.syncNow();
     expect(await statusBecomes(statuses, "idle")).toEqual({ state: "idle", pending: 0, conflicts: 0 });
     expect(server.liveFiles()).toEqual(new Map([["a.md", "offline edit"]]));
+    await session.stop();
+  });
+
+  it("logs one connection problem per offline spell, and the uploads that follow, newest first", async () => {
+    const server = new InMemoryServer();
+    let down = true;
+    server.interceptor = () => {
+      if (down) throw new ConnectError("connection refused", Code.Unavailable);
+    };
+    const activity = new ActivityLog();
+    let time = 100;
+    const { session, vault, statuses } = setup({ activity, now: () => time }, server);
+    await vault.write("a.md", encoder.encode("offline edit"));
+
+    await session.start();
+    await statusBecomes(statuses, "offline");
+    time = 200;
+    await session.syncNow();
+    expect(activity.entries()).toEqual([{ kind: "connection-problem", time: 100 }]);
+
+    down = false;
+    await session.syncNow();
+    await statusBecomes(statuses, "idle");
+    expect(activity.entries()).toEqual([expect.objectContaining({ kind: "uploaded", path: "a.md" }), { kind: "connection-problem", time: 100 }]);
+
+    down = true;
+    time = 300;
+    await session.syncNow();
+    await statusBecomes(statuses, "offline");
+    expect(activity.entries()[0]).toEqual({ kind: "connection-problem", time: 300 });
+    expect(activity.size).toBe(3);
     await session.stop();
   });
 

@@ -1,5 +1,6 @@
 import { globalTimers, type Timers } from "../core/backoff";
 import { RealtimeClient, type RealtimeClientOptions } from "../core/realtime/client";
+import type { ActivityLog } from "../core/sync/activity-log";
 import { SyncEngine, type RefusedName, type SyncApi, type TooLargeFile } from "../core/sync/engine";
 import { commitRestore, documentHistory, readRevision, type HistoryDocument, type HistoryEntry, type HistoryPage } from "../core/sync/history";
 import type { SkippedEntry, SyncJournal } from "../core/sync/journal";
@@ -42,6 +43,12 @@ export interface SyncSessionOptions {
   pathRules?: PathRules;
   /** The largest file this device uploads or downloads (docs/design/engine.md §7). */
   maxDownloadBytes?: number;
+  /**
+   * Where the session records what its syncs upload, download and delete,
+   * the conflict copies they make, and each time the device goes offline.
+   * It stays in memory, on this device.
+   */
+  activity?: ActivityLog;
   /** Receives every change of the session's status. */
   onStatus?: (status: SessionStatus) => void;
   /** Whether the device may only pull, read at the start of every sync cycle (SyncEngineOptions.readOnly). */
@@ -62,7 +69,7 @@ export interface SyncSessionOptions {
   realtime?: Omit<RealtimeClientOptions, "vaultId" | "onChange">;
   /** The timers of the engine's debounce, fallback interval and retry; tests pass fake ones. */
   timers?: Timers;
-  /** The current time in milliseconds since the epoch, for `nextAttemptAt`. */
+  /** The current time in milliseconds since the epoch, for `nextAttemptAt` and the activity log's connection problems. */
   now?: () => number;
 }
 
@@ -147,6 +154,8 @@ export class SyncSession {
   /** Bumped by every report, so only the latest one's counts are kept. */
   private reports = 0;
   private readonly onStatus: (status: SessionStatus) => void;
+  /** Whether the activity log already has the connection problem of the current offline spell. */
+  private offlineLogged = false;
   /** When each timer the engine has scheduled fires: every one starts a sync, so the earliest is the next attempt. */
   private readonly due = new Map<unknown, number>();
   private readonly now: () => number;
@@ -260,8 +269,10 @@ export class SyncSession {
       ...(options.readOnly === undefined ? {} : { readOnly: options.readOnly }),
       ...(options.keepLocalCopy === undefined ? {} : { keepLocalCopy: options.keepLocalCopy }),
       ...(options.keys === undefined ? {} : { keys: options.keys }),
+      ...(options.activity === undefined ? {} : { onEvent: (event) => options.activity?.add(event) }),
       timers: this.trackedTimers(options.timers ?? globalTimers),
       onChange: () => {
+        this.logConnection(engine);
         void this.report();
       },
     });
@@ -276,6 +287,14 @@ export class SyncSession {
       this.realtime.start();
     }
     await first.catch(() => undefined);
+  }
+
+  /** Logs a connection problem when a sync fails to reach the server, once until a sync succeeds again. */
+  private logConnection(engine: SyncEngine): void {
+    if (engine.status === "idle") this.offlineLogged = false;
+    if (engine.status !== "error" || this.stopped || !isOffline(engine.lastError) || this.offlineLogged) return;
+    this.offlineLogged = true;
+    this.options.activity?.add({ kind: "connection-problem", time: this.now() });
   }
 
   /** The server client, refused once the session stopped (gateNetwork). */

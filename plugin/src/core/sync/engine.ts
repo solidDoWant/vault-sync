@@ -16,6 +16,7 @@ import { conflictCopyName } from "./conflict-name";
 import { detectChanges, HashCache, isTemporaryPath, kindOfPath, project, replacementPath, replacementTarget, temporaryPath, type Projection, type RenameHint } from "./detect";
 import { applyChange, type ConflictEntry, type Cursor, type DocEntry, type JournalChange, type JournalState, type PendingKind, type PendingOp, type SentCommitFields, type SkippedEntry, type SkipReason, type SyncJournal, type SyncKind } from "./journal";
 import { mergeContent } from "./merge-rules";
+import type { ActivityEntry } from "./activity-log";
 import type { HistoryDocument } from "./history";
 
 /** The protocol calls the engine makes. */
@@ -56,6 +57,12 @@ export interface SyncEngineOptions {
    * Called often during a long sync; an observer that draws should throttle.
    */
   onActivity?: () => void;
+  /**
+   * Called for every file or folder a sync uploads, downloads or deletes,
+   * and every conflict copy it makes: what the activity log lists. The
+   * paths are plaintext in an encrypted vault too; keep them on the device.
+   */
+  onEvent?: (event: ActivityEntry) => void;
   /**
    * Whether this device may only pull: the signed-in user is a `viewer` of
    * the vault (docs/design/sharing.md, Viewer devices). Read at the start of
@@ -201,6 +208,7 @@ export class SyncEngine {
   private readonly pathRules: PathRules;
   private readonly onChange: () => void;
   private readonly onActivity: () => void;
+  private readonly onEvent: (event: ActivityEntry) => void;
   /** The incoming changes of the current pull, by document, with the seq of the latest revision learned. */
   private readonly incomingChanges = new Map<string, { change: IncomingChange; seq: bigint }>();
   private currentProgress: SyncProgress | undefined;
@@ -257,6 +265,7 @@ export class SyncEngine {
     this.pathRules = options.pathRules ?? posixPathRules;
     this.onChange = options.onChange ?? (() => undefined);
     this.onActivity = options.onActivity ?? (() => undefined);
+    this.onEvent = options.onEvent ?? (() => undefined);
     this.readOnly = options.readOnly ?? (() => Promise.resolve(false));
     this.keepLocalCopy =
       options.keepLocalCopy ??
@@ -425,6 +434,7 @@ export class SyncEngine {
     await this.journal.commit(change);
     if (this.state !== undefined) applyChange(this.state, change);
     if (change.putPending !== undefined || change.deletePending !== undefined) this.onActivity();
+    for (const conflict of change.putConflicts ?? []) this.onEvent({ kind: "conflict", path: conflict.path, time: conflict.createdAt });
   }
 
   // Pull ----------------------------------------------------------------
@@ -490,12 +500,14 @@ export class SyncEngine {
    */
   private async applyPulled(state: JournalState, revision: Revision, incoming: IncomingRevision, extra: JournalChange): Promise<boolean> {
     const before = localPath(state, revision.documentId);
+    const own = ownRevision(state, revision.documentId, incoming.remote.revisionId);
     const outcome = await this.applyOrSkip(state, revision, incoming);
     if (outcome === undecided) return false;
     const change: JournalChange = { ...outcome, ...extra };
     // A revision that applied replaces an earlier skip of its document.
     if (outcome.putSkipped === undefined && state.skipped.has(revision.documentId)) change.deleteSkipped = [revision.documentId];
     await this.record(change);
+    if (!own && outcome.putSkipped === undefined) this.reportPulled(state, revision, incoming, before?.path);
     // The item left its place here: a folder it leaves empty, which no live document holds, goes too.
     const after = localPath(state, revision.documentId);
     if (before !== undefined && after?.path !== before.path) {
@@ -507,6 +519,18 @@ export class SyncEngine {
       }
     }
     return true;
+  }
+
+  /** Reports a pulled revision that changed this device: a deletion that removed the file at `before`, or a change now the document's base. */
+  private reportPulled(state: JournalState, revision: Revision, incoming: IncomingRevision, before: string | undefined): void {
+    const { remote } = incoming;
+    const folder = revision.kind === DocumentKind.FOLDER;
+    if (remote.deleted) {
+      if (before !== undefined && localPath(state, remote.documentId) === undefined) this.onEvent({ kind: "deleted-here", path: before, folder, time: this.now() });
+      return;
+    }
+    const entry = state.docs.get(remote.documentId);
+    if (entry?.baseRevId === remote.revisionId && entry.deleted !== true) this.onEvent({ kind: "downloaded", path: remote.path, folder, time: this.now() });
   }
 
   /**
@@ -1504,6 +1528,7 @@ export class SyncEngine {
       }
       if (revision === undefined) throw new Error("CommitRevision returned no revision");
       await this.record(this.acknowledge(op, revision));
+      this.onEvent({ kind: op.kind === "delete" ? "deleted-on-server" : "uploaded", path: op.path, folder: op.docKind === "folder", time: this.now() });
       progress = true;
     }
     if (this.currentProgress !== undefined) this.currentProgress = { ...this.currentProgress, done: queue.length };
@@ -1809,6 +1834,12 @@ function documentKind(kind: SyncKind): DocumentKind {
 }
 
 /** Where a document's file or folder is on this device once its pending operations apply, and its kind; undefined if it is not live here. */
+/** Whether `revisionId` is this device's own commit of the document: already its base, or the commit of a pending operation whose reply was lost. */
+function ownRevision(state: JournalState, documentId: string, revisionId: string): boolean {
+  if (state.docs.get(documentId)?.baseRevId === revisionId) return true;
+  return state.pending.some((op) => op.documentId === documentId && ((op.sent && op.revisionId === revisionId) || op.earlierRevisionIds?.includes(revisionId) === true));
+}
+
 function localPath(state: JournalState, documentId: string): { path: string; kind: SyncKind } | undefined {
   const entry = state.docs.get(documentId);
   const last = state.pending.filter((op) => op.documentId === documentId).at(-1);
