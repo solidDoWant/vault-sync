@@ -169,6 +169,49 @@ describe("SyncSession", () => {
     await session.stop();
   });
 
+  it("counts the files waiting to be sent while a pull runs, the same number it lists", async () => {
+    const server = new InMemoryServer();
+    let holding = false;
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    /** Holds every write once holding is on, so the pull is seen running. */
+    class HeldVault extends InMemoryVault {
+      override async write(...args: Parameters<InMemoryVault["write"]>): Promise<void> {
+        if (holding) await held;
+        return super.write(...args);
+      }
+    }
+    const vault = new HeldVault();
+    await vault.write("a.md", encoder.encode("one"));
+    await vault.write("b.md", encoder.encode("two"));
+    server.interceptor = () => {
+      throw new ConnectError("connection refused", Code.Unavailable);
+    };
+    const first = setup({}, server, new MemorySyncJournal(), vault);
+    await first.session.start();
+    await vault.write("a.md", encoder.encode("one, edited"));
+    await first.session.syncNow();
+    await first.session.stop();
+
+    server.interceptor = undefined;
+    server.commit({ documentId: "remote", path: "remote.md", content: "from the laptop" });
+    holding = true;
+    const { session, statuses } = setup({}, server, first.journal, vault);
+    const started = session.start();
+    await vi.waitFor(() => {
+      expect(statuses.at(-1)?.incoming?.length).toBe(1);
+    });
+    const pulling = statuses.at(-1);
+    expect(pulling?.state).toBe("syncing");
+    expect(pulling?.pendingFiles?.map((file) => file.path).sort()).toEqual(["a.md", "b.md"]);
+    expect(pulling?.pending).toBe(2);
+    holding = false;
+    release();
+    await started;
+    expect(await statusBecomes(statuses, "idle")).toEqual({ state: "idle", pending: 0, conflicts: 0 });
+    await session.stop();
+  });
+
   it("logs one connection problem per offline spell, and the uploads that follow, newest first", async () => {
     const server = new InMemoryServer();
     let down = true;

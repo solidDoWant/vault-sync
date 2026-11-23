@@ -332,7 +332,11 @@ export class SyncSession {
     const report = ++this.reports;
     try {
       const activity = await readActivity(engine);
-      if (report === this.reports) this.activity = activity;
+      if (report === this.reports) {
+        this.activity = activity;
+        // The count and the list come from the same read, so they agree, during a sync too.
+        this.counts = { ...this.counts, pending: activity.pendingFiles?.length ?? 0 };
+      }
     } catch {
       // Stopped, or the journal is gone; keep the last activity.
     }
@@ -344,8 +348,7 @@ export class SyncSession {
     let problems: SyncProblemList | undefined;
     try {
       problems = await this.listProblems();
-      const counts = { pending: await engine.pendingCount(), conflicts: problems.conflicts.length };
-      if (report === this.reports) this.counts = counts;
+      if (report === this.reports) this.counts = { ...this.counts, conflicts: problems.conflicts.length };
     } catch {
       // Stopped, or the journal is gone; keep the last counts.
     }
