@@ -42,8 +42,9 @@
         # `pkgs.buildGoModule.override { inherit go; }`). nixpkgs-unstable
         # still ships go 1.26.8, which has standard-library vulnerabilities
         # fixed in 1.26.9 (#140) and in 1.26.10 (GO-2026-6809, crypto/x509,
-        # #603), so the pinned Go is overridden to 1.26.10 (the hash is the
-        # sha256 go.dev publishes for go1.26.10.src.tar.gz) until nixpkgs
+        # #603) and 1.26.11 (GO-2026-6859, net/http), so the pinned Go is
+        # overridden to 1.26.11 (the hash is the
+        # sha256 go.dev publishes for go1.26.11.src.tar.gz) until nixpkgs
         # catches up; once the pinned Go is at least the go.mod toolchain
         # version it is used as is and this override can be deleted.
         #
@@ -63,7 +64,7 @@
             builtins.head goModGo
           else
             throw "vault-sync: go.mod has neither a `toolchain goX.Y.Z` nor a `go X.Y.Z` line; flake.nix reads the minimum Go version from it";
-        patchedGoVersion = "1.26.10";
+        patchedGoVersion = "1.26.11";
         go =
           if pkgs.lib.versionAtLeast pkgs.go.version minimumGoVersion then
             pkgs.go
@@ -72,7 +73,7 @@
               version = patchedGoVersion;
               src = pkgs.fetchurl {
                 url = "https://go.dev/dl/go${finalAttrs.version}.src.tar.gz";
-                hash = "sha256-/WPog7ovK/ypPBZGsx6+9j4rHk0rMXyXidl2po2B828=";
+                hash = "sha256-1EEBsP8n7SpMda1GwXucdDWSCeLrLKfJ32y0/baOGWk=";
               };
             })
           else
