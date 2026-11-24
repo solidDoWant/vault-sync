@@ -64,7 +64,7 @@ fi
 # Must match the versitygw image tag in compose.test.yaml (checked
 # below). The SHA-256 of each release asset (from the release's checksums.txt)
 # is pinned further down; --update-pin updates them together with the version.
-version=v1.10.0
+version=v1.11.0
 compose_file=deploy/compose/compose.test.yaml
 if ! grep -q "image: mirror.gcr.io/versity/versitygw:${version}@" "$compose_file"; then
 	die "versitygw ${version} is not the image in ${compose_file}; update the version and checksums in scripts/with-native-s3.sh to match it"
@@ -103,12 +103,12 @@ fi
 
 # A case, not an associative array: macOS ships bash 3.2.
 case "$suffix" in
-Darwin_arm64.tar.gz) expected=2234e3151e8f1ab8c143cdab541a91f10e394c75670a43ab46ee89195a3d8707 ;;
-Darwin_x86_64.tar.gz) expected=23352b524028b44ada33323466c6baeab769ab4e777911c08a0eee4c9e4cdcc3 ;;
-Linux_arm64.tar.gz) expected=6307b377caee30c1f0fc8950e62ba684e0440a92f8e6a3a06bee1b83a857f03a ;;
-Linux_x86_64.tar.gz) expected=8f9869752939d4dc9cfe1bddb935a02cc6610e95319a3a9fc2947d2a6ebd2c91 ;;
-Windows_arm64.zip) expected=84b59fa57c110ff7f89082fbb83ef464d00ca2cc908156a4c7d9cf4340d14467 ;;
-Windows_x86_64.zip) expected=77746a0e998baf2a308343394465a47a58dbb33ca15f63c5abca0fafd83f72d2 ;;
+Darwin_arm64.tar.gz) expected=678555913e0eb574f38d1daef36fcc584392e9ae2bb966ee6d3d6bbab1e14c31 ;;
+Darwin_x86_64.tar.gz) expected=1a2b405a3c2e4d771510d528c2b1ea364d382b2afe1e3b08f0295a16613a6674 ;;
+Linux_arm64.tar.gz) expected=8bd88019511c288de3ce2e5f0efb86f4092a98f7067371a1a8fa461ec0cc161b ;;
+Linux_x86_64.tar.gz) expected=1f075c9dc92fef232f5b3c7465711ddc5e1b062b2b6df4a3bd246a4be5b35b52 ;;
+Windows_arm64.zip) expected=35b89c150d0b919a03da8abd0687f9f3a896f2d39bed35d5cfdeb9377d28e659 ;;
+Windows_x86_64.zip) expected=2c647cf9ed07ba9d35fdfbb38bb139bc8fde15dc0c94775cacfdf8ba4fdaf33a ;;
 *) die "no pinned SHA-256 for versitygw ${version} asset ${suffix}" ;;
 esac
 
