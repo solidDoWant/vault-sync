@@ -2,6 +2,43 @@
 
 All notable changes to vault-sync are listed here, newest release first.
 
+## 0.6.1
+
+vault-sync is a self-hosted replacement for Obsidian Sync. It has two parts: an Obsidian plugin, and a sync server that stores its data in PostgreSQL and S3. This release shows you more about sync in the plugin, makes sync on Android more reliable, fixes a false alert on the server, and updates the dependencies. To install the server, use the server image `ghcr.io/soliddowant/vault-sync:0.6.1` or the Helm chart `oci://ghcr.io/soliddowant/charts/vault-sync` (version 0.6.1). Install the plugin with BRAT from the GitHub releases of this repository.
+
+### Upgrade notes for admins
+
+- If you changed `for` of the `VaultSyncBlobGCStalled` alert in `config.alerts.rules`, look at your value again. The alert now measures the age of the oldest blob that waits for garbage collection, so its default `for` is now 30 minutes, not 24 hours. Its new `threshold` is `93600` seconds (26 hours). If you raise `VAULT_SYNC_BLOB_GC_GRACE`, raise this threshold too.
+- You do not have to do anything else. This release has no database migration, no change to the API and no new setting, so you can upgrade a 0.6.0 server one replica at a time.
+
+### Sync
+
+- The plugin has a new sync view in the right sidebar. It shows the sync status, the progress of a sync and the file that the plugin works on now. It also lists the files that wait to be sent, the files that arrive from the server, and a log of the recent sync events. The icon of its tab shows the sync status. When you click the status bar, tap the sync icon in the ribbon on mobile, or run the "Show sync status" command, the plugin opens this view. ([#1528](https://github.com/solidDoWant/vault-sync/pull/1528), [#1532](https://github.com/solidDoWant/vault-sync/pull/1532), [#1533](https://github.com/solidDoWant/vault-sync/pull/1533), [#1537](https://github.com/solidDoWant/vault-sync/pull/1537))
+- The status bar shows the progress of a sync, for example `syncing 40/312`, and the number of incoming files. A file that changed on the server and also on this device is marked as a likely conflict. ([#1528](https://github.com/solidDoWant/vault-sync/pull/1528), [#1532](https://github.com/solidDoWant/vault-sync/pull/1532))
+- The activity log lists the recent uploads, downloads, deletions, conflict copies and connection problems of each vault. The plugin keeps the last 500 events in memory only. It forgets them when Obsidian closes. ([#1533](https://github.com/solidDoWant/vault-sync/pull/1533))
+- When the server cannot be reached, the status says when the plugin tries again. Use "Sync now" to try again at once. While the plugin connects again, the status shows "reconnecting". ([#1530](https://github.com/solidDoWant/vault-sync/pull/1530))
+- On Android, when you switch to another app, the plugin saves the open note and sends your pending changes at once. Before, it waited, and Android could pause the app before the changes were sent. When you come back, the plugin syncs at once and connects to the server again. On desktop, the same happens when you minimize or restore the window. ([#1529](https://github.com/solidDoWant/vault-sync/pull/1529))
+
+### Server and deployment
+
+- The `VaultSyncBlobGCStalled` alert no longer fires during normal use. Before, it fired when blobs waited for garbage collection for a long time, but this is normal, because blobs are released and used again all the time. Now it fires only when the oldest waiting blob is older than the grace period plus two retention runs. A new metric, `vault_sync_service_gc_oldest_pending_blob_age_seconds`, gives this age. ([#1527](https://github.com/solidDoWant/vault-sync/pull/1527))
+
+### Security
+
+- The server is built with Go 1.26.11. This version fixes GO-2026-6859, a race in the Go HTTP server that can crash it. ([#1519](https://github.com/solidDoWant/vault-sync/pull/1519))
+- The Go modules of the server and the npm packages of the plugin are updated to their current versions. The PostgreSQL driver is updated to pgx v5.12.0. ([#957](https://github.com/solidDoWant/vault-sync/pull/957), [#1542](https://github.com/solidDoWant/vault-sync/pull/1542), [#935](https://github.com/solidDoWant/vault-sync/pull/935), [#1512](https://github.com/solidDoWant/vault-sync/pull/1512))
+
+### Fixes
+
+- After the plugin starts with changes that were not sent, the status shows the correct number of files that wait to be sent. Before, it showed 0 until the first sync ended. ([#1539](https://github.com/solidDoWant/vault-sync/pull/1539))
+
+Internal work: updates of the test images (PostgreSQL, versitygw, Obsidian), CI fixes for Renovate updates, and agent instructions ([#1511](https://github.com/solidDoWant/vault-sync/pull/1511), [#1513](https://github.com/solidDoWant/vault-sync/pull/1513), [#1514](https://github.com/solidDoWant/vault-sync/pull/1514), [#1515](https://github.com/solidDoWant/vault-sync/pull/1515), [#1517](https://github.com/solidDoWant/vault-sync/pull/1517), [#1518](https://github.com/solidDoWant/vault-sync/pull/1518), [#1535](https://github.com/solidDoWant/vault-sync/pull/1535), [#1541](https://github.com/solidDoWant/vault-sync/pull/1541)).
+
+### Known issues
+
+- The screenshots of the settings in the user guide still show the text from 0.4.4.
+- Live editing (Phase 5) is postponed. It is not in this release.
+
 ## 0.6.0
 
 vault-sync is a self-hosted replacement for Obsidian Sync. It has two parts: an Obsidian plugin, and a sync server that stores its data in PostgreSQL and S3. This release lets an admin restore a vault from the plaintext export into a new vault. The plugin has no changes from 0.4.10, except its version number. To install the server, use the server image `ghcr.io/soliddowant/vault-sync:0.6.0` or the Helm chart `oci://ghcr.io/soliddowant/charts/vault-sync` (version 0.6.0). Install the plugin with BRAT from the GitHub releases of this repository. There is no 0.5.0, because the work for that version was postponed.
