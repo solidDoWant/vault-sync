@@ -3,12 +3,13 @@ name: renovate-fixups
 # Renovate updates go.mod/go.sum and the compose image tags but not the pins
 # derived from them: vendorHash in nix/server.nix and the versitygw version and
 # checksums in scripts/with-native-s3.sh. This workflow regenerates both on
-# Renovate's PR branches and pushes the result. A push with GITHUB_TOKEN
-# starts no workflow runs that execute, so it then dispatches ci on the branch
-# to run the required checks on the new head commit. GitHub does create
-# pull_request runs of ci and this workflow for that push, but holds them as
-# "action required", and the PR page then shows "workflows awaiting approval".
-# They are duplicates of the dispatched run, so the job deletes them.
+# Renovate's PR branches and pushes the result. GitHub creates the
+# pull_request runs of ci and of this workflow for a push made with
+# GITHUB_TOKEN, but holds them as "action required" (the PR page shows
+# "workflows awaiting approval"). Only these pull_request runs count for
+# branch protection, so the job approves the held ci run to start it. The held
+# run of this workflow would only find nothing to fix up, and starting it would
+# cancel this job through the concurrency group, so the job deletes it instead.
 # pull_request cannot filter on the head branch, so the job's condition limits
 # it to renovate/* branches of this repository; on every other PR it is skipped.
 on:
@@ -27,7 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write # push the fix-up commit to the PR branch
-      actions: write # dispatch ci on the PR branch and delete the held runs
+      actions: write # approve or delete the held runs of the fix-up commit
       checks: read # find the held runs through the commit's check suites
     env:
       BRANCH: ${{ github.head_ref }}
@@ -62,7 +63,7 @@ jobs:
           ./scripts/with-native-s3.sh --update-pin "$VERSITYGW_VERSION"
           ./scripts/with-native-s3.sh --check-pin
       - id: push
-        name: Commit, push and dispatch ci
+        name: Commit and push
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -76,13 +77,12 @@ jobs:
           git commit -m 'chore(deps): regenerate pins derived from the Renovate update'
           git push origin "HEAD:refs/heads/${BRANCH}"
           echo "sha=$(git rev-parse HEAD)" >>"$GITHUB_OUTPUT"
-          gh workflow run ci.yml --ref "$BRANCH"
-      # The held pull_request runs are already completed, so they cannot be
-      # cancelled; deleting them clears the banner. They are found through the
-      # commit's check suites, because the REST run list leaves some of them
-      # out. They appear a few seconds after the push, so the step polls for a
-      # minute and deletes each one as it appears.
-      - name: Delete the held pull_request runs of the fix-up commit
+      # The held runs are found through the commit's check suites, because the
+      # REST run list leaves some of them out. They appear a few seconds after
+      # the push, so the step polls for a minute and handles each one as it
+      # appears. An approved or deleted run can still be listed for a few
+      # seconds; repeating the call then fails, so only calls that work count.
+      - name: Approve the held pull_request runs of the fix-up commit
         if: steps.push.outputs.sha != ''
         env:
           GH_TOKEN: ${{ github.token }}
@@ -92,25 +92,34 @@ jobs:
             repository(owner: $owner, name: $name) {
               object(oid: $sha) {
                 ... on Commit {
-                  checkSuites(first: 100) { nodes { conclusion workflowRun { databaseId event } } }
+                  checkSuites(first: 100) {
+                    nodes { conclusion workflowRun { databaseId event workflow { name } } }
+                  }
                 }
               }
             }
           }'
           filter='.data.repository.object.checkSuites.nodes[]
             | select(.conclusion == "ACTION_REQUIRED" and .workflowRun.event == "pull_request")
-            | .workflowRun.databaseId'
-          deleted=0
+            | "\(.workflowRun.databaseId) \(.workflowRun.workflow.name)"'
+          approved=0
           for _ in $(seq 1 12); do
             sleep 5
-            ids="$(gh api graphql -f query="$query" -f owner="${GITHUB_REPOSITORY%/*}" -f name="${GITHUB_REPOSITORY#*/}" -f sha="$SHA" --jq "$filter")"
-            for id in $ids; do
-              # A deleted run can still be listed for a few seconds; the
-              # repeated delete then fails, so only count the ones that work.
-              if gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/runs/${id}"; then
-                echo "deleted held run ${id}"
-                deleted=$((deleted + 1))
+            runs="$(gh api graphql -f query="$query" -f owner="${GITHUB_REPOSITORY%/*}" -f name="${GITHUB_REPOSITORY#*/}" -f sha="$SHA" --jq "$filter")"
+            while read -r id workflow; do
+              [[ -n $id ]] || continue
+              if [[ $workflow == "$GITHUB_WORKFLOW" ]]; then
+                if gh api --silent -X DELETE "repos/${GITHUB_REPOSITORY}/actions/runs/${id}"; then
+                  echo "deleted held ${workflow} run ${id}"
+                fi
+              elif gh api --silent -X POST "repos/${GITHUB_REPOSITORY}/actions/runs/${id}/approve"; then
+                echo "approved held ${workflow} run ${id}"
+                approved=$((approved + 1))
               fi
-            done
+            done <<<"$runs"
           done
-          echo "deleted ${deleted} held run(s) for ${SHA}"
+          echo "approved ${approved} held run(s) for ${SHA}"
+          if ((approved == 0)); then
+            echo "::error::no held ci run was approved for ${SHA}; approve it on the PR page"
+            exit 1
+          fi
