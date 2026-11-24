@@ -67,6 +67,14 @@
       matchPackageNames: ["github.com/aws/aws-sdk-go-v2", "github.com/aws/aws-sdk-go-v2/**"],
       fetchChangeLogs: "off",
     },
+    // v5.13.0 no longer exposes the DSN's sslcert/sslkey in TLSConfig.Certificates,
+    // which the guard in internal/store/tls.go relies on to reject them.
+    {
+      description: "Hold pgx below v5.13.0 until the DSN client-certificate rule is revisited",
+      matchDatasources: ["go"],
+      matchPackageNames: ["github.com/jackc/pgx/v5"],
+      allowedVersions: "<5.13.0",
+    },
     // Last so it overrides any preset rule. Renovate never merges by itself: the
     // agent scheduler arms green Renovate PRs (renovate_prs), so holds apply.
     {
