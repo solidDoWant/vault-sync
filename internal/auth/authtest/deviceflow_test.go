@@ -145,7 +145,7 @@ func claimOf(t *testing.T, token any, claim string) string {
 	raw, ok := token.(string)
 	require.True(t, ok)
 
-	parsed, err := jose.ParseSigned(raw, []jose.SignatureAlgorithm{jose.ES256})
+	parsed, err := jose.ParseSignedCompact(raw, []jose.SignatureAlgorithm{jose.ES256})
 	require.NoError(t, err)
 
 	claims := map[string]any{}
