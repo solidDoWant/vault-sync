@@ -195,7 +195,7 @@ func (keySet *remoteKeySet) snapshot() ([]jose.JSONWebKey, time.Time) {
 // VerifySignature verifies the token's signature against the issuer's keys
 // and returns its payload.
 func (keySet *remoteKeySet) VerifySignature(ctx context.Context, token string) ([]byte, error) {
-	signed, err := jose.ParseSigned(token, allowedJOSEAlgorithms())
+	signed, err := jose.ParseSignedCompact(token, allowedJOSEAlgorithms())
 	if err != nil {
 		return nil, fmt.Errorf("malformed token: %w", err)
 	}
